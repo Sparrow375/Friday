@@ -390,7 +390,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             layoutFlag,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.BOTTOM
@@ -418,7 +418,8 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         
         val view = panelView ?: return
         val params = panelParams ?: return
-        params.flags = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        params.flags = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                       WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
         windowManager.updateViewLayout(view, params)
         
         if (!isTtsSpeaking) {
@@ -433,7 +434,8 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         
         val view = panelView ?: return
         val params = panelParams ?: return
-        params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                       WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         windowManager.updateViewLayout(view, params)
         
         speechManager.stop()

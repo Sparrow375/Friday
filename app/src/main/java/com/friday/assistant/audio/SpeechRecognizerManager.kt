@@ -35,6 +35,7 @@ class SpeechRecognizerManager(
     private var speechRecognizer: SpeechRecognizer? = null
     private var voiceRecorder: VoiceRecorder? = null
     private var currentState = State.IDLE
+    private var isTransitioningState = false
     
     // Accumulator for raw PCM audio during command capture
     private val audioBufferStream = ByteArrayOutputStream()
@@ -131,14 +132,9 @@ class SpeechRecognizerManager(
     fun startWakeWordListening() {
         currentState = State.LISTENING_FOR_WAKE_WORD
         callback.onStateChanged(currentState)
+        isTransitioningState = false
 
         initializeRecognizer()
-
-        try {
-            speechRecognizer?.cancel()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error cancelling SpeechRecognizer", e)
-        }
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -159,18 +155,13 @@ class SpeechRecognizerManager(
     fun startActiveCommandListening(recordAudio: Boolean = false) {
         currentState = State.LISTENING_FOR_COMMAND
         callback.onStateChanged(currentState)
+        isTransitioningState = false
 
         synchronized(shortAudioBuffer) {
             shortAudioBuffer.clear()
         }
 
         initializeRecognizer()
-
-        try {
-            speechRecognizer?.cancel()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error cancelling SpeechRecognizer", e)
-        }
 
         if (recordAudio) {
             // Start recording raw audio for speaker verification
@@ -198,7 +189,12 @@ class SpeechRecognizerManager(
     fun stop() {
         currentState = State.IDLE
         callback.onStateChanged(currentState)
-        speechRecognizer?.stopListening()
+        isTransitioningState = true
+        try {
+            speechRecognizer?.cancel()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error cancelling SpeechRecognizer on stop", e)
+        }
         voiceRecorder?.stopRecording()
     }
 
@@ -237,6 +233,12 @@ class SpeechRecognizerManager(
         override fun onError(error: Int) {
             val message = getErrorString(error)
             Log.e(TAG, "SpeechRecognizer error: $message")
+
+            if (isTransitioningState) {
+                Log.d(TAG, "Ignoring error $error during state transition")
+                isTransitioningState = false
+                return
+            }
 
             // Stop recorder if listening for command
             if (currentState == State.LISTENING_FOR_COMMAND) {
@@ -283,6 +285,7 @@ class SpeechRecognizerManager(
             if (currentState == State.LISTENING_FOR_WAKE_WORD) {
                 if (text.contains("friday", ignoreCase = true)) {
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        isTransitioningState = true
                         try {
                             speechRecognizer?.cancel()
                         } catch (e: Exception) {}
@@ -300,6 +303,7 @@ class SpeechRecognizerManager(
                     shortAudioBuffer.toShortArray()
                 }
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    isTransitioningState = true
                     try {
                         speechRecognizer?.cancel()
                     } catch (e: Exception) {}
@@ -315,6 +319,7 @@ class SpeechRecognizerManager(
             if (currentState == State.LISTENING_FOR_WAKE_WORD) {
                 if (partialText.contains("friday", ignoreCase = true)) {
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        isTransitioningState = true
                         try {
                             speechRecognizer?.cancel()
                         } catch (e: Exception) {}
