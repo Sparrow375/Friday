@@ -2,7 +2,7 @@ plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
   alias(libs.plugins.kotlin.serialization)
-  id("com.android.legacy-kapt")
+  alias(libs.plugins.ksp)
 }
 
 android {
@@ -43,7 +43,6 @@ android {
 kotlin {
     jvmToolchain(17)
 }
-
 
 dependencies {
   val composeBom = platform(libs.androidx.compose.bom)
@@ -93,7 +92,7 @@ dependencies {
   // Local Room Database
   implementation(libs.androidx.room.runtime)
   implementation(libs.androidx.room.ktx)
-  add("kapt", libs.androidx.room.compiler)
+  ksp(libs.androidx.room.compiler)
 
   // JSON Utilities
   implementation(libs.gson)
