@@ -57,7 +57,7 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
 
     private lateinit var prefs: SharedPreferences
-    private lateinit var speakerVerifier: SpeakerVerifier
+    private var speakerVerifier: SpeakerVerifier? = null
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -71,7 +71,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         
         prefs = getSharedPreferences("friday_prefs", Context.MODE_PRIVATE)
-        speakerVerifier = SpeakerVerifier.getInstance(this)
+        try {
+            speakerVerifier = SpeakerVerifier.getInstance(this)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to initialize SpeakerVerifier (ONNX Runtime JNI linkage issue)", t)
+        }
 
         // Seed default routines if none exist
         seedDefaultRoutines()
@@ -710,29 +714,36 @@ class MainActivity : ComponentActivity() {
 
             // Process ONNX embeddings on Background Thread
             withContext(Dispatchers.Default) {
-                val verifier = SpeakerVerifier.getInstance(this@MainActivity)
-                val embeddings = audioBuffers.mapNotNull { verifier.extractEmbedding(it) }
+                try {
+                    val verifier = SpeakerVerifier.getInstance(this@MainActivity)
+                    val embeddings = audioBuffers.mapNotNull { verifier.extractEmbedding(it) }
 
-                if (embeddings.size < 2) {
+                    if (embeddings.size < 2) {
+                        withContext(Dispatchers.Main) {
+                            onUpdate(1.0f, "Failed: Embeddings extraction failed. ONNX Model missing?", true, null)
+                        }
+                        return@withContext
+                    }
+
+                    // Average the embeddings to make a robust template
+                    val vectorSize = embeddings[0].size
+                    val averageEmbedding = FloatArray(vectorSize)
+                    for (i in 0 until vectorSize) {
+                        var sum = 0f
+                        for (emb in embeddings) {
+                            sum += emb[i]
+                        }
+                        averageEmbedding[i] = sum / embeddings.size
+                    }
+
                     withContext(Dispatchers.Main) {
-                        onUpdate(1.0f, "Failed: Embeddings extraction failed. ONNX Model missing?", true, null)
+                        onUpdate(1.0f, "Verification core trained successfully.", true, averageEmbedding)
                     }
-                    return@withContext
-                }
-
-                // Average the embeddings to make a robust template
-                val vectorSize = embeddings[0].size
-                val averageEmbedding = FloatArray(vectorSize)
-                for (i in 0 until vectorSize) {
-                    var sum = 0f
-                    for (emb in embeddings) {
-                        sum += emb[i]
+                } catch (t: Throwable) {
+                    Log.e(TAG, "Speaker verifier JNI extract error", t)
+                    withContext(Dispatchers.Main) {
+                        onUpdate(1.0f, "Failed: Speaker verifier JNI / linkage error.", true, null)
                     }
-                    averageEmbedding[i] = sum / embeddings.size
-                }
-
-                withContext(Dispatchers.Main) {
-                    onUpdate(1.0f, "Verification core trained successfully.", true, averageEmbedding)
                 }
             }
         }

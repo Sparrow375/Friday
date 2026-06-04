@@ -42,9 +42,9 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
     // Managers & Executors
     private lateinit var speechManager: SpeechRecognizerManager
-    private lateinit var speakerVerifier: SpeakerVerifier
+    private var speakerVerifier: SpeakerVerifier? = null
     private val commandClassifier = CommandClassifier()
-    private lateinit var localLlmRunner: LocalLlmRunner
+    private var localLlmRunner: LocalLlmRunner? = null
     private lateinit var systemExecutor: SystemExecutor
     private lateinit var routineExecutor: RoutineExecutor
     private var tts: TextToSpeech? = null
@@ -75,8 +75,18 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
         // Init System & Voice API
         tts = TextToSpeech(this, this)
-        speakerVerifier = SpeakerVerifier.getInstance(this)
-        localLlmRunner = LocalLlmRunner.getInstance(this)
+        try {
+            speakerVerifier = SpeakerVerifier.getInstance(this)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to initialize SpeakerVerifier inside service", t)
+        }
+
+        try {
+            localLlmRunner = LocalLlmRunner.getInstance(this)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to initialize LocalLlmRunner inside service", t)
+        }
+
         systemExecutor = SystemExecutor(this)
         
         routineExecutor = RoutineExecutor(this, systemExecutor) { ttsText ->
@@ -426,8 +436,13 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                         val recentConversations = dao.getRecentConversations(6).first()
                         val historyPairs = recentConversations.map { Pair(it.speaker, it.message) }
                         
-                        val llmResponse = localLlmRunner.generateResponse(text, historyPairs)
-                        speak(llmResponse)
+                        val runner = localLlmRunner
+                        if (runner != null) {
+                            val llmResponse = runner.generateResponse(text, historyPairs)
+                            speak(llmResponse)
+                        } else {
+                            speak("I'm sorry, my local language model could not be initialized due to a JNI linkage error.")
+                        }
                     }
                 }
                 
@@ -457,8 +472,9 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
     private fun verifyVoice(pcmData: ShortArray): Float {
         val enrolled = enrolledEmbedding ?: return 1.0f // Bypass check if no voice enrolled
+        val verifier = speakerVerifier ?: return 1.0f // Bypass check if JNI initialization failed
         if (pcmData.isEmpty()) return 0f
-        return speakerVerifier.verifySpeaker(pcmData, enrolled)
+        return verifier.verifySpeaker(pcmData, enrolled)
     }
 
     // --- TextToSpeech OnInit ---
@@ -472,7 +488,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Trigger model reloading check in case a model was newly placed
-        localLlmRunner.reloadModel()
+        localLlmRunner?.reloadModel()
         loadEnrolledVoice()
         return START_STICKY
     }
@@ -484,7 +500,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         speechManager.destroy()
         tts?.stop()
         tts?.shutdown()
-        localLlmRunner.close()
+        localLlmRunner?.close()
         
         try {
             bubbleView?.let { windowManager.removeView(it) }
