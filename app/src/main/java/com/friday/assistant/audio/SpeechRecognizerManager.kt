@@ -1,7 +1,9 @@
 package com.friday.assistant.audio
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -67,13 +69,59 @@ class SpeechRecognizerManager(
     }
 
     private fun initializeRecognizer() {
+        if (speechRecognizer != null) return // Already initialized
+
         if (SpeechRecognizer.isRecognitionAvailable(context)) {
-            speechRecognizer = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-            } else {
-                SpeechRecognizer.createSpeechRecognizer(context)
-            }.apply {
-                setRecognitionListener(speechListener)
+            // Try 1: On-Device Speech Recognizer (if API >= 33)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                try {
+                    if (SpeechRecognizer.isOnDeviceRecognitionAvailable(context)) {
+                        speechRecognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(context).apply {
+                            setRecognitionListener(speechListener)
+                        }
+                        Log.i(TAG, "SpeechRecognizer initialized using on-device engine.")
+                        return
+                    } else {
+                        Log.i(TAG, "On-device speech recognition is not available on this device.")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to initialize on-device SpeechRecognizer", e)
+                }
+            }
+
+            // Try 2: Google's Speech Services explicitly (highly reliable in background/services)
+            try {
+                val googleComponent = ComponentName(
+                    "com.google.android.googlequicksearchbox",
+                    "com.google.android.voicesearch.serviceapi.GoogleRecognitionService"
+                )
+                val pm = context.packageManager
+                val intent = Intent(android.speech.RecognitionService.SERVICE_INTERFACE).apply {
+                    component = googleComponent
+                }
+                val resolveInfo = pm.resolveService(intent, 0)
+                if (resolveInfo != null) {
+                    speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context, googleComponent).apply {
+                        setRecognitionListener(speechListener)
+                    }
+                    Log.i(TAG, "SpeechRecognizer initialized using Google Speech Services component.")
+                    return
+                } else {
+                    Log.i(TAG, "Google Speech Services component not found.")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initialize Google SpeechRecognizer", e)
+            }
+
+            // Try 3: Default System Speech Recognizer
+            try {
+                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                    setRecognitionListener(speechListener)
+                }
+                Log.i(TAG, "SpeechRecognizer initialized successfully using default system engine.")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initialize standard SpeechRecognizer", e)
+                callback.onError("Failed to initialize speech recognition: ${e.localizedMessage}")
             }
         } else {
             callback.onError("Speech recognition not available on this device")
@@ -83,37 +131,39 @@ class SpeechRecognizerManager(
     fun startWakeWordListening() {
         currentState = State.LISTENING_FOR_WAKE_WORD
         callback.onStateChanged(currentState)
-        
+
+        // Always recreate the SpeechRecognizer to ensure fresh state and bypass cancellation errors
+        speechRecognizer?.destroy()
+        speechRecognizer = null
+        initializeRecognizer()
+
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         }
-        
+
         try {
-            speechRecognizer?.cancel()
             speechRecognizer?.startListening(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Error starting wake word listening", e)
-            initializeRecognizer()
-            try {
-                speechRecognizer?.cancel()
-                speechRecognizer?.startListening(intent)
-            } catch (ex: Exception) {
-                Log.e(TAG, "Retry error starting wake word listening", ex)
-            }
         }
     }
 
     fun startActiveCommandListening() {
         currentState = State.LISTENING_FOR_COMMAND
         callback.onStateChanged(currentState)
-        
+
         synchronized(shortAudioBuffer) {
             shortAudioBuffer.clear()
         }
-        
+
+        // Always recreate the SpeechRecognizer to ensure fresh state and bypass cancellation errors
+        speechRecognizer?.destroy()
+        speechRecognizer = null
+        initializeRecognizer()
+
         // Start recording raw audio for speaker verification
         voiceRecorder?.startRecording()
 
@@ -123,9 +173,8 @@ class SpeechRecognizerManager(
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         }
-        
+
         try {
-            speechRecognizer?.cancel()
             speechRecognizer?.startListening(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Error starting command listening", e)
@@ -176,21 +225,38 @@ class SpeechRecognizerManager(
         override fun onError(error: Int) {
             val message = getErrorString(error)
             Log.e(TAG, "SpeechRecognizer error: $message")
-            
+
             // Stop recorder if listening for command
             if (currentState == State.LISTENING_FOR_COMMAND) {
                 voiceRecorder?.stopRecording()
             }
 
             callback.onError(message)
-            
-            // Restart wake word loop if we were in wake word state or command timed out
+
+            // Recreate engine on busy or client error to recover from hangs
+            if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY || error == SpeechRecognizer.ERROR_CLIENT) {
+                Log.i(TAG, "Recreating SpeechRecognizer due to busy/client error ($error)")
+                speechRecognizer?.destroy()
+                speechRecognizer = null
+            }
+
+            // If the error is insufficient permissions, abort retries to prevent loops
+            if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                Log.e(TAG, "Permissions missing, stopping speech manager")
+                currentState = State.IDLE
+                callback.onStateChanged(currentState)
+                return
+            }
+
+            // Restart listening loop with 1 second delay to avoid rapid spinning
             if (currentState != State.IDLE) {
                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    if (currentState != State.IDLE) {
+                    if (currentState == State.LISTENING_FOR_WAKE_WORD) {
                         startWakeWordListening()
+                    } else if (currentState == State.LISTENING_FOR_COMMAND) {
+                        startActiveCommandListening()
                     }
-                }, 500)
+                }, 1000)
             }
         }
 
@@ -201,15 +267,18 @@ class SpeechRecognizerManager(
 
             if (currentState == State.LISTENING_FOR_WAKE_WORD) {
                 if (text.contains("friday", ignoreCase = true)) {
+                    speechRecognizer?.destroy()
+                    speechRecognizer = null
                     callback.onWakeWordDetected()
                 } else {
-                    // Loop back to listening
                     startWakeWordListening()
                 }
             } else if (currentState == State.LISTENING_FOR_COMMAND) {
                 val audioData = synchronized(shortAudioBuffer) {
                     shortAudioBuffer.toShortArray()
                 }
+                speechRecognizer?.destroy()
+                speechRecognizer = null
                 callback.onCommandRecognized(text, audioData)
             }
         }
@@ -217,11 +286,11 @@ class SpeechRecognizerManager(
         override fun onPartialResults(partialResults: Bundle?) {
             val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val partialText = matches?.firstOrNull() ?: ""
-            
+
             if (currentState == State.LISTENING_FOR_WAKE_WORD) {
                 if (partialText.contains("friday", ignoreCase = true)) {
-                    // Cancel current listening session to transition
-                    speechRecognizer?.cancel()
+                    speechRecognizer?.destroy()
+                    speechRecognizer = null
                     callback.onWakeWordDetected()
                 }
             } else if (currentState == State.LISTENING_FOR_COMMAND) {

@@ -532,7 +532,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
             Log.e(TAG, "Audio engine error: $errorMsg")
             // Show error in visualizer/status briefly
             serviceScope.launch {
-                statusText?.text = "ERROR"
+                statusText?.text = "ERROR: $errorMsg"
                 statusText?.setTextColor(0xFFFF4B2B.toInt())
             }
         }
@@ -586,59 +586,64 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     }
 
     private suspend fun executeClassifiedCommand(command: com.friday.assistant.classifier.LocalCommand, text: String) {
-        val dao = (application as FridayApplication).fridayDao
-        when (command.intent) {
-            IntentType.VOLUME -> speak(systemExecutor.executeVolume(command.parameters))
-            IntentType.BRIGHTNESS -> speak(systemExecutor.executeBrightness(command.parameters))
-            IntentType.TORCH -> speak(systemExecutor.executeTorch(command.parameters))
-            IntentType.WIFI -> speak(systemExecutor.executeWifi(command.parameters))
-            IntentType.BLUETOOTH -> speak(systemExecutor.executeBluetooth(command.parameters))
-            IntentType.DND -> speak(systemExecutor.executeDnd(command.parameters))
-            IntentType.BATTERY -> speak(systemExecutor.executeBattery())
-            IntentType.CLIPBOARD -> speak(systemExecutor.executeClipboard(command.parameters))
-            IntentType.LAUNCH_APP -> speak(systemExecutor.executeLaunchApp(command.parameters["packageName"] ?: "", command.parameters["appName"] ?: ""))
-            IntentType.DEEP_LINK_APP -> speak(systemExecutor.executeDeepLink(command.parameters))
-            IntentType.ALARM_TIMER -> speak(systemExecutor.executeAlarmTimer(command.parameters))
-            IntentType.CALL -> speak(systemExecutor.executeCall(command.parameters))
-            
-            IntentType.NOTE -> {
-                val action = command.parameters["action"]
-                if (action == "create") {
-                    val content = command.parameters["content"] ?: ""
-                    dao.insertNote(com.friday.assistant.core.NoteEntity(content = content, timestamp = System.currentTimeMillis()))
-                    speak("I've saved that to your notes.")
-                } else {
-                    speak("What would you like me to write down?")
-                }
-            }
-
-            IntentType.ROUTINE -> {
-                val phrase = text.lowercase().trim()
-                val routine = dao.getRoutineByPhrase(phrase)
-                if (routine != null) {
-                    routineExecutor.executeRoutine(routine.name, routine.commandsJson)
-                } else {
-                    speak("I found a matching routine pattern, but it has not been configured.")
-                }
-            }
-
-            IntentType.FALLBACK_TO_LLM -> {
-                // Query the Local LLM (Offline Gemma/Llama)
-                statusText?.text = "CONSULTING NEURAL CORE..."
-                statusText?.setTextColor(0xFFE4E4E9.toInt())
+        try {
+            val dao = (application as FridayApplication).fridayDao
+            when (command.intent) {
+                IntentType.VOLUME -> speak(systemExecutor.executeVolume(command.parameters))
+                IntentType.BRIGHTNESS -> speak(systemExecutor.executeBrightness(command.parameters))
+                IntentType.TORCH -> speak(systemExecutor.executeTorch(command.parameters))
+                IntentType.WIFI -> speak(systemExecutor.executeWifi(command.parameters))
+                IntentType.BLUETOOTH -> speak(systemExecutor.executeBluetooth(command.parameters))
+                IntentType.DND -> speak(systemExecutor.executeDnd(command.parameters))
+                IntentType.BATTERY -> speak(systemExecutor.executeBattery())
+                IntentType.CLIPBOARD -> speak(systemExecutor.executeClipboard(command.parameters))
+                IntentType.LAUNCH_APP -> speak(systemExecutor.executeLaunchApp(command.parameters["packageName"] ?: "", command.parameters["appName"] ?: ""))
+                IntentType.DEEP_LINK_APP -> speak(systemExecutor.executeDeepLink(command.parameters))
+                IntentType.ALARM_TIMER -> speak(systemExecutor.executeAlarmTimer(command.parameters))
+                IntentType.CALL -> speak(systemExecutor.executeCall(command.parameters))
                 
-                // Pull recent conversations flow list
-                val recentConversations = dao.getRecentConversations(6).first()
-                val historyPairs = recentConversations.map { Pair(it.speaker, it.message) }
-                
-                val runner = localLlmRunner
-                if (runner != null && runner.isModelLoaded()) {
-                    val llmResponse = runner.generateResponse(text, historyPairs)
-                    speak(llmResponse)
-                } else {
-                    speak("Offline language model not loaded. Basic offline commands still work! Ask me to turn on torch, change volume, or launch apps.")
+                IntentType.NOTE -> {
+                    val action = command.parameters["action"]
+                    if (action == "create") {
+                        val content = command.parameters["content"] ?: ""
+                        dao.insertNote(com.friday.assistant.core.NoteEntity(content = content, timestamp = System.currentTimeMillis()))
+                        speak("I've saved that to your notes.")
+                    } else {
+                        speak("What would you like me to write down?")
+                    }
+                }
+
+                IntentType.ROUTINE -> {
+                    val phrase = text.lowercase().trim()
+                    val routine = dao.getRoutineByPhrase(phrase)
+                    if (routine != null) {
+                        routineExecutor.executeRoutine(routine.name, routine.commandsJson)
+                    } else {
+                        speak("I found a matching routine pattern, but it has not been configured.")
+                    }
+                }
+
+                IntentType.FALLBACK_TO_LLM -> {
+                    // Query the Local LLM (Offline Gemma/Llama)
+                    statusText?.text = "CONSULTING NEURAL CORE..."
+                    statusText?.setTextColor(0xFFE4E4E9.toInt())
+                    
+                    // Pull recent conversations flow list
+                    val recentConversations = dao.getRecentConversations(6).first()
+                    val historyPairs = recentConversations.map { Pair(it.speaker, it.message) }
+                    
+                    val runner = localLlmRunner
+                    if (runner != null && runner.isModelLoaded()) {
+                        val llmResponse = runner.generateResponse(text, historyPairs)
+                        speak(llmResponse)
+                    } else {
+                        speak("Offline language model not loaded. Basic offline commands still work! Ask me to turn on torch, change volume, or launch apps.")
+                    }
                 }
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error executing command: ${e.localizedMessage}", e)
+            speak("Error executing command: ${e.localizedMessage}")
         }
     }
 

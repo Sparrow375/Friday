@@ -13,7 +13,7 @@ The application is structured under the package namespace `com.friday.assistant`
 - **`friday_helper.py`**: A PC-side Python utility using `llama-cpp-python` and `Flask` to serve GGUF language models directly to the Android app over the local network.
 - **`.github/workflows/android-build.yml`**: GitHub Actions build script. Automatically builds the debug APK (`app-debug.apk`) on push and uploads it as a build artifact, creating a GitHub Release.
 - **`app/build.gradle.kts`**: Configurations and dependencies including MediaPipe (tasks-genai for local LLM), Microsoft ONNX Runtime (for speaker embedding verification), SQLite Room database (Room 2.7.2), and Gson. Configured using AGP 9.0 built-in Kotlin support and KSP (Kotlin Symbol Processing) to compile Room stubs.
-- **`app/src/main/AndroidManifest.xml`**: Defines system-wide permissions and maps background components. Cleartext traffic is enabled to allow connection with the local GGUF server.
+- **`app/src/main/AndroidManifest.xml`**: Defines system-wide permissions and maps background components. Cleartext traffic is enabled to allow local connection. Contains the `QUERY_ALL_PACKAGES` permission to resolve Android 11+ app query/launch visibility limitations.
 
 ### Source Code Package Structure (`app/src/main/java/com/friday/assistant//`):
 
@@ -25,7 +25,7 @@ The application is structured under the package namespace `com.friday.assistant`
 2. **`audio/`**:
    - `VoiceRecorder.kt`: Captures raw PCM audio (16kHz mono 16-bit) from the microphone.
    - `SpeakerVerifier.kt`: Interfaces with the ONNX runtime model (`speaker_verification.onnx`) to extract 192-dimensional speaker embeddings and compare similarity via cosine similarity. Copies the model from assets on first run.
-   - `SpeechRecognizerManager.kt`: Wraps Android's native SpeechRecognizer and coordinates with `VoiceRecorder` to capture transcripts and raw audio simultaneously.
+   - `SpeechRecognizerManager.kt`: Manages Android's SpeechRecognizer. Implements a robust initialization sequence (OnDeviceSpeechRecognizer -> Google Speech Services Component -> Default system engine) and recreates the engine on every listening transition to avoid cancellation race conditions.
 
 3. **`classifier/`**:
    - `CommandClassifier.kt`: Implements the Layer 1 (Regex/pattern) and Layer 2 (Keyword and synonyms matching with parameter extraction) offline classification.

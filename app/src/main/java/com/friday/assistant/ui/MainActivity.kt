@@ -504,6 +504,20 @@ class MainActivity : ComponentActivity() {
                                 context.startActivity(intent)
                             }
                         )
+                        PermissionRow(
+                            title = "Voice Input Settings (Prefer Google)",
+                            granted = false,
+                            onRequest = {
+                                try {
+                                    val intent = Intent(Settings.ACTION_VOICE_INPUT_SETTINGS).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    context.startActivity(intent)
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Could not open Voice settings: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        )
                     }
                 }
             }
