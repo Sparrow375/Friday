@@ -3,7 +3,7 @@
 ## Overview
 Friday is a highly personalized, 100% offline-capable Android voice assistant designed specifically for a Samsung Galaxy S24 running Android 16 (One UI 8). It features local speaker verification, offline Speech-to-Text, a hybrid offline command classifier, automated routines, app-specific integrations, and a sleek floating overlay UI with voice feedback and animated visualizer.
 
-The project is configured for cloud-compilation via GitHub Actions, bypassing the need for local compiles.
+The project is configured for cloud-compilation via GitHub Actions, bypassing the need for local compiles and automatically publishing the compiled APK as a GitHub Release.
 
 ## Repository Structure & Components
 
