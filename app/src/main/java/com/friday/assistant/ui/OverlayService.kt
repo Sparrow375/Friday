@@ -68,6 +68,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
     private var isPanelExpanded = false
     private var enrolledEmbedding: FloatArray? = null
+    private var isTtsSpeaking = false
 
     override fun onCreate() {
         super.onCreate()
@@ -418,7 +419,10 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         params.flags = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
         windowManager.updateViewLayout(view, params)
         
-        speechManager.startActiveCommandListening()
+        if (!isTtsSpeaking) {
+            val isVoiceLock = prefs.getBoolean("voice_verification_enabled", false)
+            speechManager.startActiveCommandListening(recordAudio = isVoiceLock && enrolledEmbedding != null)
+        }
     }
 
     private fun collapsePanel() {
@@ -431,7 +435,9 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         windowManager.updateViewLayout(view, params)
         
         speechManager.stop()
-        speechManager.startWakeWordListening()
+        if (!isTtsSpeaking) {
+            speechManager.startWakeWordListening()
+        }
     }
 
     private fun hideKeyboard(view: View) {
@@ -439,12 +445,31 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         imm?.hideSoftInputFromWindow(view.windowToken, 0)
     }
 
+    private fun sanitizeTextForTts(text: String): String {
+        val emojiPattern = Regex(
+            "[\\uD83C-\\uDBFF\\uDC00-\\uDFFF]|" +
+            "[\\u2600-\\u27BF]|" +
+            "[\\u2300-\\u23FF]|" +
+            "[\\u2B50]|" +
+            "[\\u3030\\u303D]|[\\u3297\\u3299]|" +
+            "[\\uD83E\\uDD00-\\uD83E\\uDDFF]|" +
+            "[\\uD83D\\uDE00-\\uD83D\\uDE4F]"
+        )
+        return text.replace(emojiPattern, "").replace(Regex("\\s+"), " ").trim()
+    }
+
     private fun speak(text: String) {
         serviceScope.launch {
+            val cleanTtsText = sanitizeTextForTts(text).ifEmpty { text }
             responseText?.text = "Friday: \"$text\""
             statusText?.text = "SPEAKING..."
             statusText?.setTextColor(0xFFFFFFFF.toInt())
-            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "FridayTTS")
+            
+            // Set flag and stop recognizer to prevent feedback loop
+            isTtsSpeaking = true
+            speechManager.stop()
+            
+            tts?.speak(cleanTtsText, TextToSpeech.QUEUE_FLUSH, null, "FridayTTS")
             
             // Save to database
             val dao = (application as FridayApplication).fridayDao
@@ -658,6 +683,39 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             tts?.language = Locale.getDefault()
+            tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {
+                    isTtsSpeaking = true
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        speechManager.stop()
+                    }
+                }
+
+                override fun onDone(utteranceId: String?) {
+                    isTtsSpeaking = false
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        if (isPanelExpanded) {
+                            val isVoiceLock = prefs.getBoolean("voice_verification_enabled", false)
+                            speechManager.startActiveCommandListening(recordAudio = isVoiceLock && enrolledEmbedding != null)
+                        } else {
+                            speechManager.startWakeWordListening()
+                        }
+                    }
+                }
+
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {
+                    isTtsSpeaking = false
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        if (isPanelExpanded) {
+                            val isVoiceLock = prefs.getBoolean("voice_verification_enabled", false)
+                            speechManager.startActiveCommandListening(recordAudio = isVoiceLock && enrolledEmbedding != null)
+                        } else {
+                            speechManager.startWakeWordListening()
+                        }
+                    }
+                }
+            })
         } else {
             Log.e(TAG, "TTS Initialization failed.")
         }

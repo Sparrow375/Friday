@@ -151,7 +151,7 @@ class SpeechRecognizerManager(
         }
     }
 
-    fun startActiveCommandListening() {
+    fun startActiveCommandListening(recordAudio: Boolean = false) {
         currentState = State.LISTENING_FOR_COMMAND
         callback.onStateChanged(currentState)
 
@@ -164,8 +164,10 @@ class SpeechRecognizerManager(
         speechRecognizer = null
         initializeRecognizer()
 
-        // Start recording raw audio for speaker verification
-        voiceRecorder?.startRecording()
+        if (recordAudio) {
+            // Start recording raw audio for speaker verification
+            voiceRecorder?.startRecording()
+        }
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -254,7 +256,10 @@ class SpeechRecognizerManager(
                     if (currentState == State.LISTENING_FOR_WAKE_WORD) {
                         startWakeWordListening()
                     } else if (currentState == State.LISTENING_FOR_COMMAND) {
-                        startActiveCommandListening()
+                        val prefs = context.getSharedPreferences("friday_prefs", Context.MODE_PRIVATE)
+                        val isVoiceLock = prefs.getBoolean("voice_verification_enabled", false)
+                        val enrolledStr = prefs.getString("enrolled_embedding", null)
+                        startActiveCommandListening(recordAudio = isVoiceLock && !enrolledStr.isNullOrEmpty())
                     }
                 }, 1000)
             }
@@ -267,9 +272,11 @@ class SpeechRecognizerManager(
 
             if (currentState == State.LISTENING_FOR_WAKE_WORD) {
                 if (text.contains("friday", ignoreCase = true)) {
-                    speechRecognizer?.destroy()
-                    speechRecognizer = null
-                    callback.onWakeWordDetected()
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        speechRecognizer?.destroy()
+                        speechRecognizer = null
+                        callback.onWakeWordDetected()
+                    }
                 } else {
                     startWakeWordListening()
                 }
@@ -289,9 +296,11 @@ class SpeechRecognizerManager(
 
             if (currentState == State.LISTENING_FOR_WAKE_WORD) {
                 if (partialText.contains("friday", ignoreCase = true)) {
-                    speechRecognizer?.destroy()
-                    speechRecognizer = null
-                    callback.onWakeWordDetected()
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        speechRecognizer?.destroy()
+                        speechRecognizer = null
+                        callback.onWakeWordDetected()
+                    }
                 }
             } else if (currentState == State.LISTENING_FOR_COMMAND) {
                 if (partialText.isNotEmpty()) {

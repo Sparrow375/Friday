@@ -425,6 +425,9 @@ class MainActivity : ComponentActivity() {
 
         val enrolledEmbeddingStr = prefs.getString("enrolled_embedding", null)
         var hasEnrolledVoice by remember { mutableStateOf(!enrolledEmbeddingStr.isNullOrEmpty()) }
+        var voiceLockEnabled by remember {
+            mutableStateOf(prefs.getBoolean("voice_verification_enabled", false))
+        }
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(16.dp)) {
             // Service Controller
@@ -775,6 +778,35 @@ class MainActivity : ComponentActivity() {
                             color = if (hasEnrolledVoice) Color(0xFF92FE9D) else Color(0xCCFFFFFF),
                             modifier = Modifier.padding(bottom = 16.dp)
                         )
+
+                        if (hasEnrolledVoice) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Voice Lock Protection", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 14.sp)
+                                    Text(
+                                        "Only respond if speaker embedding matches profile.",
+                                        fontSize = 11.sp,
+                                        color = Color.Gray
+                                    )
+                                }
+                                Switch(
+                                    checked = voiceLockEnabled,
+                                    onCheckedChange = { enabled ->
+                                        voiceLockEnabled = enabled
+                                        prefs.edit().putBoolean("voice_verification_enabled", enabled).apply()
+                                        if (enabled) {
+                                            Toast.makeText(context, "Voice Lock enabled! Note: simultaneous microphone recording might cause recognition timeouts on some devices.", Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                )
+                            }
+                            HorizontalDivider(color = Color(0x1EFFFFFF), modifier = Modifier.padding(bottom = 16.dp))
+                        }
 
                         if (isEnrolling) {
                             Text(

@@ -29,15 +29,15 @@ The application is structured under the package namespace `com.friday.assistant`
 
 3. **`classifier/`**:
    - `CommandClassifier.kt`: Implements the Layer 1 (Regex/pattern) and Layer 2 (Keyword and synonyms matching with parameter extraction) offline classification.
-   - `LocalLlmRunner.kt`: Interfaces with MediaPipe GenAI Tasks to run a local quantized model, or queries the PC-side GGUF server if configured.
+   - `LocalLlmRunner.kt`: Interfaces with MediaPipe GenAI Tasks to run a local quantized model, or queries the PC-side GGUF server if configured. Includes explicit prompt constraints to prevent emoji generation.
 
 4. **`executor/`**:
    - `SystemExecutor.kt`: Direct bindings for system controls (volume, brightness, wifi, bluetooth, DND, flashlight, alarms, calling contacts) and launcher/deep-linking configurations.
    - `RoutineExecutor.kt`: Parses a list of routine actions (JSON) and triggers them sequentially.
 
 5. **`ui/`**:
-   - `MainActivity.kt`: Jetpack Compose dashboard UI for configuration, training, routines management, and PC IP input configuration.
-   - `OverlayService.kt`: Persistent foreground service drawing the floating overlay. Features a visualizer, voice feedback, click-outside-to-collapse, and a fully interactive text input card supporting cleartext keyboard queries.
+   - `MainActivity.kt`: Jetpack Compose dashboard UI for configuration, training, routines, and models. Includes a settings toggle switch to enable/disable Voice Lock Protection (to bypass simultaneous mic capture limits).
+   - `OverlayService.kt`: Foreground service drawing the floating overlay. Features a visualizer, click-outside-to-collapse, and text input row. Intercepts TextToSpeech UtteranceProgressListener to pause/resume STT listening, preventing feedback loops and audio self-triggering, and sanitizes speech text to strip all emojis before TTS.
    - `AudioVisualizerView.kt`: Custom view drawing multiple fluid, animated sine waves responsive to the real-time RMS audio input.
 
 ## Verification & Deployment Flow

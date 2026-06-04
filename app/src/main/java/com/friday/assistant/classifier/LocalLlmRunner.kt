@@ -118,7 +118,8 @@ class LocalLlmRunner private constructor(private val context: Context) {
             // System instructions
             fullPromptBuilder.append("<start_of_turn>system\n")
             fullPromptBuilder.append("You are Friday, Avaneesh's personal voice assistant running offline on his Samsung S24. ")
-            fullPromptBuilder.append("Keep your replies very short (1-2 sentences), friendly, conversational, and direct since they will be spoken aloud.\n")
+            fullPromptBuilder.append("Keep your replies very short (1-2 sentences), friendly, conversational, and direct since they will be spoken aloud. ")
+            fullPromptBuilder.append("DO NOT use any emojis, icons, or special visual symbols in your response under any circumstances.\n")
             fullPromptBuilder.append("<end_of_turn>\n")
 
             // Append context history
