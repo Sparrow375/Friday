@@ -221,7 +221,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         // Panel Layout
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            padding = 40
+            setPadding(40, 40, 40, 40)
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT

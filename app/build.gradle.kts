@@ -95,4 +95,8 @@ dependencies {
 
   // JSON Utilities
   implementation(libs.gson)
+
+  // Material Icons
+  implementation("androidx.compose.material:material-icons-core")
+  implementation("androidx.compose.material:material-icons-extended")
 }

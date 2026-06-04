@@ -1,24 +1,46 @@
 # Project Friday: Personal Android Voice Assistant
 
 ## Overview
-Friday is a highly personalized Android-based voice assistant designed for a single user's phone. It aims to combine local voice commands, speaker recognition (security), custom routines, and LLM-powered capabilities into a seamless, modern application.
+Friday is a highly personalized, 100% offline-capable Android voice assistant designed specifically for a Samsung Galaxy S24 running Android 16 (One UI 8). It features local speaker verification, offline Speech-to-Text, a hybrid offline command classifier, automated routines, app-specific integrations, and a sleek floating overlay UI with voice feedback and animated visualizer.
 
-## Key Goals
-1. **Personalization & Routines**: Tailored features and routines specific to the user.
-2. **Speaker Verification**: Security feature to ensure the app only responds to the user's voice (voice profile enrollment by speaking a short sample).
-3. **Local/Offline Command Classification**: Efficiently parse and execute pre-built commands locally without querying the LLM, falling back to the LLM only when necessary.
-4. **High-Quality Voice Recognition**: Fast and accurate speech-to-text.
-5. **Modern Android Design**: Premium look and feel with smooth interactions.
+The project is configured for cloud-compilation via GitHub Actions, bypassing the need for local compiles.
 
-## Architecture
-- **Front-end**: Android Application.
-- **Voice Recognition (Speech-to-Text)**: Local (e.g., Vosk, Whisper Mobile, or Android SpeechRecognizer) or cloud-assisted.
-- **Speaker Recognition (Voice Bio-metrics)**: Local feature extractor and classifier to verify if the speaker is the owner.
-- **Local Command Classifier**: Regex, rule-based, or light NLP model to categorize commands and trigger local actions.
-- **LLM Engine**: API integration (e.g., Gemini API) for conversational queries and complex intent resolving.
+## Repository Structure & Components
 
-## Workspace Structure
-- `f:/Avaneesh/projects/Friday/`
-  - `.git`
-  - `prompt.md` (User request details)
-  - `context.md` (This context file)
+The application is structured under the package namespace `com.friday.assistant`:
+
+- **`.github/workflows/android-build.yml`**: GitHub Actions build script. Automatically builds the debug APK (`app-debug.apk`) on push and uploads it as a build artifact.
+- **`app/build.gradle.kts`**: Configurations and dependencies including MediaPipe (tasks-genai for local LLM), Microsoft ONNX Runtime (for speaker embedding verification), SQLite Room database, and Gson.
+- **`app/src/main/AndroidManifest.xml`**: Defines system-wide permissions (overlay, record audio, write settings, location, foreground microphone service) and maps background components.
+
+### Source Code Package Structure (`app/src/main/java/com/friday/assistant/`):
+
+1. **`core/`**:
+   - `FridayApplication.kt`: Manages notification channel setup and database singleton.
+   - `Database.kt`: SQLite Room database definition containing tables for Conversations (chat history), Notes, Routines, and Geofences.
+   - `BootReceiver.kt`: Automatically launches the overlay assistant service on device boot.
+
+2. **`audio/`**:
+   - `VoiceRecorder.kt`: Captures raw PCM audio (16kHz mono 16-bit) from the microphone.
+   - `SpeakerVerifier.kt`: Interfaces with the ONNX runtime model (`speaker_verification.onnx`) to extract 192-dimensional speaker embeddings and compare similarity via cosine similarity.
+   - `SpeechRecognizerManager.kt`: Wraps Android's native SpeechRecognizer and coordinates with `VoiceRecorder` to capture transcripts and raw audio simultaneously.
+
+3. **`classifier/`**:
+   - `CommandClassifier.kt`: Implements the Layer 1 (Regex/pattern) and Layer 2 (Keyword and synonyms matching with parameter extraction) offline classification.
+   - `LocalLlmRunner.kt`: Interfaces with MediaPipe GenAI Tasks to run a local quantized model (e.g. Gemma 2B or Llama 3.2) in a coroutine block with custom prompt templates.
+
+4. **`executor/`**:
+   - `SystemExecutor.kt`: Direct bindings for system controls (volume, brightness, wifi, bluetooth, DND, flashlight, alarms) and launcher/deep-linking configurations for Reddit, Discord, Instagram, Chrome, Spotify, Brave, and WhatsApp.
+   - `RoutineExecutor.kt`: Parses a list of routine actions (JSON) and triggers them sequentially.
+
+5. **`ui/`**:
+   - `MainActivity.kt`: Jetpack Compose dashboard UI for permissions checking, voice profile training (enrolling voice sample), and routines management.
+   - `OverlayService.kt`: Persistent foreground service drawing the floating overlay bubble and translucent bottom sheet.
+   - `AudioVisualizerView.kt`: Custom view drawing multiple fluid, animated sine waves responsive to the real-time RMS audio input.
+
+## Verification & Deployment Flow
+1. Code changes are pushed to GitHub.
+2. The Action compiles the project using `./gradlew assembleDebug` in a clean Ubuntu VM.
+3. Download the built APK from the run's **Artifacts** tab.
+4. Copy `gemma.bin` and `speaker_verification.onnx` into `/sdcard/Android/data/com.friday.assistant/files/` on the device.
+5. Install and launch the app, grant permissions, train voice profile, and toggle Friday service.
