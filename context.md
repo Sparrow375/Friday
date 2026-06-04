@@ -11,7 +11,7 @@ The application is structured under the package namespace `com.friday.assistant`
 
 - **`.github/workflows/android-build.yml`**: GitHub Actions build script. Automatically builds the debug APK (`app-debug.apk`) on push and uploads it as a build artifact, creating a GitHub Release.
 - **`app/build.gradle.kts`**: Configurations and dependencies including MediaPipe (tasks-genai for local LLM), Microsoft ONNX Runtime (for speaker embedding verification), SQLite Room database (Room 2.7.2), and Gson. Configured using AGP 9.0 built-in Kotlin support and KSP (Kotlin Symbol Processing) to compile Room stubs.
-- **`app/src/main/AndroidManifest.xml`**: Defines system-wide permissions (overlay, record audio, write settings, location, foreground microphone service) and maps background components.
+- **`app/src/main/AndroidManifest.xml`**: Defines system-wide permissions (overlay, record audio, write settings, location, foreground microphone service, phone calls, contacts access, bluetooth scan/connect) and maps background components.
 
 ### Source Code Package Structure (`app/src/main/java/com/friday/assistant/`):
 
@@ -30,11 +30,11 @@ The application is structured under the package namespace `com.friday.assistant`
    - `LocalLlmRunner.kt`: Interfaces with MediaPipe GenAI Tasks to run a local quantized model (e.g. Gemma 2B or Llama 3.2) in a coroutine block with custom prompt templates.
 
 4. **`executor/`**:
-   - `SystemExecutor.kt`: Direct bindings for system controls (volume, brightness, wifi, bluetooth, DND, flashlight, alarms) and launcher/deep-linking configurations for Reddit, Discord, Instagram, Chrome, Spotify, Brave, and WhatsApp.
+   - `SystemExecutor.kt`: Direct bindings for system controls (volume, brightness, wifi, bluetooth, DND, flashlight, alarms, calling contacts) and launcher/deep-linking configurations for Reddit, Discord, Instagram, Chrome, Spotify, Brave, and WhatsApp.
    - `RoutineExecutor.kt`: Parses a list of routine actions (JSON) and triggers them sequentially.
 
 5. **`ui/`**:
-   - `MainActivity.kt`: Jetpack Compose dashboard UI for permissions checking, voice profile training (enrolling voice sample), and routines management.
+   - `MainActivity.kt`: Jetpack Compose dashboard UI for permissions checking, voice profile training (enrolling voice sample), routines management, and local models configuration diagnostic.
    - `OverlayService.kt`: Persistent foreground service drawing the floating overlay bubble and translucent bottom sheet.
    - `AudioVisualizerView.kt`: Custom view drawing multiple fluid, animated sine waves responsive to the real-time RMS audio input.
 

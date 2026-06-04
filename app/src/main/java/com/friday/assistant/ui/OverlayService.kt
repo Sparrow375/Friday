@@ -69,6 +69,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "Creating OverlayService...")
+        isRunning = true
         
         prefs = getSharedPreferences("friday_prefs", Context.MODE_PRIVATE)
         loadEnrolledVoice()
@@ -404,6 +405,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                     IntentType.LAUNCH_APP -> speak(systemExecutor.executeLaunchApp(command.parameters["packageName"] ?: "", command.parameters["appName"] ?: ""))
                     IntentType.DEEP_LINK_APP -> speak(systemExecutor.executeDeepLink(command.parameters))
                     IntentType.ALARM_TIMER -> speak(systemExecutor.executeAlarmTimer(command.parameters))
+                    IntentType.CALL -> speak(systemExecutor.executeCall(command.parameters))
                     
                     IntentType.NOTE -> {
                         val action = command.parameters["action"]
@@ -496,6 +498,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     override fun onDestroy() {
         super.onDestroy()
         Log.i(TAG, "Destroying OverlayService...")
+        isRunning = false
         serviceScope.cancel()
         speechManager.destroy()
         tts?.stop()
@@ -515,5 +518,8 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     companion object {
         private const val TAG = "OverlayService"
         private const val NOTIFICATION_ID = 404
+
+        @Volatile
+        var isRunning = false
     }
 }

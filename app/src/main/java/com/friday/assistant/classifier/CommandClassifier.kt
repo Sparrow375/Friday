@@ -16,6 +16,7 @@ enum class IntentType {
     NOTE,
     CLIPBOARD,
     ALARM_TIMER,
+    CALL,
     FALLBACK_TO_LLM
 }
 
@@ -202,6 +203,12 @@ class CommandClassifier {
             val query = text.replace(Regex("(?i).*search\\s+x\\s+(for)?\\s*"), "")
                 .replace(Regex("(?i).*twitter\\s+(for)?\\s*"), "").trim()
             return LocalCommand(IntentType.DEEP_LINK_APP, mapOf("app" to "chrome_x", "query" to query))
+        }
+
+        // H. Phone Calls: "call X" or "dial X" or "phone X"
+        if (cleanText.startsWith("call ") || cleanText.startsWith("dial ") || cleanText.startsWith("phone ")) {
+            val contactName = text.replace(Regex("(?i)^(call|dial|phone)\\s*"), "").trim()
+            return LocalCommand(IntentType.CALL, mapOf("name" to contactName))
         }
 
         // --- Layer 3: Fallback to Local LLM ---

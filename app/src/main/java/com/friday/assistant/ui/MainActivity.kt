@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.friday.assistant.audio.SpeakerVerifier
+import com.friday.assistant.classifier.LocalLlmRunner
 import com.friday.assistant.core.FridayApplication
 import com.friday.assistant.core.ConversationEntity
 import com.friday.assistant.core.NoteEntity
@@ -99,8 +100,14 @@ class MainActivity : ComponentActivity() {
         val permissions = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
             Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.READ_CONTACTS,
+            Manifest.permission.CALL_PHONE
         )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -242,7 +249,7 @@ class MainActivity : ComponentActivity() {
         var enrollmentStatus by remember { mutableStateOf("Ready to enroll") }
 
         val enrolledEmbeddingStr = prefs.getString("enrolled_embedding", null)
-        val hasEnrolledVoice = !enrolledEmbeddingStr.isNullOrEmpty()
+        var hasEnrolledVoice by remember { mutableStateOf(!enrolledEmbeddingStr.isNullOrEmpty()) }
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(16.dp)) {
             // Service Controller
@@ -326,6 +333,92 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            // Local Models Configuration & Diagnostic
+            item {
+                Text("Local Models Configuration", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
+            }
+
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E24))) {
+                    var llmName by remember { mutableStateOf(LocalLlmRunner.getInstance(context).getLoadedModelName()) }
+                    var llmLoaded by remember { mutableStateOf(LocalLlmRunner.getInstance(context).isModelLoaded()) }
+                    var onnxLoaded by remember { mutableStateOf(speakerVerifier?.isModelLoaded() ?: false) }
+
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (llmLoaded) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = if (llmLoaded) Color(0xFF92FE9D) else Color(0xFFFF4B2B),
+                                modifier = Modifier.padding(end = 12.dp)
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("On-Device LLM (Generative AI)", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 14.sp)
+                                Text(
+                                    text = if (llmLoaded) "Loaded: $llmName" else "Missing gemma.bin",
+                                    fontSize = 12.sp,
+                                    color = Color.LightGray
+                                )
+                                Text(
+                                    text = "Searched: /sdcard/Android/data/com.friday.assistant/files/",
+                                    fontSize = 10.sp,
+                                    color = Color.Gray
+                                )
+                            }
+                        }
+                        
+                        HorizontalDivider(color = Color(0x33FFFFFF))
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (onnxLoaded) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = if (onnxLoaded) Color(0xFF92FE9D) else Color(0xFFFF4B2B),
+                                modifier = Modifier.padding(end = 12.dp)
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Speaker Recognition Model (ONNX)", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 14.sp)
+                                Text(
+                                    text = if (onnxLoaded) "Loaded: speaker_verification.onnx" else "Missing speaker_verification.onnx",
+                                    fontSize = 12.sp,
+                                    color = Color.LightGray
+                                )
+                                Text(
+                                    text = "Searched: /sdcard/Android/data/com.friday.assistant/files/",
+                                    fontSize = 10.sp,
+                                    color = Color.Gray
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Button(
+                            onClick = {
+                                try {
+                                    LocalLlmRunner.getInstance(context).reloadModel()
+                                    speakerVerifier = SpeakerVerifier.getInstance(context)
+                                    val isLlmActive = LocalLlmRunner.getInstance(context).isModelLoaded()
+                                    val isOnnxActive = speakerVerifier?.isModelLoaded() ?: false
+                                    llmLoaded = isLlmActive
+                                    llmName = LocalLlmRunner.getInstance(context).getLoadedModelName()
+                                    onnxLoaded = isOnnxActive
+                                    
+                                    val msg = "Sync Complete. LLM: ${if (isLlmActive) "Loaded" else "Not Found"}, ONNX: ${if (isOnnxActive) "Loaded" else "Not Found"}"
+                                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                } catch (t: Throwable) {
+                                    Toast.makeText(context, "Error syncing: ${t.localizedMessage}", Toast.LENGTH_LONG).show()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00C9FF)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Scan & Sync Local Models", color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
             // Voice Bio-metrics Enrollment
             item {
                 Text("Speaker Security Core", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
@@ -373,6 +466,7 @@ class MainActivity : ComponentActivity() {
                                             if (embedding != null) {
                                                 val str = embedding.joinToString(",")
                                                 prefs.edit().putString("enrolled_embedding", str).apply()
+                                                hasEnrolledVoice = true
                                                 Toast.makeText(context, "Voice Enrolled Successfully!", Toast.LENGTH_LONG).show()
                                             }
                                         }
@@ -649,11 +743,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun isServiceRunning(): Boolean {
-        // OverlayService runs as a foreground service
-        // Since we are checking locally inside our process, we can verify if the service context is active
-        // But since we stop/start manually, a simple check is standard.
-        // For local purposes, return true if started. We check it programmatically:
-        return false // Will be updated dynamically by binding/intent or local variable in service
+        return OverlayService.isRunning
     }
 
     private fun startVoiceEnrollment(onUpdate: (Float, String, Boolean, FloatArray?) -> Unit) {

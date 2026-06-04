@@ -9,27 +9,34 @@ import java.io.File
 import java.nio.FloatBuffer
 import kotlin.math.sqrt
 
-class SpeakerVerifier private constructor(context: Context) {
+class SpeakerVerifier private constructor(private val context: Context) {
 
     private var ortEnv: OrtEnvironment? = null
     private var ortSession: OrtSession? = null
-    private val modelFile = File(context.filesDir, "speaker_verification.onnx")
 
     init {
         initModel()
     }
 
     private fun initModel() {
-        if (!modelFile.exists()) {
-            Log.w(TAG, "Speaker verification ONNX model file does not exist at ${modelFile.absolutePath}")
+        val possiblePaths = listOf(
+            File(context.filesDir, "speaker_verification.onnx"),
+            File(context.getExternalFilesDir(null), "speaker_verification.onnx"),
+            File("/sdcard/Android/data/com.friday.assistant/files/speaker_verification.onnx")
+        )
+        val existingModel = possiblePaths.firstOrNull { it.exists() && it.isFile }
+        
+        if (existingModel == null) {
+            Log.w(TAG, "Speaker verification ONNX model file does not exist. Searched: ${possiblePaths.joinToString { it.absolutePath }}")
             return
         }
+        
         try {
             ortEnv = OrtEnvironment.getEnvironment()
-            ortSession = ortEnv?.createSession(modelFile.absolutePath, OrtSession.SessionOptions())
-            Log.i(TAG, "ONNX Speaker Verification model loaded successfully.")
+            ortSession = ortEnv?.createSession(existingModel.absolutePath, OrtSession.SessionOptions())
+            Log.i(TAG, "ONNX Speaker Verification model loaded successfully from: ${existingModel.absolutePath}")
         } catch (t: Throwable) {
-            Log.e(TAG, "Error loading ONNX model or JNI libraries", t)
+            Log.e(TAG, "Error loading ONNX model or JNI libraries from: ${existingModel.absolutePath}", t)
         }
     }
 

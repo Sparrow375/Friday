@@ -20,6 +20,8 @@ import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
 import java.net.URLEncoder
+import androidx.core.content.ContextCompat
+import android.content.pm.PackageManager
 
 class SystemExecutor(private val context: Context) {
 
@@ -389,6 +391,66 @@ class SystemExecutor(private val context: Context) {
                 "Opening alarm creation for $timeStr."
             } catch (e: Exception) {
                 "Couldn't set the alarm."
+            }
+        }
+    }
+
+    fun executeCall(params: Map<String, String>): String {
+        val contactName = params["name"] ?: ""
+        if (contactName.isEmpty()) {
+            val dialIntent = Intent(Intent.ACTION_DIAL).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(dialIntent)
+            return "Opening your phone dialer."
+        }
+
+        var phoneNumber: String? = null
+        if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
+            try {
+                val cursor = context.contentResolver.query(
+                    android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    arrayOf(android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER, android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME),
+                    "${android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?",
+                    arrayOf("%$contactName%"),
+                    null
+                )
+                cursor?.use {
+                    if (it.moveToFirst()) {
+                        val numIndex = it.getColumnIndex(android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER)
+                        if (numIndex >= 0) {
+                            phoneNumber = it.getString(numIndex)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error querying contacts", e)
+            }
+        }
+
+        if (phoneNumber != null) {
+            if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
+                val callIntent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$phoneNumber")).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(callIntent)
+                return "Calling $contactName."
+            } else {
+                val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phoneNumber")).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(dialIntent)
+                return "Opening dialer for $contactName."
+            }
+        } else {
+            return try {
+                val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${URLEncoder.encode(contactName, "UTF-8")}")).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(dialIntent)
+                "I couldn't find $contactName in your contacts, opening dialer."
+            } catch (e: Exception) {
+                "Failed to place call to $contactName."
             }
         }
     }

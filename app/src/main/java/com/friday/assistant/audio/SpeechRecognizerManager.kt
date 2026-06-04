@@ -67,7 +67,11 @@ class SpeechRecognizerManager(
 
     private fun initializeRecognizer() {
         if (SpeechRecognizer.isRecognitionAvailable(context)) {
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+            speechRecognizer = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+            } else {
+                SpeechRecognizer.createSpeechRecognizer(context)
+            }.apply {
                 setRecognitionListener(speechListener)
             }
         } else {
@@ -83,15 +87,21 @@ class SpeechRecognizerManager(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         }
         
         try {
+            speechRecognizer?.cancel()
             speechRecognizer?.startListening(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Error starting wake word listening", e)
-            // Re-initialize and retry if crash
             initializeRecognizer()
-            speechRecognizer?.startListening(intent)
+            try {
+                speechRecognizer?.cancel()
+                speechRecognizer?.startListening(intent)
+            } catch (ex: Exception) {
+                Log.e(TAG, "Retry error starting wake word listening", ex)
+            }
         }
     }
 
@@ -110,9 +120,11 @@ class SpeechRecognizerManager(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         }
         
         try {
+            speechRecognizer?.cancel()
             speechRecognizer?.startListening(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Error starting command listening", e)
@@ -173,7 +185,11 @@ class SpeechRecognizerManager(
             
             // Restart wake word loop if we were in wake word state or command timed out
             if (currentState != State.IDLE) {
-                startWakeWordListening()
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    if (currentState != State.IDLE) {
+                        startWakeWordListening()
+                    }
+                }, 500)
             }
         }
 
