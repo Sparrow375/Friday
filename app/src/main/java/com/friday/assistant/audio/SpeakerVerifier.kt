@@ -8,6 +8,9 @@ import ai.onnxruntime.OrtSession
 import java.io.File
 import java.nio.FloatBuffer
 import kotlin.math.sqrt
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 
 class SpeakerVerifier private constructor(private val context: Context) {
 
