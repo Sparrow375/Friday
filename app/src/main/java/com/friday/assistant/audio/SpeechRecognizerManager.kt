@@ -21,6 +21,7 @@ class SpeechRecognizerManager(
         fun onSpeechVolumeChanged(rmsdB: Float)
         fun onError(errorMsg: String)
         fun onStateChanged(state: State)
+        fun onPartialTranscript(text: String)
     }
 
     enum class State {
@@ -222,6 +223,10 @@ class SpeechRecognizerManager(
                     // Cancel current listening session to transition
                     speechRecognizer?.cancel()
                     callback.onWakeWordDetected()
+                }
+            } else if (currentState == State.LISTENING_FOR_COMMAND) {
+                if (partialText.isNotEmpty()) {
+                    callback.onPartialTranscript(partialText)
                 }
             }
         }

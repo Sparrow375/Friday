@@ -19,15 +19,28 @@ class SpeakerVerifier private constructor(private val context: Context) {
     }
 
     private fun initModel() {
-        val possiblePaths = listOf(
-            File(context.filesDir, "speaker_verification.onnx"),
-            File(context.getExternalFilesDir(null), "speaker_verification.onnx"),
-            File("/sdcard/Android/data/com.friday.assistant/files/speaker_verification.onnx")
-        )
-        val existingModel = possiblePaths.firstOrNull { it.exists() && it.isFile }
+        val prefs = context.getSharedPreferences("friday_prefs", Context.MODE_PRIVATE)
+        val selectedPath = prefs.getString("selected_speaker_path", null)
+        var existingModel: File? = null
+        
+        if (selectedPath != null) {
+            val file = File(selectedPath)
+            if (file.exists() && file.isFile) {
+                existingModel = file
+            }
+        }
         
         if (existingModel == null) {
-            Log.w(TAG, "Speaker verification ONNX model file does not exist. Searched: ${possiblePaths.joinToString { it.absolutePath }}")
+            val possiblePaths = listOf(
+                File(context.filesDir, "speaker_verification.onnx"),
+                File(context.getExternalFilesDir(null), "speaker_verification.onnx"),
+                File("/sdcard/Android/data/com.friday.assistant/files/speaker_verification.onnx")
+            )
+            existingModel = possiblePaths.firstOrNull { it.exists() && it.isFile }
+        }
+        
+        if (existingModel == null) {
+            Log.w(TAG, "Speaker verification ONNX model file does not exist.")
             return
         }
         
@@ -128,11 +141,16 @@ class SpeakerVerifier private constructor(private val context: Context) {
         @Volatile
         private var INSTANCE: SpeakerVerifier? = null
 
-        fun getInstance(context: Context): SpeakerVerifier {
-            return INSTANCE ?: synchronized(this) {
-                val instance = SpeakerVerifier(context)
-                INSTANCE = instance
-                instance
+        fun getInstance(context: Context): SpeakerVerifier? {
+            return try {
+                INSTANCE ?: synchronized(this) {
+                    val instance = SpeakerVerifier(context)
+                    INSTANCE = instance
+                    instance
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to initialize SpeakerVerifier (JNI loading / model error)", t)
+                null
             }
         }
     }

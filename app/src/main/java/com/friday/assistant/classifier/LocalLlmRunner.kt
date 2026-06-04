@@ -20,20 +20,33 @@ class LocalLlmRunner private constructor(private val context: Context) {
      * Scans typical storage paths for a local LLM model file (.bin or .task) and initializes MediaPipe.
      */
     private fun findAndLoadModel() {
-        val possiblePaths = listOf(
-            File(context.filesDir, "gemma-2b-it.bin"),
-            File(context.filesDir, "model.bin"),
-            File(context.getExternalFilesDir(null), "gemma-2b-it.bin"),
-            File(context.getExternalFilesDir(null), "gemma.bin"),
-            File(context.getExternalFilesDir(null), "llama-3.2-1b.bin"),
-            File(context.getExternalFilesDir(null), "llama-3.2-3b.bin"),
-            File("/sdcard/Android/data/com.friday.assistant/files/gemma.bin")
-        )
-
-        val existingModel = possiblePaths.firstOrNull { it.exists() && it.isFile }
+        val prefs = context.getSharedPreferences("friday_prefs", Context.MODE_PRIVATE)
+        val selectedPath = prefs.getString("selected_llm_path", null)
+        var existingModel: File? = null
+        
+        if (selectedPath != null) {
+            val file = File(selectedPath)
+            if (file.exists() && file.isFile) {
+                existingModel = file
+            }
+        }
         
         if (existingModel == null) {
-            Log.w(TAG, "No local LLM model file found. Searched: ${possiblePaths.joinToString { it.absolutePath }}")
+            val possiblePaths = listOf(
+                File(context.filesDir, "gemma-2b-it.bin"),
+                File(context.filesDir, "gemma.bin"),
+                File(context.filesDir, "model.bin"),
+                File(context.getExternalFilesDir(null), "gemma-2b-it.bin"),
+                File(context.getExternalFilesDir(null), "gemma.bin"),
+                File(context.getExternalFilesDir(null), "llama-3.2-1b.bin"),
+                File(context.getExternalFilesDir(null), "llama-3.2-3b.bin"),
+                File("/sdcard/Android/data/com.friday.assistant/files/gemma.bin")
+            )
+            existingModel = possiblePaths.firstOrNull { it.exists() && it.isFile }
+        }
+        
+        if (existingModel == null) {
+            Log.w(TAG, "No local LLM model file found.")
             return
         }
 
@@ -132,11 +145,16 @@ class LocalLlmRunner private constructor(private val context: Context) {
         @Volatile
         private var INSTANCE: LocalLlmRunner? = null
 
-        fun getInstance(context: Context): LocalLlmRunner {
-            return INSTANCE ?: synchronized(this) {
-                val instance = LocalLlmRunner(context.applicationContext)
-                INSTANCE = instance
-                instance
+        fun getInstance(context: Context): LocalLlmRunner? {
+            return try {
+                INSTANCE ?: synchronized(this) {
+                    val instance = LocalLlmRunner(context.applicationContext)
+                    INSTANCE = instance
+                    instance
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to initialize LocalLlmRunner (JNI linkage / model error)", t)
+                null
             }
         }
     }

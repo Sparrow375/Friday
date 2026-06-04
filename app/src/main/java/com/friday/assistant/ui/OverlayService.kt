@@ -98,7 +98,15 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
-        startForeground(NOTIFICATION_ID, createNotification())
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                createNotification(),
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, createNotification())
+        }
         setupFloatingViews()
         
         // Start waiting for the wake word
@@ -141,9 +149,8 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         bubbleView = FrameLayout(this)
         val bubbleDrawable = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            colors = intArrayOf(0xFF8E2DE2.toInt(), 0xFF4A00E0.toInt()) // Gradient Purple
-            orientation = GradientDrawable.Orientation.TL_BR
-            setStroke(2, 0xFFFFFFFF.toInt())
+            setColor(0xE615151A.toInt())
+            setStroke(2, 0x88FFFFFF.toInt())
         }
         bubbleView?.background = bubbleDrawable
 
@@ -151,7 +158,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         val indicator = View(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(0x88FFFFFF.toInt())
+                setColor(0xFFFFFFFF.toInt())
             }
         }
         val indicatorParams = FrameLayout.LayoutParams(30, 30, Gravity.CENTER)
@@ -219,41 +226,49 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         // --- 2. Expansible Glassmorphic Panel ---
         panelView = FrameLayout(this).apply {
             visibility = View.GONE
+            background = null // Root view is completely transparent
         }
 
         val panelDrawable = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadii = floatArrayOf(40f, 40f, 40f, 40f, 0f, 0f, 0f, 0f) // Rounded top corners
-            colors = intArrayOf(0xE61E1E24.toInt(), 0xE60D0D11.toInt()) // Sleek dark translucent
-            setStroke(2, 0x33FFFFFF.toInt()) // Subtle glass border
+            cornerRadius = 72f // Beautifully rounded floating card (24dp approx)
+            colors = intArrayOf(0xF20A0A0C.toInt(), 0xF215151A.toInt()) // Semi-translucent obsidian
+            setStroke(2, 0x1EFFFFFF.toInt()) // Subtle silver border
         }
-        panelView?.background = panelDrawable
 
         // Panel Layout
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(40, 40, 40, 40)
+            setPadding(48, 48, 48, 48)
+            background = panelDrawable
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT
-            )
+            ).apply {
+                setMargins(48, 0, 48, 64) // Floating layout margins
+                gravity = Gravity.BOTTOM
+            }
         }
 
         // 1. Status Indicator
         statusText = TextView(this).apply {
             text = "FRIDAY ACTIVE"
-            setTextColor(0xFF00C9FF.toInt())
-            textSize = 12f
-            setTypeface(null, Typeface.BOLD)
+            setTextColor(0xFF8E909A.toInt())
+            textSize = 10f
+            setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL))
             gravity = Gravity.CENTER_HORIZONTAL
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                letterSpacing = 0.2f
+            }
         }
         container.addView(statusText)
 
-        // 2. Transcript Box
+        // 2. Transcript Box (User STT)
         transcriptText = TextView(this).apply {
             text = "Press Friday to speak..."
-            setTextColor(0xFFE2E2E2.toInt())
-            textSize = 16f
+            setTextColor(0xFF8E909A.toInt()) // Silver text
+            textSize = 14f
+            setTypeface(null, Typeface.ITALIC)
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(0, 20, 0, 10)
         }
@@ -263,18 +278,19 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         visualizerView = AudioVisualizerView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                150
+                120
             ).apply {
-                setMargins(0, 10, 0, 10)
+                setMargins(0, 8, 0, 8)
             }
         }
         container.addView(visualizerView)
 
-        // 4. Response Box
+        // 4. Response Box (Assistant TTS)
         responseText = TextView(this).apply {
             text = ""
-            setTextColor(0xFFA5D6A7.toInt()) // Soft green response
-            textSize = 15f
+            setTextColor(0xFFFFFFFF.toInt()) // High contrast white
+            textSize = 16f
+            setTypeface(null, Typeface.BOLD)
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(0, 10, 0, 10)
         }
@@ -308,8 +324,8 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         isPanelExpanded = true
         panelView?.visibility = View.VISIBLE
         statusText?.text = "LISTENING..."
-        statusText?.setTextColor(0xFFE2DE2.toInt())
-        transcriptText?.text = "I'm listening, Avaneesh..."
+        statusText?.setTextColor(0xFFE4E4E9.toInt())
+        transcriptText?.text = "Listening..."
         responseText?.text = ""
         
         speechManager.startActiveCommandListening()
@@ -324,9 +340,9 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
     private fun speak(text: String) {
         serviceScope.launch {
-            responseText?.text = text
+            responseText?.text = "Friday: \"$text\""
             statusText?.text = "SPEAKING..."
-            statusText?.setTextColor(0xFF92FE9D.toInt())
+            statusText?.setTextColor(0xFFFFFFFF.toInt())
             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "FridayTTS")
             
             // Save to database
@@ -360,7 +376,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                     return@launch
                 }
 
-                transcriptText?.text = "\"$text\""
+                transcriptText?.text = "You: \"$text\""
                 
                 // Save user query to DB
                 val dao = (application as FridayApplication).fridayDao
@@ -387,7 +403,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                 }
 
                 statusText?.text = "PROCESSING..."
-                statusText?.setTextColor(0xFF00C9FF.toInt())
+                statusText?.setTextColor(0xFF8E909A.toInt())
 
                 // 2. Classify intent
                 val command = commandClassifier.classify(text)
@@ -432,7 +448,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                     IntentType.FALLBACK_TO_LLM -> {
                         // Query the Local LLM (Offline Gemma/Llama)
                         statusText?.text = "CONSULTING NEURAL CORE..."
-                        statusText?.setTextColor(0xFF8E2DE2.toInt())
+                        statusText?.setTextColor(0xFFE4E4E9.toInt())
                         
                         // Pull recent conversations flow list
                         val recentConversations = dao.getRecentConversations(6).first()
@@ -469,6 +485,12 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
         override fun onStateChanged(state: SpeechRecognizerManager.State) {
             Log.d(TAG, "Audio engine state: $state")
+        }
+
+        override fun onPartialTranscript(text: String) {
+            serviceScope.launch(Dispatchers.Main) {
+                transcriptText?.text = "You: \"$text\""
+            }
         }
     }
 

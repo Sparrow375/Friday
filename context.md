@@ -34,13 +34,12 @@ The application is structured under the package namespace `com.friday.assistant`
    - `RoutineExecutor.kt`: Parses a list of routine actions (JSON) and triggers them sequentially.
 
 5. **`ui/`**:
-   - `MainActivity.kt`: Jetpack Compose dashboard UI for permissions checking, voice profile training (enrolling voice sample), routines management, and local models configuration diagnostic.
-   - `OverlayService.kt`: Persistent foreground service drawing the floating overlay bubble and translucent bottom sheet.
+   - `MainActivity.kt`: Jetpack Compose dashboard UI for permissions checking, background voice profile training (enrolling voice sample on Dispatchers.IO), routines management, local models configuration diagnostic, and manual model files import picker with dynamic progress loading.
+   - `OverlayService.kt`: Persistent foreground service drawing the floating overlay bubble and floating rounded obsidian card layout with monochromatic theme, real-time STT/TTS transcript logs, and sine wave visualizer.
    - `AudioVisualizerView.kt`: Custom view drawing multiple fluid, animated sine waves responsive to the real-time RMS audio input.
 
 ## Verification & Deployment Flow
 1. Code changes are pushed to GitHub.
 2. The Action compiles the project using `./gradlew assembleDebug` in a clean Ubuntu VM.
 3. Download the built APK from the run's **Artifacts** tab.
-4. Copy `gemma.bin` and `speaker_verification.onnx` into `/sdcard/Android/data/com.friday.assistant/files/` on the device.
-5. Install and launch the app, grant permissions, train voice profile, and toggle Friday service.
+4. Install and launch the app, grant permissions, manually import LLM and speaker model files through the UI, train voice profile, and toggle Friday service.

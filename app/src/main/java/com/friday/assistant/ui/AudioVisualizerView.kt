@@ -29,9 +29,9 @@ class AudioVisualizerView @JvmOverloads constructor(
     
     // Wave parameters: frequency, amplitude scale, stroke width, color
     private val waveConfigs = listOf(
-        WaveConfig(1.0f, 1.0f, 6f, Color.parseColor("#4A00E0"), Color.parseColor("#8E2DE2"), 255), // Main purple/blue
-        WaveConfig(1.5f, 0.6f, 4f, Color.parseColor("#00C9FF"), Color.parseColor("#92FE9D"), 180), // Cyan/green accent
-        WaveConfig(0.8f, 0.4f, 3f, Color.parseColor("#FF416C"), Color.parseColor("#FF4B2B"), 120)  // Pink/orange accent
+        WaveConfig(1.0f, 1.0f, 5f, Color.parseColor("#A8A9AD"), Color.parseColor("#FFFFFF"), 255), // Main titanium white
+        WaveConfig(1.5f, 0.6f, 3.5f, Color.parseColor("#5A5B60"), Color.parseColor("#E2E2E7"), 180), // Accent grey
+        WaveConfig(0.8f, 0.4f, 2.5f, Color.parseColor("#22FFFFFF"), Color.parseColor("#55A8A9AD"), 120)  // Faded thin back-wave
     )
 
     private class WaveConfig(
