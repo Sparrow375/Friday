@@ -34,7 +34,7 @@ The application is structured under the package namespace `com.friday.assistant`
    - `RoutineExecutor.kt`: Parses a list of routine actions (JSON) and triggers them sequentially.
 
 5. **`ui/`**:
-   - `MainActivity.kt`: Jetpack Compose dashboard UI for permissions checking, background voice profile training (enrolling voice sample on Dispatchers.IO), routines management, local models configuration diagnostic, and manual model files import picker with dynamic progress loading.
+   - `MainActivity.kt`: Jetpack Compose dashboard UI for permissions checking, background voice profile training (enrolling voice sample on Dispatchers.IO), routines management, local models configuration diagnostic, manual model files import picker with dynamic progress loading, and in-app automatic models background downloader.
    - `OverlayService.kt`: Persistent foreground service drawing the floating overlay bubble and floating rounded obsidian card layout with monochromatic theme, real-time STT/TTS transcript logs, and sine wave visualizer.
    - `AudioVisualizerView.kt`: Custom view drawing multiple fluid, animated sine waves responsive to the real-time RMS audio input.
 
