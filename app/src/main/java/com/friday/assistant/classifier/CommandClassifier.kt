@@ -27,6 +27,46 @@ data class LocalCommand(
 
 class CommandClassifier {
 
+    private fun extractSearchQuery(text: String, platform: String): String {
+        val cleanText = text.trim()
+
+        // Match: "search <query> on/in <platform>" (platform at the end)
+        val pattern1 = Pattern.compile("(?i)^search\\s+(.+?)\\s+(?:on|in)\\s+$platform$", Pattern.CASE_INSENSITIVE)
+        val matcher1 = pattern1.matcher(cleanText)
+        if (matcher1.matches()) {
+            return matcher1.group(1)?.trim() ?: ""
+        }
+
+        // Match: "search <platform> for/about <query>" (platform in the middle)
+        val pattern2 = Pattern.compile("(?i)^search\\s+$platform\\s+(?:for|about)?\\s+(.+)$", Pattern.CASE_INSENSITIVE)
+        val matcher2 = pattern2.matcher(cleanText)
+        if (matcher2.matches()) {
+            return matcher2.group(1)?.trim() ?: ""
+        }
+
+        // Match: "open <platform> and search (for) <query>"
+        val pattern3 = Pattern.compile("(?i)^open\\s+$platform\\s+and\\s+search\\s+(?:for\\s+)?(.+)$", Pattern.CASE_INSENSITIVE)
+        val matcher3 = pattern3.matcher(cleanText)
+        if (matcher3.matches()) {
+            return matcher3.group(1)?.trim() ?: ""
+        }
+
+        // Match: "<platform> search <query>"
+        if (cleanText.lowercase().startsWith("$platform search ")) {
+            return cleanText.substring(platform.length + 8).trim()
+        }
+
+        // Fallback: Remove platform name and search keywords from anywhere
+        var temp = cleanText
+        // Remove "search <platform> for" or similar
+        temp = temp.replace(Regex("(?i)\\bsearch\\s+$platform\\s+(for|about)?\\b"), "")
+        // Remove "on/in <platform>" at the end
+        temp = temp.replace(Regex("(?i)\\b(on|in)\\s+$platform$"), "")
+        // Remove leading "search "
+        temp = temp.replace(Regex("(?i)^search\\s+"), "")
+        return temp.trim()
+    }
+
     private val appNameMap = mapOf(
         "reddit" to "com.reddit.frontpage",
         "discord" to "com.discord",
@@ -174,35 +214,44 @@ class CommandClassifier {
             return LocalCommand(IntentType.DEEP_LINK_APP, mapOf("app" to "whatsapp", "name" to targetName))
         }
 
-        // C. Brave (YouTube / Web search): "search brave for X" or "search youtube on brave for X"
-        if (cleanText.contains("brave")) {
-            val query = text.replace(Regex("(?i).*brave\\s+(for|about|to search)?\\s*"), "").trim()
-            return LocalCommand(IntentType.DEEP_LINK_APP, mapOf("app" to "brave", "query" to query))
-        }
-
-        // D. Reddit: "search reddit for X" or "open reddit and search X"
+        // C. Reddit: "search reddit for X" or "search X on reddit"
         if (cleanText.contains("reddit")) {
-            val query = text.replace(Regex("(?i).*reddit\\s+(for|about|to search)?\\s*"), "").trim()
+            val query = extractSearchQuery(text, "reddit")
             return LocalCommand(IntentType.DEEP_LINK_APP, mapOf("app" to "reddit", "query" to query))
         }
 
-        // E. Discord: "open discord" or "chat on discord"
-        if (cleanText.contains("discord") && cleanText.contains("open")) {
+        // D. YouTube: "search youtube for X" or "search X on youtube"
+        if (cleanText.contains("youtube")) {
+            val query = extractSearchQuery(text, "youtube")
+            return LocalCommand(IntentType.DEEP_LINK_APP, mapOf("app" to "youtube", "query" to query))
+        }
+
+        // E. Brave: "search brave for X" or "search X on brave"
+        if (cleanText.contains("brave")) {
+            val query = extractSearchQuery(text, "brave")
+            return LocalCommand(IntentType.DEEP_LINK_APP, mapOf("app" to "brave", "query" to query))
+        }
+
+        // F. Discord: "open discord" or "chat on discord"
+        if (cleanText.contains("discord") && (cleanText.contains("open") || cleanText.contains("launch"))) {
             return LocalCommand(IntentType.LAUNCH_APP, mapOf("packageName" to appNameMap["discord"]!!, "appName" to "discord"))
         }
 
-        // F. Instagram: "open instagram"
-        if (cleanText.contains("instagram") || cleanText.contains("insta")) {
-            if (cleanText.contains("open") || cleanText.contains("launch")) {
-                return LocalCommand(IntentType.LAUNCH_APP, mapOf("packageName" to appNameMap["instagram"]!!, "appName" to "instagram"))
-            }
+        // G. Instagram: "open instagram"
+        if ((cleanText.contains("instagram") || cleanText.contains("insta")) && (cleanText.contains("open") || cleanText.contains("launch"))) {
+            return LocalCommand(IntentType.LAUNCH_APP, mapOf("packageName" to appNameMap["instagram"]!!, "appName" to "instagram"))
         }
 
-        // G. Chrome (X / Twitter): "search x for X" or "search twitter for X"
-        if (cleanText.contains("search x") || cleanText.contains("twitter")) {
-            val query = text.replace(Regex("(?i).*search\\s+x\\s+(for)?\\s*"), "")
-                .replace(Regex("(?i).*twitter\\s+(for)?\\s*"), "").trim()
+        // H. Chrome (X / Twitter): "search twitter for X" or "search X on twitter" or "search x for X"
+        if (cleanText.contains("twitter") || cleanText.contains("search x ") || cleanText.contains("search on x ") || cleanText.endsWith(" on x")) {
+            val query = extractSearchQuery(text, "twitter").ifEmpty { extractSearchQuery(text, "x") }
             return LocalCommand(IntentType.DEEP_LINK_APP, mapOf("app" to "chrome_x", "query" to query))
+        }
+
+        // I. General Google Search: "search X" or "search on google for X"
+        if (cleanText.contains("google") || cleanText.startsWith("search ")) {
+            val query = extractSearchQuery(text, "google")
+            return LocalCommand(IntentType.DEEP_LINK_APP, mapOf("app" to "google", "query" to query))
         }
 
         // H. Phone Calls: "call X" or "dial X" or "phone X"

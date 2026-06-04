@@ -15,7 +15,23 @@ class SpeakerVerifier private constructor(private val context: Context) {
     private var ortSession: OrtSession? = null
 
     init {
-        initModel()
+        kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            initModel()
+        }
+    }
+
+    fun reloadModel() {
+        kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                ortSession?.close()
+                ortSession = null
+                ortEnv?.close()
+                ortEnv = null
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing ONNX resources", e)
+            }
+            initModel()
+        }
     }
 
     private fun initModel() {

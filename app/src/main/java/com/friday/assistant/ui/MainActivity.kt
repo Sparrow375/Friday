@@ -118,9 +118,7 @@ class MainActivity : ComponentActivity() {
                         prefs.edit().putString("selected_llm_path", file.absolutePath).apply()
                         val r = LocalLlmRunner.getInstance(this@MainActivity)
                         r?.reloadModel()
-                        llmLoaded = r?.isModelLoaded() ?: false
-                        llmName = r?.getLoadedModelName() ?: "No model loaded"
-                        Toast.makeText(this@MainActivity, "LLM Model imported and loaded!", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, "LLM Model imported, loading in background...", Toast.LENGTH_LONG).show()
                     } else {
                         Toast.makeText(this@MainActivity, "Failed to import LLM model file.", Toast.LENGTH_LONG).show()
                     }
@@ -143,9 +141,10 @@ class MainActivity : ComponentActivity() {
                     isImportingSpeaker = false
                     if (file != null) {
                         prefs.edit().putString("selected_speaker_path", file.absolutePath).apply()
-                        speakerVerifier = SpeakerVerifier.getInstance(this@MainActivity)
-                        onnxLoaded = speakerVerifier?.isModelLoaded() ?: false
-                        Toast.makeText(this@MainActivity, "Speaker model imported and loaded!", Toast.LENGTH_LONG).show()
+                        val s = SpeakerVerifier.getInstance(this@MainActivity)
+                        s?.reloadModel()
+                        speakerVerifier = s
+                        Toast.makeText(this@MainActivity, "Speaker model imported, loading in background...", Toast.LENGTH_LONG).show()
                     } else {
                         Toast.makeText(this@MainActivity, "Failed to import Speaker model file.", Toast.LENGTH_LONG).show()
                     }
@@ -250,11 +249,24 @@ class MainActivity : ComponentActivity() {
             Log.e(TAG, "Failed to initialize SpeakerVerifier (ONNX Runtime JNI linkage issue)", t)
         }
 
-        // Initialize model load states on start
+        // Initialize model load states on start asynchronously
         val r = LocalLlmRunner.getInstance(this)
-        llmLoaded = r?.isModelLoaded() ?: false
-        llmName = r?.getLoadedModelName() ?: "No model loaded"
-        onnxLoaded = speakerVerifier?.isModelLoaded() ?: false
+        lifecycleScope.launch {
+            while (true) {
+                val runner = LocalLlmRunner.getInstance(this@MainActivity)
+                val s = SpeakerVerifier.getInstance(this@MainActivity)
+                val isLlmLoaded = runner?.isModelLoaded() ?: false
+                val isSpeakerLoaded = s?.isModelLoaded() ?: false
+                if (isLlmLoaded != llmLoaded) {
+                    llmLoaded = isLlmLoaded
+                    llmName = runner?.getLoadedModelName() ?: "No model loaded"
+                }
+                if (isSpeakerLoaded != onnxLoaded) {
+                    onnxLoaded = isSpeakerLoaded
+                }
+                delay(1000)
+            }
+        }
 
         // Seed default routines if none exist
         seedDefaultRoutines()
@@ -661,9 +673,7 @@ class MainActivity : ComponentActivity() {
                                                 prefs.edit().putString("selected_llm_path", file.absolutePath).apply()
                                                 val r = LocalLlmRunner.getInstance(context)
                                                 r?.reloadModel()
-                                                llmLoaded = r?.isModelLoaded() ?: false
-                                                llmName = r?.getLoadedModelName() ?: "No model loaded"
-                                                Toast.makeText(context, "LLM Model downloaded and loaded!", Toast.LENGTH_LONG).show()
+                                                Toast.makeText(context, "LLM Model downloaded, loading in background...", Toast.LENGTH_LONG).show()
                                             } else {
                                                 Toast.makeText(context, "Failed to download LLM model.", Toast.LENGTH_LONG).show()
                                             }
@@ -692,9 +702,10 @@ class MainActivity : ComponentActivity() {
                                         }) { file ->
                                             if (file != null) {
                                                 prefs.edit().putString("selected_speaker_path", file.absolutePath).apply()
-                                                speakerVerifier = SpeakerVerifier.getInstance(context)
-                                                onnxLoaded = speakerVerifier?.isModelLoaded() ?: false
-                                                Toast.makeText(context, "Speaker Model downloaded and loaded!", Toast.LENGTH_LONG).show()
+                                                val s = SpeakerVerifier.getInstance(context)
+                                                s?.reloadModel()
+                                                speakerVerifier = s
+                                                Toast.makeText(context, "Speaker Model downloaded, loading in background...", Toast.LENGTH_LONG).show()
                                             } else {
                                                 Toast.makeText(context, "Failed to download Speaker model.", Toast.LENGTH_LONG).show()
                                             }
@@ -740,15 +751,10 @@ class MainActivity : ComponentActivity() {
                                 try {
                                     val r = LocalLlmRunner.getInstance(context)
                                     r?.reloadModel()
-                                    speakerVerifier = SpeakerVerifier.getInstance(context)
-                                    val isLlmActive = r?.isModelLoaded() ?: false
-                                    val isOnnxActive = speakerVerifier?.isModelLoaded() ?: false
-                                    llmLoaded = isLlmActive
-                                    llmName = r?.getLoadedModelName() ?: "Missing or JNI Error"
-                                    onnxLoaded = isOnnxActive
-                                    
-                                    val msg = "Sync Complete. LLM: ${if (isLlmActive) "Loaded" else "Not Found"}, ONNX: ${if (isOnnxActive) "Loaded" else "Not Found"}"
-                                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                    val s = SpeakerVerifier.getInstance(context)
+                                    s?.reloadModel()
+                                    speakerVerifier = s
+                                    Toast.makeText(context, "Syncing started in background...", Toast.LENGTH_LONG).show()
                                 } catch (t: Throwable) {
                                     Toast.makeText(context, "Error syncing: ${t.localizedMessage}", Toast.LENGTH_LONG).show()
                                 }

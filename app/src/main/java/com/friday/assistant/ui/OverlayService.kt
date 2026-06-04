@@ -80,16 +80,18 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
         // Init System & Voice API
         tts = TextToSpeech(this, this)
-        try {
-            speakerVerifier = SpeakerVerifier.getInstance(this)
-        } catch (t: Throwable) {
-            Log.e(TAG, "Failed to initialize SpeakerVerifier inside service", t)
-        }
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                speakerVerifier = SpeakerVerifier.getInstance(this@OverlayService)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to initialize SpeakerVerifier inside service", t)
+            }
 
-        try {
-            localLlmRunner = LocalLlmRunner.getInstance(this)
-        } catch (t: Throwable) {
-            Log.e(TAG, "Failed to initialize LocalLlmRunner inside service", t)
+            try {
+                localLlmRunner = LocalLlmRunner.getInstance(this@OverlayService)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to initialize LocalLlmRunner inside service", t)
+            }
         }
 
         systemExecutor = SystemExecutor(this)
@@ -539,7 +541,9 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                     statusText?.setTextColor(0xFF92FE9D.toInt())
                     routineExecutor.executeRoutine(routine.name, routine.commandsJson)
                 } else {
-                    val command = commandClassifier.classify(text)
+                    val command = withContext(Dispatchers.Default) {
+                        commandClassifier.classify(text)
+                    }
                     executeClassifiedCommand(command, text)
                 }
                 
@@ -601,7 +605,9 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                 statusText?.setTextColor(0xFF92FE9D.toInt())
                 routineExecutor.executeRoutine(routine.name, routine.commandsJson)
             } else {
-                val command = commandClassifier.classify(cleanText)
+                val command = withContext(Dispatchers.Default) {
+                    commandClassifier.classify(cleanText)
+                }
                 executeClassifiedCommand(command, cleanText)
             }
             
@@ -672,11 +678,11 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun verifyVoice(pcmData: ShortArray): Float {
-        val enrolled = enrolledEmbedding ?: return 1.0f // Bypass check if no voice enrolled
-        val verifier = speakerVerifier ?: return 1.0f // Bypass check if JNI initialization failed
-        if (pcmData.isEmpty()) return 0f
-        return verifier.verifySpeaker(pcmData, enrolled)
+    private suspend fun verifyVoice(pcmData: ShortArray): Float = withContext(Dispatchers.Default) {
+        val enrolled = enrolledEmbedding ?: return@withContext 1.0f // Bypass check if no voice enrolled
+        val verifier = speakerVerifier ?: return@withContext 1.0f // Bypass check if JNI initialization failed
+        if (pcmData.isEmpty()) return@withContext 0f
+        verifier.verifySpeaker(pcmData, enrolled)
     }
 
     // --- TextToSpeech OnInit ---

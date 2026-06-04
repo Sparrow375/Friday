@@ -132,10 +132,13 @@ class SpeechRecognizerManager(
         currentState = State.LISTENING_FOR_WAKE_WORD
         callback.onStateChanged(currentState)
 
-        // Always recreate the SpeechRecognizer to ensure fresh state and bypass cancellation errors
-        speechRecognizer?.destroy()
-        speechRecognizer = null
         initializeRecognizer()
+
+        try {
+            speechRecognizer?.cancel()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error cancelling SpeechRecognizer", e)
+        }
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -144,10 +147,12 @@ class SpeechRecognizerManager(
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         }
 
-        try {
-            speechRecognizer?.startListening(intent)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error starting wake word listening", e)
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            try {
+                speechRecognizer?.startListening(intent)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error starting wake word listening", e)
+            }
         }
     }
 
@@ -159,10 +164,13 @@ class SpeechRecognizerManager(
             shortAudioBuffer.clear()
         }
 
-        // Always recreate the SpeechRecognizer to ensure fresh state and bypass cancellation errors
-        speechRecognizer?.destroy()
-        speechRecognizer = null
         initializeRecognizer()
+
+        try {
+            speechRecognizer?.cancel()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error cancelling SpeechRecognizer", e)
+        }
 
         if (recordAudio) {
             // Start recording raw audio for speaker verification
@@ -176,12 +184,14 @@ class SpeechRecognizerManager(
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         }
 
-        try {
-            speechRecognizer?.startListening(intent)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error starting command listening", e)
-            voiceRecorder?.stopRecording()
-            startWakeWordListening()
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            try {
+                speechRecognizer?.startListening(intent)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error starting command listening", e)
+                voiceRecorder?.stopRecording()
+                startWakeWordListening()
+            }
         }
     }
 
@@ -273,20 +283,28 @@ class SpeechRecognizerManager(
             if (currentState == State.LISTENING_FOR_WAKE_WORD) {
                 if (text.contains("friday", ignoreCase = true)) {
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
-                        speechRecognizer?.destroy()
-                        speechRecognizer = null
+                        try {
+                            speechRecognizer?.cancel()
+                        } catch (e: Exception) {}
                         callback.onWakeWordDetected()
                     }
                 } else {
-                    startWakeWordListening()
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        if (currentState == State.LISTENING_FOR_WAKE_WORD) {
+                            startWakeWordListening()
+                        }
+                    }, 300)
                 }
             } else if (currentState == State.LISTENING_FOR_COMMAND) {
                 val audioData = synchronized(shortAudioBuffer) {
                     shortAudioBuffer.toShortArray()
                 }
-                speechRecognizer?.destroy()
-                speechRecognizer = null
-                callback.onCommandRecognized(text, audioData)
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    try {
+                        speechRecognizer?.cancel()
+                    } catch (e: Exception) {}
+                    callback.onCommandRecognized(text, audioData)
+                }
             }
         }
 
@@ -297,8 +315,9 @@ class SpeechRecognizerManager(
             if (currentState == State.LISTENING_FOR_WAKE_WORD) {
                 if (partialText.contains("friday", ignoreCase = true)) {
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
-                        speechRecognizer?.destroy()
-                        speechRecognizer = null
+                        try {
+                            speechRecognizer?.cancel()
+                        } catch (e: Exception) {}
                         callback.onWakeWordDetected()
                     }
                 }

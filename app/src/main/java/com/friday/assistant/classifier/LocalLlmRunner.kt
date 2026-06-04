@@ -17,7 +17,9 @@ class LocalLlmRunner private constructor(private val context: Context) {
     private var loadedModelPath: String? = null
 
     init {
-        findAndLoadModel()
+        kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            findAndLoadModel()
+        }
     }
 
     /**
@@ -84,9 +86,15 @@ class LocalLlmRunner private constructor(private val context: Context) {
      * Triggers a model reload (useful if the user copies a model file later).
      */
     fun reloadModel() {
-        llmInference?.close()
-        llmInference = null
-        findAndLoadModel()
+        kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                llmInference?.close()
+                llmInference = null
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing local LLM", e)
+            }
+            findAndLoadModel()
+        }
     }
 
     /**

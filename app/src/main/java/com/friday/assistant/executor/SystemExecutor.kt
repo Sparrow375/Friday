@@ -258,6 +258,34 @@ class SystemExecutor(private val context: Context) {
         val name = params["name"] ?: ""
 
         when (app) {
+            "youtube" -> {
+                return try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("vnd.youtube://results?search_query=${URLEncoder.encode(query, "UTF-8")}")).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                    "Searching YouTube for $query."
+                } catch (e: Exception) {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=${URLEncoder.encode(query, "UTF-8")}")).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                    "Opening YouTube search for $query."
+                }
+            }
+
+            "google" -> {
+                return try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=${URLEncoder.encode(query, "UTF-8")}")).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                    "Searching Google for $query."
+                } catch (e: Exception) {
+                    "Failed to search Google."
+                }
+            }
+
             "spotify" -> {
                 return try {
                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:${URLEncoder.encode(query, "UTF-8")}")).apply {
@@ -395,14 +423,14 @@ class SystemExecutor(private val context: Context) {
         }
     }
 
-    fun executeCall(params: Map<String, String>): String {
+    suspend fun executeCall(params: Map<String, String>): String = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         val contactName = params["name"] ?: ""
         if (contactName.isEmpty()) {
             val dialIntent = Intent(Intent.ACTION_DIAL).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(dialIntent)
-            return "Opening your phone dialer."
+            return@withContext "Opening your phone dialer."
         }
 
         var phoneNumber: String? = null
@@ -434,16 +462,16 @@ class SystemExecutor(private val context: Context) {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(callIntent)
-                return "Calling $contactName."
+                "Calling $contactName."
             } else {
                 val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phoneNumber")).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(dialIntent)
-                return "Opening dialer for $contactName."
+                "Opening dialer for $contactName."
             }
         } else {
-            return try {
+            try {
                 val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${URLEncoder.encode(contactName, "UTF-8")}")).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
