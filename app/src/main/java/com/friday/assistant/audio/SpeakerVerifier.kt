@@ -31,6 +31,25 @@ class SpeakerVerifier private constructor(private val context: Context) {
         }
         
         if (existingModel == null) {
+            val targetFile = File(context.filesDir, "speaker_verification.onnx")
+            if (!targetFile.exists() || targetFile.length() == 0L) {
+                try {
+                    context.assets.open("speaker_verification.onnx").use { input ->
+                        targetFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    Log.i(TAG, "Copied speaker_verification.onnx from assets to filesDir")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to copy speaker_verification.onnx from assets", e)
+                }
+            }
+            if (targetFile.exists() && targetFile.length() > 0L) {
+                existingModel = targetFile
+            }
+        }
+
+        if (existingModel == null) {
             val possiblePaths = listOf(
                 File(context.filesDir, "speaker_verification.onnx"),
                 File(context.getExternalFilesDir(null), "speaker_verification.onnx"),

@@ -6,6 +6,10 @@ import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.google.gson.Gson
+import java.io.OutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 
 class LocalLlmRunner private constructor(private val context: Context) {
 
@@ -66,7 +70,11 @@ class LocalLlmRunner private constructor(private val context: Context) {
         }
     }
 
-    fun isModelLoaded(): Boolean = llmInference != null
+    fun isModelLoaded(): Boolean {
+        val prefs = context.getSharedPreferences("friday_prefs", Context.MODE_PRIVATE)
+        val serverIp = prefs.getString("pc_server_ip", null)
+        return llmInference != null || !serverIp.isNullOrEmpty()
+    }
 
     fun getLoadedModelName(): String {
         return loadedModelPath?.let { File(it).name } ?: "No model loaded"
@@ -89,8 +97,19 @@ class LocalLlmRunner private constructor(private val context: Context) {
         prompt: String,
         history: List<Pair<String, String>> = emptyList()
     ): String = withContext(Dispatchers.Default) {
+        val prefs = context.getSharedPreferences("friday_prefs", Context.MODE_PRIVATE)
+        val serverIp = prefs.getString("pc_server_ip", null)
+        
+        if (!serverIp.isNullOrEmpty()) {
+            try {
+                return@withContext queryPcServer(serverIp, prompt, history)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to query PC GGUF Server at $serverIp: ${e.localizedMessage}")
+            }
+        }
+
         val inference = llmInference 
-            ?: return@withContext "I'm offline, and my core language model has not been loaded. Please copy the model.bin file to my directory."
+            ?: return@withContext "Offline LLM model not loaded. Basic offline commands still work! Ask me to turn on torch, change volume, or launch apps."
 
         try {
             // Build the conversational prompt with history
@@ -131,6 +150,36 @@ class LocalLlmRunner private constructor(private val context: Context) {
         } catch (t: Throwable) {
             Log.e(TAG, "Error generating response from local LLM", t)
             "Sorry Avaneesh, I encountered a processing error in my neural core: ${t.localizedMessage}"
+        }
+    }
+
+    private fun queryPcServer(ip: String, prompt: String, history: List<Pair<String, String>>): String {
+        val cleanIp = if (ip.startsWith("http://") || ip.startsWith("https://")) ip else "http://$ip"
+        val url = URL("$cleanIp/generate")
+        val connection = url.openConnection() as HttpURLConnection
+        connection.requestMethod = "POST"
+        connection.setRequestProperty("Content-Type", "application/json")
+        connection.doOutput = true
+        connection.connectTimeout = 4000
+        connection.readTimeout = 8000
+        
+        val historyList = history.map { mapOf("speaker" to it.first, "message" to it.second) }
+        val requestBody = Gson().toJson(mapOf(
+            "prompt" to prompt,
+            "history" to historyList
+        ))
+        
+        connection.outputStream.use { os ->
+            os.write(requestBody.toByteArray(Charsets.UTF_8))
+        }
+        
+        val responseCode = connection.responseCode
+        if (responseCode == HttpURLConnection.HTTP_OK) {
+            val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+            val map = Gson().fromJson(responseText, Map::class.java)
+            return (map["response"] as? String) ?: "Empty response from server"
+        } else {
+            throw Exception("Server returned HTTP $responseCode")
         }
     }
 

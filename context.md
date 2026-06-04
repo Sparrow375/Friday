@@ -9,11 +9,13 @@ The project is configured for cloud-compilation via GitHub Actions, bypassing th
 
 The application is structured under the package namespace `com.friday.assistant`:
 
+- **`app/src/main/assets/`**: Contains the pre-bundled `speaker_verification.onnx` model, which is copied to internal storage on first run.
+- **`friday_helper.py`**: A PC-side Python utility using `llama-cpp-python` and `Flask` to serve GGUF language models directly to the Android app over the local network.
 - **`.github/workflows/android-build.yml`**: GitHub Actions build script. Automatically builds the debug APK (`app-debug.apk`) on push and uploads it as a build artifact, creating a GitHub Release.
 - **`app/build.gradle.kts`**: Configurations and dependencies including MediaPipe (tasks-genai for local LLM), Microsoft ONNX Runtime (for speaker embedding verification), SQLite Room database (Room 2.7.2), and Gson. Configured using AGP 9.0 built-in Kotlin support and KSP (Kotlin Symbol Processing) to compile Room stubs.
-- **`app/src/main/AndroidManifest.xml`**: Defines system-wide permissions (overlay, record audio, write settings, location, foreground microphone service, phone calls, contacts access, bluetooth scan/connect) and maps background components.
+- **`app/src/main/AndroidManifest.xml`**: Defines system-wide permissions and maps background components. Cleartext traffic is enabled to allow connection with the local GGUF server.
 
-### Source Code Package Structure (`app/src/main/java/com/friday/assistant/`):
+### Source Code Package Structure (`app/src/main/java/com/friday/assistant//`):
 
 1. **`core/`**:
    - `FridayApplication.kt`: Manages notification channel setup and database singleton.
@@ -22,24 +24,26 @@ The application is structured under the package namespace `com.friday.assistant`
 
 2. **`audio/`**:
    - `VoiceRecorder.kt`: Captures raw PCM audio (16kHz mono 16-bit) from the microphone.
-   - `SpeakerVerifier.kt`: Interfaces with the ONNX runtime model (`speaker_verification.onnx`) to extract 192-dimensional speaker embeddings and compare similarity via cosine similarity.
+   - `SpeakerVerifier.kt`: Interfaces with the ONNX runtime model (`speaker_verification.onnx`) to extract 192-dimensional speaker embeddings and compare similarity via cosine similarity. Copies the model from assets on first run.
    - `SpeechRecognizerManager.kt`: Wraps Android's native SpeechRecognizer and coordinates with `VoiceRecorder` to capture transcripts and raw audio simultaneously.
 
 3. **`classifier/`**:
    - `CommandClassifier.kt`: Implements the Layer 1 (Regex/pattern) and Layer 2 (Keyword and synonyms matching with parameter extraction) offline classification.
-   - `LocalLlmRunner.kt`: Interfaces with MediaPipe GenAI Tasks to run a local quantized model (e.g. Gemma 2B or Llama 3.2) in a coroutine block with custom prompt templates.
+   - `LocalLlmRunner.kt`: Interfaces with MediaPipe GenAI Tasks to run a local quantized model, or queries the PC-side GGUF server if configured.
 
 4. **`executor/`**:
-   - `SystemExecutor.kt`: Direct bindings for system controls (volume, brightness, wifi, bluetooth, DND, flashlight, alarms, calling contacts) and launcher/deep-linking configurations for Reddit, Discord, Instagram, Chrome, Spotify, Brave, and WhatsApp.
+   - `SystemExecutor.kt`: Direct bindings for system controls (volume, brightness, wifi, bluetooth, DND, flashlight, alarms, calling contacts) and launcher/deep-linking configurations.
    - `RoutineExecutor.kt`: Parses a list of routine actions (JSON) and triggers them sequentially.
 
 5. **`ui/`**:
-   - `MainActivity.kt`: Jetpack Compose dashboard UI for permissions checking, background voice profile training (enrolling voice sample on Dispatchers.IO), routines management, local models configuration diagnostic, manual model files import picker with dynamic progress loading, and in-app automatic models background downloader.
-   - `OverlayService.kt`: Persistent foreground service drawing the floating overlay bubble and floating rounded obsidian card layout with monochromatic theme, real-time STT/TTS transcript logs, and sine wave visualizer.
+   - `MainActivity.kt`: Jetpack Compose dashboard UI for configuration, training, routines management, and PC IP input configuration.
+   - `OverlayService.kt`: Persistent foreground service drawing the floating overlay. Features a visualizer, voice feedback, click-outside-to-collapse, and a fully interactive text input card supporting cleartext keyboard queries.
    - `AudioVisualizerView.kt`: Custom view drawing multiple fluid, animated sine waves responsive to the real-time RMS audio input.
 
 ## Verification & Deployment Flow
 1. Code changes are pushed to GitHub.
 2. The Action compiles the project using `./gradlew assembleDebug` in a clean Ubuntu VM.
 3. Download the built APK from the run's **Artifacts** tab.
-4. Install and launch the app, grant permissions, manually import LLM and speaker model files through the UI, train voice profile, and toggle Friday service.
+4. Install and launch the app, grant permissions.
+5. Voice verification is active out-of-the-box (copied from assets).
+6. To use GGUF LLMs: start the PC-side helper (`python friday_helper.py <GGUF_FILE>`), input the printed IP address in the app settings, and enjoy fully functional local network LLM interactions alongside offline regex/routine commands.

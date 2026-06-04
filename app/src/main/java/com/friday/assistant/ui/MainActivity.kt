@@ -693,6 +693,31 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
+                        HorizontalDivider(color = Color(0x1EFFFFFF))
+
+                        var ipInput by remember { mutableStateOf(prefs.getString("pc_server_ip", "") ?: "") }
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("PC GGUF Server Connection", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 13.sp)
+                            Text(
+                                "To run GGUF models directly, start the PC-side python helper and configure the printed IP below.",
+                                fontSize = 10.sp,
+                                color = Color.Gray
+                            )
+                            OutlinedTextField(
+                                value = ipInput,
+                                onValueChange = {
+                                    ipInput = it
+                                    prefs.edit().putString("pc_server_ip", it.trim()).apply()
+                                },
+                                label = { Text("PC IP:Port (e.g. 192.168.1.100:5000)") },
+                                textStyle = LocalTextStyle.current.copy(color = Color.White),
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
                         Button(
                             onClick = {
                                 try {

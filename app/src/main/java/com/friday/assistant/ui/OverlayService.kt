@@ -18,6 +18,9 @@ import android.view.*
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.EditText
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import androidx.core.app.NotificationCompat
 import com.friday.assistant.ui.MainActivity
 import com.friday.assistant.R
@@ -227,6 +230,9 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         panelView = FrameLayout(this).apply {
             visibility = View.GONE
             background = null // Root view is completely transparent
+            setOnClickListener {
+                collapsePanel()
+            }
         }
 
         val panelDrawable = GradientDrawable().apply {
@@ -247,6 +253,9 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
             ).apply {
                 setMargins(48, 0, 48, 64) // Floating layout margins
                 gravity = Gravity.BOTTOM
+            }
+            setOnClickListener {
+                // Consume click
             }
         }
 
@@ -296,6 +305,82 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         }
         container.addView(responseText)
 
+        // 5. Text Input Row
+        val inputRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 24, 0, 0)
+        }
+
+        val inputField = EditText(this).apply {
+            hint = "Type command..."
+            setHintTextColor(0xFF8E909A.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 24f
+                setColor(0xFF222228.toInt())
+                setStroke(1, 0x1AFFFFFF.toInt())
+            }
+            setPadding(36, 16, 36, 16)
+            layoutParams = LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1.0f
+            )
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+            imeOptions = EditorInfo.IME_ACTION_SEND
+            setSingleLine(true)
+        }
+
+        val sendButton = TextView(this).apply {
+            text = "Send"
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            setTypeface(null, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 24f
+                setColor(0xFF3E3E48.toInt())
+            }
+            setPadding(36, 16, 36, 16)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                leftMargin = 16
+            }
+        }
+
+        val executeAction = {
+            val textCmd = inputField.text.toString().trim()
+            if (textCmd.isNotEmpty()) {
+                inputField.setText("")
+                hideKeyboard(inputField)
+                handleTextCommand(textCmd)
+            }
+        }
+
+        inputField.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEND ||
+                actionId == EditorInfo.IME_ACTION_DONE) {
+                executeAction()
+                true
+            } else {
+                false
+            }
+        }
+
+        sendButton.setOnClickListener {
+            executeAction()
+        }
+
+        inputRow.addView(inputField)
+        inputRow.addView(sendButton)
+        container.addView(inputRow)
+
         panelView?.addView(container)
 
         panelParams = WindowManager.LayoutParams(
@@ -328,14 +413,30 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         transcriptText?.text = "Listening..."
         responseText?.text = ""
         
+        val view = panelView ?: return
+        val params = panelParams ?: return
+        params.flags = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        windowManager.updateViewLayout(view, params)
+        
         speechManager.startActiveCommandListening()
     }
 
     private fun collapsePanel() {
         isPanelExpanded = false
         panelView?.visibility = View.GONE
+        
+        val view = panelView ?: return
+        val params = panelParams ?: return
+        params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        windowManager.updateViewLayout(view, params)
+        
         speechManager.stop()
         speechManager.startWakeWordListening()
+    }
+
+    private fun hideKeyboard(view: View) {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.hideSoftInputFromWindow(view.windowToken, 0)
     }
 
     private fun speak(text: String) {
@@ -405,63 +506,16 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                 statusText?.text = "PROCESSING..."
                 statusText?.setTextColor(0xFF8E909A.toInt())
 
-                // 2. Classify intent
-                val command = commandClassifier.classify(text)
-                
-                // 3. Execute
-                when (command.intent) {
-                    IntentType.VOLUME -> speak(systemExecutor.executeVolume(command.parameters))
-                    IntentType.BRIGHTNESS -> speak(systemExecutor.executeBrightness(command.parameters))
-                    IntentType.TORCH -> speak(systemExecutor.executeTorch(command.parameters))
-                    IntentType.WIFI -> speak(systemExecutor.executeWifi(command.parameters))
-                    IntentType.BLUETOOTH -> speak(systemExecutor.executeBluetooth(command.parameters))
-                    IntentType.DND -> speak(systemExecutor.executeDnd(command.parameters))
-                    IntentType.BATTERY -> speak(systemExecutor.executeBattery())
-                    IntentType.CLIPBOARD -> speak(systemExecutor.executeClipboard(command.parameters))
-                    IntentType.LAUNCH_APP -> speak(systemExecutor.executeLaunchApp(command.parameters["packageName"] ?: "", command.parameters["appName"] ?: ""))
-                    IntentType.DEEP_LINK_APP -> speak(systemExecutor.executeDeepLink(command.parameters))
-                    IntentType.ALARM_TIMER -> speak(systemExecutor.executeAlarmTimer(command.parameters))
-                    IntentType.CALL -> speak(systemExecutor.executeCall(command.parameters))
-                    
-                    IntentType.NOTE -> {
-                        val action = command.parameters["action"]
-                        if (action == "create") {
-                            val content = command.parameters["content"] ?: ""
-                            dao.insertNote(com.friday.assistant.core.NoteEntity(content = content, timestamp = System.currentTimeMillis()))
-                            speak("I've saved that to your notes.")
-                        } else {
-                            speak("What would you like me to write down?")
-                            // Let's expand again to record the content
-                        }
-                    }
-
-                    IntentType.ROUTINE -> {
-                        val phrase = text.lowercase().trim()
-                        val routine = dao.getRoutineByPhrase(phrase)
-                        if (routine != null) {
-                            routineExecutor.executeRoutine(routine.name, routine.commandsJson)
-                        } else {
-                            speak("I found a matching routine pattern, but it has not been configured.")
-                        }
-                    }
-
-                    IntentType.FALLBACK_TO_LLM -> {
-                        // Query the Local LLM (Offline Gemma/Llama)
-                        statusText?.text = "CONSULTING NEURAL CORE..."
-                        statusText?.setTextColor(0xFFE4E4E9.toInt())
-                        
-                        // Pull recent conversations flow list
-                        val recentConversations = dao.getRecentConversations(6).first()
-                        val historyPairs = recentConversations.map { Pair(it.speaker, it.message) }
-                        
-                        val runner = localLlmRunner
-                        if (runner != null) {
-                            val llmResponse = runner.generateResponse(text, historyPairs)
-                            speak(llmResponse)
-                        } else {
-                            speak("I'm sorry, my local language model could not be initialized due to a JNI linkage error.")
-                        }
-                    }
+                // 2. Check routines first
+                val phraseNormalized = text.lowercase().trim().replace(Regex("[.,!?]"), "")
+                val routine = dao.getRoutineByPhrase(phraseNormalized)
+                if (routine != null) {
+                    statusText?.text = "RUNNING ROUTINE..."
+                    statusText?.setTextColor(0xFF92FE9D.toInt())
+                    routineExecutor.executeRoutine(routine.name, routine.commandsJson)
+                } else {
+                    val command = commandClassifier.classify(text)
+                    executeClassifiedCommand(command, text)
                 }
                 
                 // Keep the panel expanded briefly then collapse
@@ -490,6 +544,100 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         override fun onPartialTranscript(text: String) {
             serviceScope.launch(Dispatchers.Main) {
                 transcriptText?.text = "You: \"$text\""
+            }
+        }
+    }
+
+    private fun handleTextCommand(text: String) {
+        val cleanText = text.trim()
+        if (cleanText.isEmpty()) return
+        
+        serviceScope.launch(Dispatchers.Main) {
+            transcriptText?.text = "You: \"$cleanText\""
+            
+            // Save user query to DB
+            val dao = (application as FridayApplication).fridayDao
+            dao.insertConversation(
+                ConversationEntity(
+                    timestamp = System.currentTimeMillis(),
+                    speaker = "USER",
+                    message = cleanText,
+                    isOffline = true
+                )
+            )
+
+            statusText?.text = "PROCESSING..."
+            statusText?.setTextColor(0xFF8E909A.toInt())
+
+            val phraseNormalized = cleanText.lowercase().trim().replace(Regex("[.,!?]"), "")
+            val routine = dao.getRoutineByPhrase(phraseNormalized)
+            if (routine != null) {
+                statusText?.text = "RUNNING ROUTINE..."
+                statusText?.setTextColor(0xFF92FE9D.toInt())
+                routineExecutor.executeRoutine(routine.name, routine.commandsJson)
+            } else {
+                val command = commandClassifier.classify(cleanText)
+                executeClassifiedCommand(command, cleanText)
+            }
+            
+            delay(5000)
+            collapsePanel()
+        }
+    }
+
+    private suspend fun executeClassifiedCommand(command: com.friday.assistant.classifier.LocalCommand, text: String) {
+        val dao = (application as FridayApplication).fridayDao
+        when (command.intent) {
+            IntentType.VOLUME -> speak(systemExecutor.executeVolume(command.parameters))
+            IntentType.BRIGHTNESS -> speak(systemExecutor.executeBrightness(command.parameters))
+            IntentType.TORCH -> speak(systemExecutor.executeTorch(command.parameters))
+            IntentType.WIFI -> speak(systemExecutor.executeWifi(command.parameters))
+            IntentType.BLUETOOTH -> speak(systemExecutor.executeBluetooth(command.parameters))
+            IntentType.DND -> speak(systemExecutor.executeDnd(command.parameters))
+            IntentType.BATTERY -> speak(systemExecutor.executeBattery())
+            IntentType.CLIPBOARD -> speak(systemExecutor.executeClipboard(command.parameters))
+            IntentType.LAUNCH_APP -> speak(systemExecutor.executeLaunchApp(command.parameters["packageName"] ?: "", command.parameters["appName"] ?: ""))
+            IntentType.DEEP_LINK_APP -> speak(systemExecutor.executeDeepLink(command.parameters))
+            IntentType.ALARM_TIMER -> speak(systemExecutor.executeAlarmTimer(command.parameters))
+            IntentType.CALL -> speak(systemExecutor.executeCall(command.parameters))
+            
+            IntentType.NOTE -> {
+                val action = command.parameters["action"]
+                if (action == "create") {
+                    val content = command.parameters["content"] ?: ""
+                    dao.insertNote(com.friday.assistant.core.NoteEntity(content = content, timestamp = System.currentTimeMillis()))
+                    speak("I've saved that to your notes.")
+                } else {
+                    speak("What would you like me to write down?")
+                }
+            }
+
+            IntentType.ROUTINE -> {
+                val phrase = text.lowercase().trim()
+                val routine = dao.getRoutineByPhrase(phrase)
+                if (routine != null) {
+                    routineExecutor.executeRoutine(routine.name, routine.commandsJson)
+                } else {
+                    speak("I found a matching routine pattern, but it has not been configured.")
+                }
+            }
+
+            IntentType.FALLBACK_TO_LLM -> {
+                // Query the Local LLM (Offline Gemma/Llama)
+                statusText?.text = "CONSULTING NEURAL CORE..."
+                statusText?.setTextColor(0xFFE4E4E9.toInt())
+                
+                // Pull recent conversations flow list
+                val recentConversations = dao.getRecentConversations(6).first()
+                val historyPairs = recentConversations.map { Pair(it.speaker, it.message) }
+                
+                val runner = localLlmRunner
+                if (runner != null && runner.isModelLoaded()) {
+                    val llmResponse = runner.generateResponse(text, historyPairs)
+                    speak(llmResponse)
+                } else {
+                    speak("Offline language model not loaded. Basic offline commands still work! Ask me to turn on torch, change volume, or launch apps.")
+                }
             }
         }
     }
