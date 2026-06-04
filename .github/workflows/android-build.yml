@@ -30,7 +30,17 @@ jobs:
 
     - name: Build Debug APK
       run: |
-        ./gradlew assembleDebug --stacktrace > gradle_build.log 2>&1 || (cat gradle_build.log | tail -n 250 && curl -F "file=@gradle_build.log" https://file.io && exit 1)
+        ./gradlew assembleDebug --stacktrace > gradle_build.log 2>&1 || (cat gradle_build.log | tail -n 200 && exit 1)
+
+    - name: Commit build log on failure
+      if: failure()
+      run: |
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        cp gradle_build.log build_fail.log
+        git add build_fail.log
+        git commit -m "Add build failure log [skip ci]" || true
+        git push origin main
 
     - name: Upload Debug APK Artifact
       uses: actions/upload-artifact@v4
