@@ -2,6 +2,7 @@ plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
   alias(libs.plugins.kotlin.serialization)
+  id("org.jetbrains.kotlin.android")
   id("org.jetbrains.kotlin.kapt")
 }
 
@@ -40,9 +41,6 @@ android {
     }
 }
 
-kotlin {
-    jvmToolchain(17)
-}
 
 dependencies {
   val composeBom = platform(libs.androidx.compose.bom)
@@ -92,7 +90,7 @@ dependencies {
   // Local Room Database
   implementation(libs.androidx.room.runtime)
   implementation(libs.androidx.room.ktx)
-  kapt(libs.androidx.room.compiler)
+  add("kapt", libs.androidx.room.compiler)
 
   // JSON Utilities
   implementation(libs.gson)
