@@ -68,6 +68,12 @@ class MainActivity : ComponentActivity() {
     private var onnxLoaded by mutableStateOf(false)
     private var llmName by mutableStateOf("No model loaded")
 
+    // Downloader state properties
+    private var downloadProgressLlm by mutableStateOf(-1f)
+    private var downloadStatusLlm by mutableStateOf("")
+    private var downloadProgressSpeaker by mutableStateOf(-1f)
+    private var downloadStatusSpeaker by mutableStateOf("")
+
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -162,6 +168,75 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             Log.e(TAG, "Error copying model file to internal storage", e)
             null
+        }
+    }
+
+    private fun downloadModelFile(
+        urlStr: String,
+        destFileName: String,
+        onProgress: (Float, String) -> Unit,
+        onComplete: (File?) -> Unit
+    ) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            var input: java.io.InputStream? = null
+            var output: java.io.FileOutputStream? = null
+            var connection: java.net.HttpURLConnection? = null
+            try {
+                val url = java.net.URL(urlStr)
+                connection = url.openConnection() as java.net.HttpURLConnection
+                connection.connect()
+
+                if (connection.responseCode != java.net.HttpURLConnection.HTTP_OK) {
+                    withContext(Dispatchers.Main) {
+                        onProgress(-1f, "HTTP Error: ${connection.responseCode}")
+                    }
+                    onComplete(null)
+                    return@launch
+                }
+
+                val fileLength = connection.contentLength
+                input = connection.inputStream
+                val destFile = File(filesDir, destFileName)
+                output = java.io.FileOutputStream(destFile)
+
+                val data = ByteArray(4096)
+                var total = 0L
+                var count: Int
+                var lastProgressUpdate = 0L
+
+                while (input.read(data).also { count = it } != -1) {
+                    total += count
+                    output.write(data, 0, count)
+                    if (fileLength > 0) {
+                        val progress = total.toFloat() / fileLength
+                        val now = System.currentTimeMillis()
+                        if (now - lastProgressUpdate > 100) {
+                            lastProgressUpdate = now
+                            val pct = (progress * 100).toInt()
+                            withContext(Dispatchers.Main) {
+                                onProgress(progress, "Downloading: $pct%")
+                            }
+                        }
+                    }
+                }
+                
+                withContext(Dispatchers.Main) {
+                    onProgress(-1f, "Download complete!")
+                }
+                onComplete(destFile)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error downloading model", e)
+                withContext(Dispatchers.Main) {
+                    onProgress(-1f, "Error: ${e.localizedMessage}")
+                }
+                onComplete(null)
+            } finally {
+                try {
+                    output?.close()
+                    input?.close()
+                } catch (e: Exception) {}
+                connection?.disconnect()
+            }
         }
     }
 
@@ -451,18 +526,30 @@ class MainActivity : ComponentActivity() {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("On-Device LLM (Generative AI)", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 14.sp)
                                 Text(
-                                    text = if (llmLoaded) "Loaded: $llmName" else "Missing gemma.bin / custom model",
+                                    text = if (llmLoaded) "Loaded: $llmName" else "Missing model (.bin task format)",
                                     fontSize = 12.sp,
                                     color = Color.LightGray
                                 )
                                 Text(
-                                    text = "Supports: .bin, .gguf, .task",
+                                    text = "Requires converted .bin format (not raw .gguf)",
                                     fontSize = 10.sp,
                                     color = Color.Gray
                                 )
                             }
                         }
                         
+                        if (downloadProgressLlm >= 0f) {
+                            Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                Text("LLM: $downloadStatusLlm", fontSize = 11.sp, color = Color.LightGray)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                LinearProgressIndicator(
+                                    progress = downloadProgressLlm,
+                                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                    color = Color.White
+                                )
+                            }
+                        }
+
                         HorizontalDivider(color = Color(0x1EFFFFFF))
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -483,6 +570,18 @@ class MainActivity : ComponentActivity() {
                                     text = "Required for secure offline voice lock",
                                     fontSize = 10.sp,
                                     color = Color.Gray
+                                )
+                            }
+                        }
+
+                        if (downloadProgressSpeaker >= 0f) {
+                            Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                Text("Speaker: $downloadStatusSpeaker", fontSize = 11.sp, color = Color.LightGray)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                LinearProgressIndicator(
+                                    progress = downloadProgressSpeaker,
+                                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                    color = Color.White
                                 )
                             }
                         }
@@ -522,6 +621,75 @@ class MainActivity : ComponentActivity() {
                                 } else {
                                     Text("Select Speaker (.onnx)", fontSize = 11.sp, color = Color.White)
                                 }
+                            }
+                        }
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Button(
+                                onClick = {
+                                    if (downloadProgressLlm < 0f) {
+                                        downloadStatusLlm = "Starting download..."
+                                        downloadProgressLlm = 0f
+                                        downloadModelFile(
+                                            "https://archive.org/download/gemma-2b-it-gpu-gemma-2b-it-cpu/gemma-2b-it-cpu.bin",
+                                            "gemma.bin"
+                                        , { progress, status ->
+                                            downloadProgressLlm = progress
+                                            downloadStatusLlm = status
+                                        }) { file ->
+                                            if (file != null) {
+                                                prefs.edit().putString("selected_llm_path", file.absolutePath).apply()
+                                                val r = LocalLlmRunner.getInstance(context)
+                                                r?.reloadModel()
+                                                llmLoaded = r?.isModelLoaded() ?: false
+                                                llmName = r?.getLoadedModelName() ?: "No model loaded"
+                                                Toast.makeText(context, "LLM Model downloaded and loaded!", Toast.LENGTH_LONG).show()
+                                            } else {
+                                                Toast.makeText(context, "Failed to download LLM model.", Toast.LENGTH_LONG).show()
+                                            }
+                                            downloadProgressLlm = -1f
+                                        }
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black),
+                                modifier = Modifier.weight(1f),
+                                enabled = (downloadProgressLlm < 0f)
+                            ) {
+                                Text("Auto Download LLM (1.3GB)", fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                            }
+                            
+                            Button(
+                                onClick = {
+                                    if (downloadProgressSpeaker < 0f) {
+                                        downloadStatusSpeaker = "Starting download..."
+                                        downloadProgressSpeaker = 0f
+                                        downloadModelFile(
+                                            "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh-cn_3dspeaker_16k.onnx",
+                                            "speaker_verification.onnx"
+                                        , { progress, status ->
+                                            downloadProgressSpeaker = progress
+                                            downloadStatusSpeaker = status
+                                        }) { file ->
+                                            if (file != null) {
+                                                prefs.edit().putString("selected_speaker_path", file.absolutePath).apply()
+                                                speakerVerifier = SpeakerVerifier.getInstance(context)
+                                                onnxLoaded = speakerVerifier?.isModelLoaded() ?: false
+                                                Toast.makeText(context, "Speaker Model downloaded and loaded!", Toast.LENGTH_LONG).show()
+                                            } else {
+                                                Toast.makeText(context, "Failed to download Speaker model.", Toast.LENGTH_LONG).show()
+                                            }
+                                            downloadProgressSpeaker = -1f
+                                        }
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black),
+                                modifier = Modifier.weight(1f),
+                                enabled = (downloadProgressSpeaker < 0f)
+                            ) {
+                                Text("Auto Download Speaker (17MB)", fontSize = 9.sp, fontWeight = FontWeight.Bold)
                             }
                         }
 
