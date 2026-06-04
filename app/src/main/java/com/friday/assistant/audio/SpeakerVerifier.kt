@@ -28,8 +28,8 @@ class SpeakerVerifier private constructor(context: Context) {
             ortEnv = OrtEnvironment.getEnvironment()
             ortSession = ortEnv?.createSession(modelFile.absolutePath, OrtSession.SessionOptions())
             Log.i(TAG, "ONNX Speaker Verification model loaded successfully.")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error loading ONNX model", e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Error loading ONNX model or JNI libraries", t)
         }
     }
 
@@ -77,8 +77,8 @@ class SpeakerVerifier private constructor(context: Context) {
             results.close()
             inputTensor.close()
             return embedding
-        } catch (e: Exception) {
-            Log.e(TAG, "Error during speaker embedding extraction", e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Error during speaker embedding extraction", t)
             return null
         }
     }

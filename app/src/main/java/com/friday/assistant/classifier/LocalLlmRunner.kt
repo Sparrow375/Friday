@@ -48,8 +48,8 @@ class LocalLlmRunner private constructor(private val context: Context) {
             llmInference = LlmInference.createFromOptions(context, options)
             loadedModelPath = existingModel.absolutePath
             Log.i(TAG, "Successfully loaded Local LLM from: ${existingModel.absolutePath}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error initializing MediaPipe LLM Inference", e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Error initializing MediaPipe LLM Inference", t)
         }
     }
 
@@ -115,9 +115,9 @@ class LocalLlmRunner private constructor(private val context: Context) {
             }
             
             cleanResponse
-        } catch (e: Exception) {
-            Log.e(TAG, "Error generating response from local LLM", e)
-            "Sorry Avaneesh, I encountered a processing error in my neural core: ${e.localizedMessage}"
+        } catch (t: Throwable) {
+            Log.e(TAG, "Error generating response from local LLM", t)
+            "Sorry Avaneesh, I encountered a processing error in my neural core: ${t.localizedMessage}"
         }
     }
 

@@ -109,7 +109,9 @@ abstract class FridayDatabase : RoomDatabase() {
                     context.applicationContext,
                     FridayDatabase::class.java,
                     "friday_database"
-                ).build()
+                )
+                .fallbackToDestructiveMigration()
+                .build()
                 INSTANCE = instance
                 instance
             }
