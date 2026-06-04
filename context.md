@@ -10,7 +10,7 @@ The project is configured for cloud-compilation via GitHub Actions, bypassing th
 The application is structured under the package namespace `com.friday.assistant`:
 
 - **`.github/workflows/android-build.yml`**: GitHub Actions build script. Automatically builds the debug APK (`app-debug.apk`) on push and uploads it as a build artifact, creating a GitHub Release.
-- **`app/build.gradle.kts`**: Configurations and dependencies including MediaPipe (tasks-genai for local LLM), Microsoft ONNX Runtime (for speaker embedding verification), SQLite Room database, and Gson. Configured using AGP 9.0 built-in Kotlin support and the `com.android.legacy-kapt` plugin to compile Room stubs for JVM 17.
+- **`app/build.gradle.kts`**: Configurations and dependencies including MediaPipe (tasks-genai for local LLM), Microsoft ONNX Runtime (for speaker embedding verification), SQLite Room database (Room 2.7.2), and Gson. Configured using AGP 9.0 built-in Kotlin support and KSP (Kotlin Symbol Processing) to compile Room stubs.
 - **`app/src/main/AndroidManifest.xml`**: Defines system-wide permissions (overlay, record audio, write settings, location, foreground microphone service) and maps background components.
 
 ### Source Code Package Structure (`app/src/main/java/com/friday/assistant/`):

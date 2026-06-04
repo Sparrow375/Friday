@@ -16,7 +16,7 @@ nav3Core = "1.0.1"
 lifecycleViewmodelNav3 = "2.10.0"
 mediapipe = "0.10.14"
 onnxruntime = "1.17.1"
-room = "2.6.1"
+room = "2.7.2"
 gson = "2.10.1"
 
 [libraries]
