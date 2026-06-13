@@ -46,6 +46,7 @@ import com.friday.assistant.ui.screens.MainActivity
 import com.friday.assistant.ui.overlay.OverlayManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlin.math.sqrt
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch

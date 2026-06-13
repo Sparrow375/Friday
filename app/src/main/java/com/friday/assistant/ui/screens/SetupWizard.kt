@@ -158,7 +158,7 @@ fun StepPermissions(context: Context) {
         style = MaterialTheme.typography.bodyLarge,
         color = SilverText,
         textAlign = TextAlign.Center,
-        modifier = Modifier.padding(horizontal = 16.dp, bottom = 24.dp)
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 24.dp)
     )
 
     Button(
@@ -204,7 +204,7 @@ fun StepModels(onFinished: () -> Unit) {
         style = MaterialTheme.typography.bodyLarge,
         color = SilverText,
         textAlign = TextAlign.Center,
-        modifier = Modifier.padding(horizontal = 16.dp, bottom = 24.dp)
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 24.dp)
     )
 
     Button(

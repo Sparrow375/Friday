@@ -3,6 +3,8 @@ package com.friday.assistant.core.native
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class LlamaEngine {
     companion object {
@@ -18,6 +20,7 @@ class LlamaEngine {
     }
 
     private var statePtr: Long = 0
+    private val mutex = Mutex()
 
     // JNI Declarations
     private external fun initLlama(modelPath: String): Long
@@ -25,22 +28,28 @@ class LlamaEngine {
     private external fun clearLlamaHistory(statePtr: Long)
     private external fun generateLlama(statePtr: Long, promptStr: String, maxTokens: Int, temp: Float): String
 
-    @Synchronized
-    suspend fun loadModel(modelPath: String): Boolean = withContext(Dispatchers.IO) {
-        if (statePtr != 0L) {
-            freeModel()
-        }
-        try {
-            statePtr = initLlama(modelPath)
-            statePtr != 0L
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception initializing Llama model", e)
-            false
+    suspend fun loadModel(modelPath: String): Boolean = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            if (statePtr != 0L) {
+                freeModelInternal()
+            }
+            try {
+                statePtr = initLlama(modelPath)
+                statePtr != 0L
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception initializing Llama model", e)
+                false
+            }
         }
     }
 
-    @Synchronized
-    suspend fun freeModel() = withContext(Dispatchers.IO) {
+    suspend fun freeModel() = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            freeModelInternal()
+        }
+    }
+
+    private fun freeModelInternal() {
         if (statePtr != 0L) {
             try {
                 freeLlama(statePtr)
@@ -52,8 +61,7 @@ class LlamaEngine {
         }
     }
 
-    @Synchronized
-    fun clearHistory() {
+    suspend fun clearHistory() = mutex.withLock {
         if (statePtr != 0L) {
             try {
                 clearLlamaHistory(statePtr)
@@ -63,16 +71,17 @@ class LlamaEngine {
         }
     }
 
-    @Synchronized
-    suspend fun generate(prompt: String, maxTokens: Int = 256, temp: Float = 0.7f): String = withContext(Dispatchers.Default) {
-        if (statePtr == 0L) {
-            return@withContext "Error: Model not loaded"
-        }
-        try {
-            generateLlama(statePtr, prompt, maxTokens, temp)
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception in Llama text generation", e)
-            "Error: Generation failed"
+    suspend fun generate(prompt: String, maxTokens: Int = 256, temp: Float = 0.7f): String = mutex.withLock {
+        withContext(Dispatchers.Default) {
+            if (statePtr == 0L) {
+                return@withContext "Error: Model not loaded"
+            }
+            try {
+                generateLlama(statePtr, prompt, maxTokens, temp)
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception in Llama text generation", e)
+                "Error: Generation failed"
+            }
         }
     }
 

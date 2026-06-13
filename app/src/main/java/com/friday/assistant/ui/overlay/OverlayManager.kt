@@ -16,6 +16,7 @@ import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import androidx.savedstate.SavedStateRegistry
+import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import com.friday.assistant.audio.PipelineState
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,8 +24,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 class OverlayManager(
     private val context: Context,
     private val onMicClick: () -> Unit,
-    onClose: () -> Unit,
-    onTextSubmit: (String) -> Unit
+    private val onClose: () -> Unit,
+    private val onTextSubmit: (String) -> Unit
 ) : LifecycleOwner, SavedStateRegistryOwner {
 
     companion object {
@@ -46,7 +47,7 @@ class OverlayManager(
     private val lifecycleRegistry = LifecycleRegistry(this)
     override val lifecycle: Lifecycle = lifecycleRegistry
 
-    private val savedStateRegistryController = SavedStateRegistry.create(this)
+    private val savedStateRegistryController = SavedStateRegistryController.create(this)
     override val savedStateRegistry: SavedStateRegistry = savedStateRegistryController.savedStateRegistry
 
     init {

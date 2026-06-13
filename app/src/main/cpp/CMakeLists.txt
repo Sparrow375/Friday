@@ -18,6 +18,13 @@ if(ANDROID_ABI STREQUAL "arm64-v8a")
     set(GGML_NEON ON CACHE BOOL "Enable NEON" FORCE)
 endif()
 
+# Speed up compile by disabling tests, examples, and server builds
+set(WHISPER_BUILD_TESTS OFF CACHE BOOL "Disable Whisper tests" FORCE)
+set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "Disable Whisper examples" FORCE)
+set(LLAMA_BUILD_TESTS OFF CACHE BOOL "Disable Llama tests" FORCE)
+set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "Disable Llama examples" FORCE)
+set(LLAMA_BUILD_SERVER OFF CACHE BOOL "Disable Llama server" FORCE)
+
 # FetchContent setup
 include(FetchContent)
 
@@ -26,7 +33,7 @@ message(STATUS "Fetching whisper.cpp...")
 FetchContent_Declare(
     whispercpp
     GIT_REPOSITORY https://github.com/ggerganov/whisper.cpp.git
-    GIT_TAG        v1.7.1
+    GIT_TAG        master
 )
 FetchContent_MakeAvailable(whispercpp)
 
@@ -45,16 +52,15 @@ add_library(friday_native SHARED
 )
 
 # Include directories for our JNI code
-# FetchContent creates variables like <lowercaseName>_SOURCE_DIR
 target_include_directories(friday_native PRIVATE
     ${whispercpp_SOURCE_DIR}
     ${whispercpp_SOURCE_DIR}/include
     ${llamacpp_SOURCE_DIR}
     ${llamacpp_SOURCE_DIR}/include
+    ${llamacpp_SOURCE_DIR}/ggml/include
 )
 
 # Link native libraries.
-# Targets in whisper.cpp and llama.cpp: whisper, llama, ggml
 target_link_libraries(friday_native
     whisper
     llama

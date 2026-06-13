@@ -3,6 +3,8 @@ package com.friday.assistant.core.native
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class WhisperEngine {
     companion object {
@@ -18,28 +20,35 @@ class WhisperEngine {
     }
 
     private var contextPtr: Long = 0
+    private val mutex = Mutex()
 
     // JNI Declarations
     private external fun initWhisper(modelPath: String): Long
     private external fun freeWhisper(ctxPtr: Long)
     private external fun transcribeWhisper(ctxPtr: Long, audioSamples: FloatArray): String
 
-    @Synchronized
-    suspend fun loadModel(modelPath: String): Boolean = withContext(Dispatchers.IO) {
-        if (contextPtr != 0L) {
-            freeModel()
-        }
-        try {
-            contextPtr = initWhisper(modelPath)
-            contextPtr != 0L
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception initializing Whisper model", e)
-            false
+    suspend fun loadModel(modelPath: String): Boolean = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            if (contextPtr != 0L) {
+                freeModelInternal()
+            }
+            try {
+                contextPtr = initWhisper(modelPath)
+                contextPtr != 0L
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception initializing Whisper model", e)
+                false
+            }
         }
     }
 
-    @Synchronized
-    suspend fun freeModel() = withContext(Dispatchers.IO) {
+    suspend fun freeModel() = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            freeModelInternal()
+        }
+    }
+
+    private fun freeModelInternal() {
         if (contextPtr != 0L) {
             try {
                 freeWhisper(contextPtr)
@@ -51,17 +60,18 @@ class WhisperEngine {
         }
     }
 
-    @Synchronized
-    suspend fun transcribe(audioSamples: FloatArray): String = withContext(Dispatchers.Default) {
-        if (contextPtr == 0L) {
-            Log.e(TAG, "Whisper model not loaded")
-            return@withContext ""
-        }
-        try {
-            transcribeWhisper(contextPtr, audioSamples)
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception transcribing audio", e)
-            ""
+    suspend fun transcribe(audioSamples: FloatArray): String = mutex.withLock {
+        withContext(Dispatchers.Default) {
+            if (contextPtr == 0L) {
+                Log.e(TAG, "Whisper model not loaded")
+                return@withContext ""
+            }
+            try {
+                transcribeWhisper(contextPtr, audioSamples)
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception transcribing audio", e)
+                ""
+            }
         }
     }
 
