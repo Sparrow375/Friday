@@ -28,23 +28,23 @@ set(LLAMA_BUILD_SERVER OFF CACHE BOOL "Disable Llama server" FORCE)
 # FetchContent setup
 include(FetchContent)
 
-# 1. Fetch whisper.cpp
-message(STATUS "Fetching whisper.cpp...")
-FetchContent_Declare(
-    whispercpp
-    GIT_REPOSITORY https://github.com/ggerganov/whisper.cpp.git
-    GIT_TAG        master
-)
-FetchContent_MakeAvailable(whispercpp)
-
-# 2. Fetch llama.cpp
+# 1. Fetch llama.cpp first to ensure its newer ggml target structure is used first
 message(STATUS "Fetching llama.cpp...")
 FetchContent_Declare(
-    llamacpp
+    llamacpp_new
     GIT_REPOSITORY https://github.com/ggerganov/llama.cpp.git
     GIT_TAG        master
 )
-FetchContent_MakeAvailable(llamacpp)
+FetchContent_MakeAvailable(llamacpp_new)
+
+# 2. Fetch whisper.cpp second
+message(STATUS "Fetching whisper.cpp...")
+FetchContent_Declare(
+    whispercpp_new
+    GIT_REPOSITORY https://github.com/ggerganov/whisper.cpp.git
+    GIT_TAG        master
+)
+FetchContent_MakeAvailable(whispercpp_new)
 
 # Define our JNI library
 add_library(friday_native SHARED
@@ -53,11 +53,11 @@ add_library(friday_native SHARED
 
 # Include directories for our JNI code
 target_include_directories(friday_native PRIVATE
-    ${whispercpp_SOURCE_DIR}
-    ${whispercpp_SOURCE_DIR}/include
-    ${llamacpp_SOURCE_DIR}
-    ${llamacpp_SOURCE_DIR}/include
-    ${llamacpp_SOURCE_DIR}/ggml/include
+    ${whispercpp_new_SOURCE_DIR}
+    ${whispercpp_new_SOURCE_DIR}/include
+    ${llamacpp_new_SOURCE_DIR}
+    ${llamacpp_new_SOURCE_DIR}/include
+    ${llamacpp_new_SOURCE_DIR}/ggml/include
 )
 
 # Link native libraries.
