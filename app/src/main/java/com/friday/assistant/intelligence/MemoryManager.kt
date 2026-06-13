@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Log
 import com.friday.assistant.core.FridayApplication
 import com.friday.assistant.core.db.MemoryEntity
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import kotlinx.coroutines.flow.first
 import java.util.Locale
 
@@ -137,5 +139,71 @@ class MemoryManager(private val context: Context) {
             summary.append("- ${it.key.replace("_", " ")}: ${it.value}\n")
         }
         return summary.toString()
+    }
+
+    // ==========================================
+    // App Usage Statistics
+    // ==========================================
+
+    suspend fun incrementAppLaunchCount(packageName: String, appName: String) {
+        try {
+            val key = packageName
+            val existing = dao.getMemoryByKey("app_usage", key)
+            val now = System.currentTimeMillis()
+            val newValue = if (existing != null) {
+                val json = JsonParser.parseString(existing.value).asJsonObject
+                val count = json.get("launch_count")?.asInt ?: 0
+                json.addProperty("launch_count", count + 1)
+                json.addProperty("last_used", now)
+                json.toString()
+            } else {
+                val json = JsonObject()
+                json.addProperty("app_name", appName)
+                json.addProperty("launch_count", 1)
+                json.addProperty("last_used", now)
+                json.toString()
+            }
+            val memory = MemoryEntity(
+                id = existing?.id ?: 0,
+                layer = "SEMANTIC",
+                category = "app_usage",
+                key = key,
+                value = newValue
+            )
+            dao.insertMemory(memory)
+            Log.d(TAG, "Incremented app launch count for $packageName ($appName)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating app launch stats", e)
+        }
+    }
+
+    suspend fun getMostUsedApps(limit: Int = 5): List<String> {
+        return try {
+            val memories = dao.getMemoriesByLayer("SEMANTIC").first()
+            memories
+                .filter { it.category == "app_usage" }
+                .mapNotNull {
+                    try {
+                        val json = JsonParser.parseString(it.value).asJsonObject
+                        val appName = json.get("app_name")?.asString ?: ""
+                        val count = json.get("launch_count")?.asInt ?: 0
+                        Pair(appName, count)
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+                .sortedByDescending { it.second }
+                .take(limit)
+                .map { it.first }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error retrieving most used apps", e)
+            emptyList()
+        }
+    }
+
+    suspend fun getMostUsedAppsSummary(): String {
+        val mostUsed = getMostUsedApps(3)
+        if (mostUsed.isEmpty()) return "No frequent apps tracked yet."
+        return "Most frequently launched apps: ${mostUsed.joinToString(", ")}"
     }
 }

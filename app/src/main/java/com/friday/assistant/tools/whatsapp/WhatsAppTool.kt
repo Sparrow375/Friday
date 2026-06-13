@@ -5,13 +5,17 @@ import android.content.Intent
 import android.util.Log
 import com.friday.assistant.automation.ScreenReader
 import com.friday.assistant.automation.UIAutomator
+import com.friday.assistant.intelligence.MemoryManager
 import com.friday.assistant.tools.Tool
 import com.friday.assistant.tools.ToolResult
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.delay
 
-class WhatsAppTool(private val context: Context) : Tool {
+class WhatsAppTool(
+    private val context: Context,
+    private val memoryManager: MemoryManager
+) : Tool {
 
     companion object {
         private const val TAG = "WhatsAppTool"
@@ -53,6 +57,9 @@ class WhatsAppTool(private val context: Context) : Tool {
             ?: return ToolResult(false, "WhatsApp is not installed on this device.")
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
+        
+        // Track app launch stats in semantic memory
+        memoryManager.incrementAppLaunchCount("com.whatsapp", "WhatsApp")
         
         // Wait for app launch animation and chats screen rendering
         delay(2500)

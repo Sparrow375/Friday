@@ -5,13 +5,17 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.util.Log
+import com.friday.assistant.intelligence.MemoryManager
 import com.friday.assistant.tools.Tool
 import com.friday.assistant.tools.ToolResult
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import java.util.Locale
 
-class AppLauncherTool(private val context: Context) : Tool {
+class AppLauncherTool(
+    private val context: Context,
+    private val memoryManager: MemoryManager
+) : Tool {
 
     companion object {
         private const val TAG = "AppLauncherTool"
@@ -41,7 +45,7 @@ class AppLauncherTool(private val context: Context) : Tool {
         return launchApp(appName)
     }
 
-    private fun launchApp(queryName: String): ToolResult {
+    private suspend fun launchApp(queryName: String): ToolResult {
         val pm = context.packageManager
         val queryLower = queryName.trim().lowercase(Locale.ROOT)
         
@@ -77,6 +81,8 @@ class AppLauncherTool(private val context: Context) : Tool {
                 if (launchIntent != null) {
                     launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     context.startActivity(launchIntent)
+                    // Track app launch stats in semantic memory
+                    memoryManager.incrementAppLaunchCount(bestMatchApp.packageName, bestMatchLabel)
                     ToolResult(true, "Launching $bestMatchLabel")
                 } else {
                     ToolResult(false, "Could not resolve launch intent for $bestMatchLabel")

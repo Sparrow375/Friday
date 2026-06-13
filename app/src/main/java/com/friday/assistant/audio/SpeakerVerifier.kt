@@ -183,7 +183,40 @@ class SpeakerVerifier(private val context: Context, private val modelManager: Mo
         val similarity = computeCosineSimilarity(testEmbedding, enrolled)
         Log.i(TAG, "Speaker verification score: $similarity (threshold: $threshold)")
         
-        return@withContext similarity >= threshold
+        val verified = similarity >= threshold
+        if (verified && similarity >= 0.85f) {
+            // Adaptively merge high-confidence verify samples into the enrolled embedding
+            adaptEnrolledProfile(testEmbedding, learningRate = 0.05f)
+        }
+        
+        return@withContext verified
+    }
+
+    private fun adaptEnrolledProfile(newEmbedding: FloatArray, learningRate: Float = 0.05f) {
+        val enrolled = getEnrolledEmbedding() ?: return
+        if (newEmbedding.size != enrolled.size) return
+        
+        val updated = FloatArray(enrolled.size)
+        for (i in enrolled.indices) {
+            updated[i] = enrolled[i] * (1f - learningRate) + newEmbedding[i] * learningRate
+        }
+        
+        // Normalize the updated embedding vector
+        var normSum = 0.0f
+        for (v in updated) {
+            normSum += v * v
+        }
+        val norm = sqrt(normSum)
+        if (norm > 0) {
+            for (i in updated.indices) {
+                updated[i] /= norm
+            }
+        }
+        
+        // Save to Shared Preferences
+        val json = gson.toJson(updated)
+        sharedPrefs.edit().putString(KEY_ENROLLED_EMBEDDING, json).apply()
+        Log.d(TAG, "Speaker profile adaptively updated with learning rate $learningRate")
     }
 
     private fun computeCosineSimilarity(vectorA: FloatArray, vectorB: FloatArray): Float {

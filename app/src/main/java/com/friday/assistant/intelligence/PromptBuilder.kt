@@ -40,6 +40,7 @@ If no tools are needed to satisfy the user request, respond directly in concise,
 
         // 2. Get dynamic user context
         val memorySummary = memoryManager.getPreferencesSummary()
+        val appUsageSummary = memoryManager.getMostUsedAppsSummary()
         
         // 3. Assemble full system prompt
         val sdf = SimpleDateFormat("EEEE, d MMMM yyyy HH:mm", Locale.getDefault())
@@ -52,6 +53,7 @@ If no tools are needed to satisfy the user request, respond directly in concise,
 
 ## Memory Context
 $memorySummary
+- $appUsageSummary
         """.trimIndent()
 
         val fullSystemInstruction = "$systemPrompt\n\n$deviceContext"

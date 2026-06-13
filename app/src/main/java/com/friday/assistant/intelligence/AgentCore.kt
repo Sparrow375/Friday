@@ -68,6 +68,9 @@ class AgentCore(
         // Save conversation turn to SQLite database and working memory
         memoryManager.saveConversationTurn(userInput, finalResponse)
 
+        // Asynchronously extract and save user preferences from the interaction
+        PreferenceExtractor.extractAndSavePreferences(userInput, finalResponse, memoryManager)
+
         Log.i(TAG, "AgentCore finished processing. Final response: '$finalResponse'")
         return finalResponse
     }

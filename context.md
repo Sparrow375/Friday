@@ -37,6 +37,7 @@ The project uses a clean package namespace `com.friday.assistant`:
    - `PromptBuilder.kt`: Formulates dynamic system prompts with tool schemas and retrieved memory context.
    - `ToolDispatcher.kt`: Directs LLM tool calls to the appropriate executor.
    - `MemoryManager.kt`: Coordinates semantic memory extraction and episodic history storage.
+   - `PreferenceExtractor.kt`: Asynchronously extracts and learns user facts/preferences from conversation turns using background LLM inference.
 
 4. **`tools/`**:
    - `Tool.kt`: Common interface for tools.
