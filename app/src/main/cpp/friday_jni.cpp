@@ -164,11 +164,14 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
     std::string prompt(prompt_raw);
     env->ReleaseStringUTFChars(prompt_str, prompt_raw);
 
+    // Retrieve vocabulary from model
+    const struct llama_vocab * vocab = llama_model_get_vocab(state->model);
+
     // Tokenize prompt
     // For llama.cpp, we calculate number of tokens first
-    int n_tokens_prompt = -llama_tokenize(state->model, prompt.c_str(), prompt.length(), nullptr, 0, true, true);
+    int n_tokens_prompt = -llama_tokenize(vocab, prompt.c_str(), prompt.length(), nullptr, 0, true, true);
     std::vector<llama_token> prompt_tokens(n_tokens_prompt);
-    if (llama_tokenize(state->model, prompt.c_str(), prompt.length(), prompt_tokens.data(), prompt_tokens.size(), true, true) < 0) {
+    if (llama_tokenize(vocab, prompt.c_str(), prompt.length(), prompt_tokens.data(), prompt_tokens.size(), true, true) < 0) {
         LOGE("Failed to tokenize prompt");
         return env->NewStringUTF("Error: Tokenization failed");
     }
@@ -234,13 +237,13 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
         total_tokens++;
 
         // Check for EOS
-        if (llama_token_is_eog(state->model, id)) {
+        if (llama_vocab_is_eog(vocab, id)) {
             break;
         }
 
         // Convert token to piece
         char buf[128];
-        int n_chars = llama_token_to_piece(state->model, id, buf, sizeof(buf), 0, true);
+        int n_chars = llama_token_to_piece(vocab, id, buf, sizeof(buf), 0, true);
         if (n_chars > 0) {
             response.append(buf, n_chars);
         }
