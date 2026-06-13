@@ -1,49 +1,71 @@
-# Project Friday: Personal Android Voice Assistant
+# Project Friday: Modern Agentic Android Voice Assistant (V2)
 
 ## Overview
-Friday is a highly personalized, 100% offline-capable Android voice assistant designed specifically for a Samsung Galaxy S24 running Android 16 (One UI 8). It features local speaker verification, offline Speech-to-Text, a hybrid offline command classifier, automated routines, app-specific integrations, and a sleek floating overlay UI with voice feedback and animated visualizer.
+Project Friday is a highly optimized, 100% offline-capable, agentic personal AI assistant for Android (specifically optimized for Samsung Galaxy S24, targetSdk 36). It runs entirely on-device, offering secure, low-latency voice interactions, in-app automation, and a personalized experience via a multi-layer memory system.
 
-The project is configured for cloud-compilation via GitHub Actions, bypassing the need for local compiles and automatically publishing the compiled APK as a GitHub Release.
+### Key Capabilities
+1. **Always-On Voice Pipeline**: Uses energy-efficient Voice Activity Detection (VAD) coupled with `whisper.cpp` to match a customizable local wake word (default: "Friday") with zero API keys or external server calls.
+2. **Offline Speech-to-Text**: Converts voice queries to text locally using `whisper.cpp` (quantized tiny/base model).
+3. **Agentic Reasoning (Local LLM)**: Powered by `llama.cpp` running a quantized `Qwen2.5-3B-Instruct` GGUF model directly on-device. The agent acts on user requests by executing tool-calling loops.
+4. **Speaker Verification**: Authenticates the owner's voice via a local ONNX-based ECAPA-TDNN speaker embedding model, rejecting unauthorized triggers.
+5. **Deep UI Automation**: Integrates with Android's Accessibility Service to scan screen content and execute UI actions (tap, type, scroll) on any app.
+6. **Multi-Layer Memory System**: Room DB database managing Working, Episodic (conversations), Semantic (user facts/preferences), and Procedural (learned routines) memories.
+7. **Premium Glassmorphism Overlay UI**: Jetpack Compose-based floating bubble and glass panels with glowing, fluid waveforms representing recording/speaking states.
 
-## Repository Structure & Components
+---
 
-The application is structured under the package namespace `com.friday.assistant`:
+## Repository Structure & Packages
 
-- **`app/src/main/assets/`**: Contains the pre-bundled `speaker_verification.onnx` model, which is copied to internal storage on first run.
-- **`friday_helper.py`**: A PC-side Python utility using `llama-cpp-python` and `Flask` to serve GGUF language models directly to the Android app over the local network.
-- **`.github/workflows/android-build.yml`**: GitHub Actions build script. Automatically builds the debug APK (`app-debug.apk`) on push and uploads it as a build artifact, creating a GitHub Release.
-- **`app/build.gradle.kts`**: Configurations and dependencies including MediaPipe (tasks-genai for local LLM), Microsoft ONNX Runtime (for speaker embedding verification), SQLite Room database (Room 2.7.2), and Gson. Configured using AGP 9.0 built-in Kotlin support and KSP (Kotlin Symbol Processing) to compile Room stubs.
-- **`app/src/main/AndroidManifest.xml`**: Defines system-wide permissions and maps background components. Cleartext traffic is enabled to allow local connection. Contains the `QUERY_ALL_PACKAGES` permission to resolve Android 11+ app query/launch visibility limitations.
+The project uses a clean package namespace `com.friday.assistant`:
 
-### Source Code Package Structure (`app/src/main/java/com/friday/assistant/`):
-
+### Package Modules
 1. **`core/`**:
-   - `FridayApplication.kt`: Manages notification channel setup and database singleton.
-   - `Database.kt`: SQLite Room database definition containing tables for Conversations (chat history), Notes, Routines, and Geofences.
-   - `BootReceiver.kt`: Automatically launches the overlay assistant service on device boot.
+   - `FridayApplication.kt`: Application entry point, setups database and notifications.
+   - `BootReceiver.kt`: Listens for system boot to launch the assistant service automatically.
+   - `ModelManager.kt`: Validates and tracks local model files (Whisper, Qwen GGUF, Speaker ONNX) on external storage.
+   - **`db/`**: SQLite Room database schema, entities, and DAOs for notes, routines, usage tracking, and multi-layer memory tables.
+   - **`native/`**: Kotlin wrappers (`LlamaEngine.kt`, `WhisperEngine.kt`) interfacing with the C++ JNI bridge.
 
 2. **`audio/`**:
-   - `VoiceRecorder.kt`: Captures raw PCM audio (16kHz mono 16-bit) from the microphone.
-   - `SpeakerVerifier.kt`: Interfaces with the ONNX runtime model (`speaker_verification.onnx`) to extract 192-dimensional speaker embeddings and compare similarity via cosine similarity. Copies the model from assets on first run. **Inference and model loading are performed asynchronously on a background thread pool (`Dispatchers.IO` / `Dispatchers.Default`) to prevent UI freezes.**
-   - `SpeechRecognizerManager.kt`: Manages Android's SpeechRecognizer. **Reuses a single SpeechRecognizer instance to prevent binder leaks. Aborts current sessions via `cancel()` before starting new ones, and delays wake-word restarts by 300ms to allow system resources to clean up, resolving the ERROR_RECOGNIZER_BUSY (11) error.**
+   - `AudioCaptureManager.kt`: Continuous high-priority microphone capture (16kHz mono 16-bit PCM).
+   - `WakeWordDetector.kt`: Implements energy/frequency-based VAD to spot voice activity and runs short Whisper checks to match the customizable wake word.
+   - `SpeakerVerifier.kt`: Computes 192-dimensional speaker embeddings using Microsoft ONNX Runtime (`speaker_verification.onnx`) to verify user voice profile.
+   - `VoicePipeline.kt`: Orchestrates transitions between IDLE, WAKE, RECORDING, VERIFY, and TTS states.
 
-3. **`classifier/`**:
-   - `CommandClassifier.kt`: Implements the Layer 1 (Regex/pattern) and Layer 2 (Keyword and synonyms matching with parameter extraction) offline classification. **Features a robust extraction helper (`extractSearchQuery`) that isolates search terms from platform intents (Reddit, Spotify, YouTube, Brave, X/Twitter, Google) irrespective of sentence structures (e.g. "search X on Y" or "search Y for X").**
-   - `LocalLlmRunner.kt`: Interfaces with MediaPipe GenAI Tasks to run a local quantized model, or queries the PC-side GGUF server if configured. Includes explicit prompt constraints to prevent emoji generation. **Model loading and reloading run asynchronously on a background thread.**
+3. **`intelligence/`**:
+   - `AgentCore.kt`: Runs the tool-calling agent loop, parsing JSON commands from LLM.
+   - `PromptBuilder.kt`: Formulates dynamic system prompts with tool schemas and retrieved memory context.
+   - `ToolDispatcher.kt`: Directs LLM tool calls to the appropriate executor.
+   - `MemoryManager.kt`: Coordinates semantic memory extraction and episodic history storage.
 
-4. **`executor/`**:
-   - `SystemExecutor.kt`: Direct bindings for system controls (volume, brightness, wifi, bluetooth, DND, flashlight, alarms, calling contacts) and launcher/deep-linking configurations. **Database queries (like contacts retrieval) are executed off the Main thread on `Dispatchers.IO`. Deep-linking support includes native YouTube search (`vnd.youtube://`) and Google Search integration.**
-   - `RoutineExecutor.kt`: Parses a list of routine actions (JSON) and triggers them sequentially.
+4. **`tools/`**:
+   - `Tool.kt`: Common interface for tools.
+   - **`system/`**: Controls volume, brightness, torch, WiFi, Bluetooth, DND, battery, etc.
+   - **`phone/`**: Calls contacts, reads SMS, drafts messages.
+   - **`apps/`**: Launches package names, deep-linking into common applications.
+   - **`media/`**: Exposes media playback control.
+   - **`search/`**: Simple search tool.
+   - **`clipboard/`**, **`notes/`**, **`calendar/`**, **`notifications/`**, **`location/`**, **`camera/`**, **`files/`**: Device integration tools.
+   - **`accessibility/`**: Screen interaction tools (`ScreenReaderTool`, `ClickElementTool`, `TypeTextTool`, `ScrollScreenTool`, `GlobalActionTool`).
+   - **`whatsapp/`**: WhatsApp deep automation (`WhatsAppTool`).
+   - **`email/`**: Gmail automation (`EmailTool`).
 
-5. **`ui/`**:
-   - `MainActivity.kt`: Jetpack Compose dashboard UI for configuration, training, routines, and models. **Employs a background polling coroutine in `onCreate()` that checks model load statuses every second and reactively updates state variables once loading completes in the background.**
-   - `OverlayService.kt`: Foreground service drawing the floating overlay. Features a visualizer, click-outside-to-collapse, and text input row. Intercepts TextToSpeech UtteranceProgressListener to pause/resume STT listening, preventing feedback loops and audio self-triggering, and sanitizes speech text to strip all emojis before TTS. **Model initialization is started on `Dispatchers.IO` during `onCreate()`, and verification runs on `Dispatchers.Default` to prevent Application Not Responding (ANR) crashes.**
-   - `AudioVisualizerView.kt`: Custom view drawing multiple fluid, animated sine waves responsive to the real-time RMS audio input.
+5. **`automation/`**:
+   - `ScreenReader.kt`: Converts `AccessibilityNodeInfo` tree to structured text snapshot and caches interactive elements mapped to short integer IDs.
+   - `UIAutomator.kt`: Simulates UI actions (taps, text input, scroll, global system controls) on accessibility nodes.
 
-## Verification & Deployment Flow
-1. Code changes are pushed to GitHub.
-2. The Action compiles the project using `./gradlew assembleDebug` in a clean Ubuntu VM.
-3. Download the built APK from the run's **Artifacts** tab.
-4. Install and launch the app, grant permissions.
-5. Voice verification is active out-of-the-box (copied from assets).
-6. To use GGUF LLMs: start the PC-side helper (`python friday_helper.py <GGUF_FILE>`), input the printed IP address in the app settings, and enjoy fully functional local network LLM interactions alongside offline regex/routine commands.
+6. **`ui/`**:
+   - `FridayService.kt`: Background foreground service hosting window overlays and Accessibility Service.
+   - `NotificationService.kt`: Background notification listener service that intercepts status bar events.
+   - **`overlay/`**: WindowManager overlay layouts, custom waveform canvases (`AudioWaveformComposable.kt`), and glass panel contents (`FridayOverlayContent.kt`).
+   - **`screens/`**: Compose settings dashboard (`MainActivity.kt`) and setup/enrollment wizard (`SetupWizard.kt`).
+   - **`theme/`**: Cyberpunk-inspired dark theme (`FridayTheme.kt`) with Outfit/Inter fonts.
+
+---
+
+## Native Build & JNI Architecture
+
+`llama.cpp` and `whisper.cpp` source code is fetched at build-time using CMake `FetchContent` and cross-compiled via the Android NDK in GitHub Actions.
+- **CMake Configuration**: `app/src/main/cpp/CMakeLists.txt`
+- **JNI Glue Layer**: `app/src/main/cpp/friday_jni.cpp` exports JNI methods for model loading, token generation, audio feed, and transcription.
+- **GitHub Actions**: Generates and signs `app-debug.apk` on every push to main/master, deploying it directly to GitHub Releases.

@@ -44,7 +44,7 @@
         android:theme="@style/Theme.Friday">
 
         <activity
-            android:name="com.friday.assistant.ui.MainActivity"
+            android:name="com.friday.assistant.ui.screens.MainActivity"
             android:exported="true"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -53,12 +53,31 @@
             </intent-filter>
         </activity>
 
-        <!-- Foreground Service for Voice Processing and Overlay UI -->
+        <!-- Foreground & Accessibility Service for Voice Processing and Overlay UI -->
         <service
-            android:name="com.friday.assistant.ui.OverlayService"
+            android:name="com.friday.assistant.ui.FridayService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="microphone" />
+            android:exported="true"
+            android:foregroundServiceType="microphone">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- Notification Listener Service -->
+        <service
+            android:name="com.friday.assistant.ui.NotificationService"
+            android:label="Friday Notification Listener"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
 
         <!-- Receiver for Boot Auto-Start -->
         <receiver

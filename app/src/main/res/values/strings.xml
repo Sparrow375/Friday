@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Friday</string>
+    <string name="accessibility_description">Friday Accessibility Service enables deep offline voice controls and agentic in-app automation capabilities.</string>
 </resources>

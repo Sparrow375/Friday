@@ -5,191 +5,201 @@ import android.util.Log
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import com.friday.assistant.core.ModelManager
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.FloatBuffer
 import kotlin.math.sqrt
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.Dispatchers
 
-class SpeakerVerifier private constructor(private val context: Context) {
+class SpeakerVerifier(private val context: Context, private val modelManager: ModelManager) {
+
+    companion object {
+        private const val TAG = "SpeakerVerifier"
+        private const val PREFS_NAME = "friday_speaker_prefs"
+        private const val KEY_ENROLLED_EMBEDDING = "enrolled_speaker_embedding"
+        private const val DEFAULT_MATCH_THRESHOLD = 0.72f
+    }
 
     private var ortEnv: OrtEnvironment? = null
     private var ortSession: OrtSession? = null
+    private val sharedPrefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val gson = Gson()
+
+    // Temporary list for recording enrollment samples before averaging
+    private val enrollmentSessionEmbeddings = mutableListOf<FloatArray>()
 
     init {
-        kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            initModel()
-        }
-    }
-
-    fun reloadModel() {
-        kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                ortSession?.close()
-                ortSession = null
-                ortEnv?.close()
-                ortEnv = null
-            } catch (e: Exception) {
-                Log.e(TAG, "Error closing ONNX resources", e)
-            }
-            initModel()
-        }
-    }
-
-    private fun initModel() {
-        val prefs = context.getSharedPreferences("friday_prefs", Context.MODE_PRIVATE)
-        val selectedPath = prefs.getString("selected_speaker_path", null)
-        var existingModel: File? = null
-        
-        if (selectedPath != null) {
-            val file = File(selectedPath)
-            if (file.exists() && file.isFile) {
-                existingModel = file
-            }
-        }
-        
-        if (existingModel == null) {
-            val targetFile = File(context.filesDir, "speaker_verification.onnx")
-            if (!targetFile.exists() || targetFile.length() == 0L) {
-                try {
-                    context.assets.open("speaker_verification.onnx").use { input ->
-                        targetFile.outputStream().use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                    Log.i(TAG, "Copied speaker_verification.onnx from assets to filesDir")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to copy speaker_verification.onnx from assets", e)
-                }
-            }
-            if (targetFile.exists() && targetFile.length() > 0L) {
-                existingModel = targetFile
-            }
-        }
-
-        if (existingModel == null) {
-            val possiblePaths = listOf(
-                File(context.filesDir, "speaker_verification.onnx"),
-                File(context.getExternalFilesDir(null), "speaker_verification.onnx"),
-                File("/sdcard/Android/data/com.friday.assistant/files/speaker_verification.onnx")
-            )
-            existingModel = possiblePaths.firstOrNull { it.exists() && it.isFile }
-        }
-        
-        if (existingModel == null) {
-            Log.w(TAG, "Speaker verification ONNX model file does not exist.")
-            return
-        }
-        
         try {
             ortEnv = OrtEnvironment.getEnvironment()
-            ortSession = ortEnv?.createSession(existingModel.absolutePath, OrtSession.SessionOptions())
-            Log.i(TAG, "ONNX Speaker Verification model loaded successfully from: ${existingModel.absolutePath}")
-        } catch (t: Throwable) {
-            Log.e(TAG, "Error loading ONNX model or JNI libraries from: ${existingModel.absolutePath}", t)
+            val modelPath = modelManager.getSpeakerModelPath()
+            if (File(modelPath).exists()) {
+                ortSession = ortEnv?.createSession(modelPath, OrtSession.SessionOptions())
+                Log.i(TAG, "ONNX Speaker Verification model loaded successfully")
+            } else {
+                Log.e(TAG, "Speaker model does not exist at: $modelPath")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize ONNX Runtime or load speaker model", e)
         }
     }
 
     fun isModelLoaded(): Boolean = ortSession != null
 
     /**
-     * Extracts a speaker embedding vector from raw PCM audio samples.
-     * Audio must be 16kHz mono.
+     * Extracts speaker embedding vector from raw PCM 16kHz mono audio.
      */
     fun extractEmbedding(pcmData: ShortArray): FloatArray? {
         val session = ortSession ?: return null
         val env = ortEnv ?: return null
         
         try {
-            // Convert ShortArray PCM to FloatArray normalized between -1.0f and 1.0f
+            // Convert Short PCM to Float (-1.0 to 1.0)
             val floatAudio = FloatArray(pcmData.size)
             for (i in pcmData.indices) {
                 floatAudio[i] = pcmData[i].toFloat() / 32768.0f
             }
 
-            // Create input tensor: shape [1, num_samples]
+            // Shape [1, num_samples]
             val shape = longArrayOf(1, floatAudio.size.toLong())
             val buffer = FloatBuffer.wrap(floatAudio)
             val inputTensor = OnnxTensor.createTensor(env, buffer, shape)
 
-            // Run inference
             val inputName = session.inputNames.iterator().next()
             val results = session.run(mapOf(inputName to inputTensor))
             
-            // Get output embedding
             val outputValue = results[0].value
-            val embedding = if (outputValue is Array<*>) {
-                // If output shape is [1, embedding_size]
-                if (outputValue[0] is FloatArray) {
-                    outputValue[0] as FloatArray
-                } else {
-                    null
-                }
-            } else if (outputValue is FloatArray) {
-                outputValue
-            } else {
-                null
+            val embedding = when {
+                outputValue is Array<*> && outputValue[0] is FloatArray -> outputValue[0] as FloatArray
+                outputValue is FloatArray -> outputValue
+                else -> null
             }
 
             results.close()
             inputTensor.close()
             return embedding
-        } catch (t: Throwable) {
-            Log.e(TAG, "Error during speaker embedding extraction", t)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error extracting speaker embedding", e)
             return null
         }
     }
 
-    /**
-     * Verifies if the speaker of the current audio matches the enrolled speaker.
-     */
-    fun verifySpeaker(pcmData: ShortArray, enrolledEmbedding: FloatArray): Float {
-        val currentEmbedding = extractEmbedding(pcmData) ?: return -1f
-        return computeCosineSimilarity(currentEmbedding, enrolledEmbedding)
+    // ==========================================
+    // Speaker Enrollment Flow (Multi-sample)
+    // ==========================================
+
+    fun startEnrollmentSession() {
+        enrollmentSessionEmbeddings.clear()
+        Log.d(TAG, "Enrollment session started. Cache cleared.")
     }
 
-    /**
-     * Computes the Cosine Similarity between two embedding vectors.
-     * Similarity ranges from -1.0 to 1.0. Typically, 0.75+ is a strong match.
-     */
-    fun computeCosineSimilarity(vectorA: FloatArray, vectorB: FloatArray): Float {
-        if (vectorA.size != vectorB.size || vectorA.isEmpty()) return 0.0f
+    fun addEnrollmentSample(pcmData: ShortArray): Boolean {
+        val embedding = extractEmbedding(pcmData)
+        if (embedding != null) {
+            enrollmentSessionEmbeddings.add(embedding)
+            Log.d(TAG, "Enrollment sample added. Current count: ${enrollmentSessionEmbeddings.size}")
+            return true
+        }
+        Log.e(TAG, "Failed to extract embedding from enrollment sample")
+        return false
+    }
+
+    fun finalizeEnrollment(): Boolean {
+        if (enrollmentSessionEmbeddings.isEmpty()) {
+            Log.e(TAG, "No samples collected for enrollment")
+            return false
+        }
+
+        // Average all embeddings in session
+        val embeddingSize = enrollmentSessionEmbeddings[0].size
+        val averageEmbedding = FloatArray(embeddingSize)
+
+        for (embedding in enrollmentSessionEmbeddings) {
+            if (embedding.size != embeddingSize) continue
+            for (i in 0 until embeddingSize) {
+                averageEmbedding[i] += embedding[i]
+            }
+        }
+
+        // Divide by count to get the mean
+        val count = enrollmentSessionEmbeddings.size
+        for (i in 0 until embeddingSize) {
+            averageEmbedding[i] /= count
+        }
+
+        // Normalize the average embedding vector
+        var normSum = 0.0f
+        for (v in averageEmbedding) {
+            normSum += v * v
+        }
+        val norm = sqrt(normSum)
+        if (norm > 0) {
+            for (i in 0 until embeddingSize) {
+                averageEmbedding[i] /= norm
+            }
+        }
+
+        // Save to Shared Preferences
+        val json = gson.toJson(averageEmbedding)
+        sharedPrefs.edit().putString(KEY_ENROLLED_EMBEDDING, json).apply()
+        Log.i(TAG, "Speaker profile finalized and saved to preferences. Vector size: $embeddingSize")
+        return true
+    }
+
+    fun isEnrolled(): Boolean {
+        return sharedPrefs.contains(KEY_ENROLLED_EMBEDDING)
+    }
+
+    fun clearEnrollment() {
+        sharedPrefs.edit().remove(KEY_ENROLLED_EMBEDDING).apply()
+        Log.i(TAG, "Enrolled speaker profile deleted")
+    }
+
+    private fun getEnrolledEmbedding(): FloatArray? {
+        val json = sharedPrefs.getString(KEY_ENROLLED_EMBEDDING, null) ?: return null
+        return try {
+            val type = object : TypeToken<FloatArray>() {}.type
+            gson.fromJson<FloatArray>(json, type)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing enrolled embedding", e)
+            null
+        }
+    }
+
+    // ==========================================
+    // Speaker Verification
+    // ==========================================
+
+    suspend fun verify(pcmData: ShortArray, threshold: Float = DEFAULT_MATCH_THRESHOLD): Boolean = withContext(Dispatchers.Default) {
+        val enrolled = getEnrolledEmbedding()
+        if (enrolled == null) {
+            Log.w(TAG, "Speaker verification requested but no profile is enrolled. Accepting by default.")
+            return@withContext true
+        }
+
+        val testEmbedding = extractEmbedding(pcmData) ?: return@withContext false
+        val similarity = computeCosineSimilarity(testEmbedding, enrolled)
+        Log.i(TAG, "Speaker verification score: $similarity (threshold: $threshold)")
         
+        return@withContext similarity >= threshold
+    }
+
+    private fun computeCosineSimilarity(vectorA: FloatArray, vectorB: FloatArray): Float {
+        if (vectorA.size != vectorB.size || vectorA.isEmpty()) return 0.0f
         var dotProduct = 0.0f
         var normA = 0.0f
         var normB = 0.0f
-        
         for (i in vectorA.indices) {
             dotProduct += vectorA[i] * vectorB[i]
             normA += vectorA[i] * vectorA[i]
             normB += vectorB[i] * vectorB[i]
         }
-        
-        return if (normA > 0 && normB > 0) {
+        return if (normA > 0f && normB > 0f) {
             dotProduct / (sqrt(normA) * sqrt(normB))
         } else {
             0.0f
-        }
-    }
-
-    companion object {
-        private const val TAG = "SpeakerVerifier"
-        
-        @Volatile
-        private var INSTANCE: SpeakerVerifier? = null
-
-        fun getInstance(context: Context): SpeakerVerifier? {
-            return try {
-                INSTANCE ?: synchronized(this) {
-                    val instance = SpeakerVerifier(context)
-                    INSTANCE = instance
-                    instance
-                }
-            } catch (t: Throwable) {
-                Log.e(TAG, "Failed to initialize SpeakerVerifier (JNI loading / model error)", t)
-                null
-            }
         }
     }
 }

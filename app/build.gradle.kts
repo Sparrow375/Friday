@@ -8,12 +8,36 @@ plugins {
 android {
     namespace = "com.friday.assistant"
     compileSdk = 36
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
     defaultConfig {
         applicationId = "com.friday.assistant"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+                arguments += listOf(
+                    "-DGGML_OPENMP=OFF",
+                    "-DGGML_NATIVE=OFF",
+                    "-DGGML_AVX=OFF",
+                    "-DGGML_AVX2=OFF",
+                    "-DGGML_FMA=OFF",
+                    "-DGGML_F16C=OFF"
+                )
+            }
+        }
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
     }
 
     buildTypes {
@@ -83,8 +107,7 @@ dependencies {
   implementation(libs.androidx.navigation3.runtime)
   implementation(libs.androidx.lifecycle.viewmodel.navigation3)
 
-  // On-Device Generative AI (Local LLM)
-  implementation(libs.google.mediapipe.genai)
+  // On-Device Generative AI: Native llama.cpp/whisper.cpp via CMake
 
   // On-Device Audio Speaker Verification (ONNX)
   implementation(libs.onnxruntime.android)

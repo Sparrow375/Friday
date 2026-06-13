@@ -1,0 +1,98 @@
+package com.friday.assistant.tools.media
+
+import android.app.SearchManager
+import android.content.Context
+import android.content.Intent
+import android.media.AudioManager
+import android.os.SystemClock
+import android.provider.MediaStore
+import android.view.KeyEvent
+import com.friday.assistant.tools.Tool
+import com.friday.assistant.tools.ToolResult
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+
+class MediaControlTool(private val context: Context) : Tool {
+
+    companion object {
+        private const val TAG = "MediaControlTool"
+    }
+
+    override val name: String = "media_control"
+
+    override val description: String = """
+        Controls media playback (play, pause, next, previous) or plays specific songs/artists 
+        on Spotify or the default system media app.
+    """.trimIndent()
+
+    override val parameters: JsonObject = JsonParser.parseString("""
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["play", "pause", "next", "previous", "play_search"],
+              "description": "The media control action to perform"
+            },
+            "query": {
+              "type": "string",
+              "description": "The song name, artist, or genre to search and play (only used for 'play_search' action)"
+            }
+          },
+          "required": ["action"]
+        }
+    """).asJsonObject
+
+    override suspend fun execute(args: JsonObject): ToolResult {
+        val action = args.get("action")?.asString ?: return ToolResult(false, "Missing required parameter: action")
+        
+        return when (action) {
+            "play" -> sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY)
+            "pause" -> sendMediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE)
+            "next" -> sendMediaKey(KeyEvent.KEYCODE_MEDIA_NEXT)
+            "previous" -> sendMediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
+            "play_search" -> {
+                val query = args.get("query")?.asString 
+                    ?: return ToolResult(false, "Missing parameter 'query' for action 'play_search'")
+                playFromSearch(query)
+            }
+            else -> ToolResult(false, "Unknown media action: $action")
+        }
+    }
+
+    private fun sendMediaKey(keycode: Int): ToolResult {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val eventTime = SystemClock.uptimeMillis()
+
+        // Send Key Down
+        val downEvent = KeyEvent(eventTime, eventTime, KeyEvent.ACTION_DOWN, keycode, 0)
+        audioManager.dispatchMediaKeyEvent(downEvent)
+
+        // Send Key Up
+        val upEvent = KeyEvent(eventTime, eventTime, KeyEvent.ACTION_UP, keycode, 0)
+        audioManager.dispatchMediaKeyEvent(upEvent)
+
+        val actionName = when (keycode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY -> "Play"
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> "Pause"
+            KeyEvent.KEYCODE_MEDIA_NEXT -> "Next Track"
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> "Previous Track"
+            else -> "Media Key"
+        }
+        return ToolResult(true, "Sent media command: $actionName")
+    }
+
+    private fun playFromSearch(query: String): ToolResult {
+        return try {
+            val intent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
+                putExtra(SearchManager.QUERY, query)
+                putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(intent)
+            ToolResult(true, "Initiating music playback from search query: '$query'")
+        } catch (e: Exception) {
+            ToolResult(false, "Failed to start media playback from search: ${e.message}")
+        }
+    }
+}
