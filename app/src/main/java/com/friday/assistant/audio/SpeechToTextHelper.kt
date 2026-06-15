@@ -15,7 +15,7 @@ class SpeechToTextHelper(
     private val context: Context,
     private val onTranscriptUpdate: (String) -> Unit,
     private val onFinalResult: (String) -> Unit,
-    private val onRmsChanged: (Float) -> Unit,
+    private val onRmsUpdate: (Float) -> Unit,
     private val onStateChanged: (PipelineState) -> Unit
 ) {
     companion object {
@@ -48,7 +48,7 @@ class SpeechToTextHelper(
                             override fun onRmsChanged(rmsdB: Float) {
                                 // Normalize standard rmsdB values (approx -2dB to 10dB) to a 0.0 - 1.0 range
                                 val normalized = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
-                                onRmsChanged(normalized)
+                                onRmsUpdate(normalized)
                             }
 
                             override fun onBufferReceived(buffer: ByteArray?) {}

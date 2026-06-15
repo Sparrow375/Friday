@@ -150,7 +150,7 @@ class FridayForegroundService : Service(), TextToSpeech.OnInitListener {
                     executeAgentQuery(finalResult)
                 }
             },
-            onRmsChanged = { amplitude ->
+            onRmsUpdate = { amplitude ->
                 if (pipelineState.value == PipelineState.LISTENING) {
                     overlayManager?.updateAmplitude(amplitude)
                 }
