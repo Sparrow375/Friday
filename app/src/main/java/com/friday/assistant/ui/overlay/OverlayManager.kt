@@ -84,6 +84,7 @@ class OverlayManager(
                 windowAnimations = android.R.style.Animation_Toast
                 x = 0
                 y = 0
+                softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
             }
             this.params = layoutParams
 

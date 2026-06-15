@@ -36,7 +36,7 @@ class LlamaEngine {
             try {
                 statePtr = initLlama(modelPath)
                 statePtr != 0L
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Exception initializing Llama model", e)
                 false
             }
@@ -53,7 +53,7 @@ class LlamaEngine {
         if (statePtr != 0L) {
             try {
                 freeLlama(statePtr)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Exception freeing Llama model", e)
             } finally {
                 statePtr = 0L
@@ -65,7 +65,7 @@ class LlamaEngine {
         if (statePtr != 0L) {
             try {
                 clearLlamaHistory(statePtr)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Exception clearing Llama history", e)
             }
         }
@@ -78,7 +78,7 @@ class LlamaEngine {
             }
             try {
                 generateLlama(statePtr, prompt, maxTokens, temp)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Exception in Llama text generation", e)
                 "Error: Generation failed"
             }

@@ -61,7 +61,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var modelManager: ModelManager
     private var speakerVerifier: SpeakerVerifier? = null
-    private val audioCaptureManager = AudioCaptureManager(this)
+    private val audioCaptureManager = FridayApplication.audioCaptureManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -317,7 +317,7 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.size(24.dp)
                     )
                     Spacer(modifier = Modifier.width(12.dp))
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = if (systemReady) "Friday is Active & Listening" else "Setup Required",
                             fontWeight = FontWeight.Bold,
@@ -328,6 +328,19 @@ class MainActivity : ComponentActivity() {
                             color = SilverText,
                             style = MaterialTheme.typography.labelMedium
                         )
+                    }
+                    if (systemReady && FridayService.instance != null) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                FridayService.instance?.showOverlay()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonBlue),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 1.dp)
+                        ) {
+                            Text("Open Overlay", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }

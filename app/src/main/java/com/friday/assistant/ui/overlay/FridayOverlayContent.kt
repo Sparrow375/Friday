@@ -33,6 +33,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import android.util.Log
 import com.friday.assistant.audio.PipelineState
 import com.friday.assistant.ui.theme.*
 import kotlinx.coroutines.delay
@@ -53,9 +56,18 @@ fun FridayOverlayContent(
 ) {
     var textInput by remember { mutableStateOf("") }
     var showTextInput by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
 
     LaunchedEffect(showTextInput) {
         onKeyboardActive(showTextInput)
+        if (showTextInput) {
+            delay(150)
+            try {
+                focusRequester.requestFocus()
+            } catch (e: Exception) {
+                Log.e("FridayOverlayContent", "Failed to request focus", e)
+            }
+        }
     }
 
     FridayTheme {
@@ -235,6 +247,7 @@ fun FridayOverlayContent(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 8.dp)
+                                .focusRequester(focusRequester)
                         )
                     }
 

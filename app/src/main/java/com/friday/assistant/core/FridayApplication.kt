@@ -9,6 +9,7 @@ import android.util.Log
 import com.friday.assistant.core.db.FridayDatabase
 import com.friday.assistant.core.native.LlamaEngine
 import com.friday.assistant.core.native.WhisperEngine
+import com.friday.assistant.audio.AudioCaptureManager
 
 class FridayApplication : Application() {
 
@@ -16,15 +17,20 @@ class FridayApplication : Application() {
         private const val TAG = "FridayApplication"
         const val CHANNEL_ID = "friday_assistant_channel"
         
+        lateinit var instance: FridayApplication
+            private set
+        
         lateinit var database: FridayDatabase
             private set
 
         val llamaEngine by lazy { LlamaEngine() }
         val whisperEngine by lazy { WhisperEngine() }
+        val audioCaptureManager by lazy { AudioCaptureManager(instance) }
     }
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         Log.i(TAG, "Initializing Project Friday Application")
         
         // Initialize Database

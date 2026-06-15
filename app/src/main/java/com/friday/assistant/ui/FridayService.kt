@@ -87,7 +87,7 @@ class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
         modelManager = ModelManager(this)
         memoryManager = MemoryManager(this)
         agentCore = AgentCore(this, memoryManager)
-        audioCaptureManager = AudioCaptureManager(this)
+        audioCaptureManager = FridayApplication.audioCaptureManager
         speakerVerifier = SpeakerVerifier(this, modelManager)
         
         // 2. Initialize Voice pipeline
@@ -147,6 +147,12 @@ class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
         // 6. Observe Pipeline State to update UI status text and waveforms
         voicePipeline.state.onEach { state ->
             val status = getStatusText(state)
+            
+            // Auto-restore overlay when voice activity is detected or assistant is active
+            if (state != PipelineState.IDLE) {
+                overlayManager?.show()
+            }
+            
             overlayManager?.updateState(state, status)
             
             if (state == PipelineState.IDLE) {
@@ -353,5 +359,9 @@ class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
     fun resumeVoicePipeline() {
         Log.i(TAG, "Resuming voice pipeline after external audio use")
         voicePipeline.startPipeline()
+    }
+
+    fun showOverlay() {
+        overlayManager?.show()
     }
 }

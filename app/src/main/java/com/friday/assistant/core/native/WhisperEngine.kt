@@ -35,7 +35,7 @@ class WhisperEngine {
             try {
                 contextPtr = initWhisper(modelPath)
                 contextPtr != 0L
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Exception initializing Whisper model", e)
                 false
             }
@@ -52,7 +52,7 @@ class WhisperEngine {
         if (contextPtr != 0L) {
             try {
                 freeWhisper(contextPtr)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Exception freeing Whisper model", e)
             } finally {
                 contextPtr = 0L
@@ -68,7 +68,7 @@ class WhisperEngine {
             }
             try {
                 transcribeWhisper(contextPtr, audioSamples)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Exception transcribing audio", e)
                 ""
             }
