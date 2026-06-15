@@ -44,6 +44,7 @@ import com.friday.assistant.audio.SpeakerVerifier
 import com.friday.assistant.core.FridayApplication
 import com.friday.assistant.core.ModelManager
 import com.friday.assistant.ui.FridayService
+import com.friday.assistant.ui.FridayForegroundService
 import com.friday.assistant.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -136,7 +137,7 @@ class MainActivity : ComponentActivity() {
             while (true) {
                 val micGranted = checkPermission(Manifest.permission.RECORD_AUDIO)
                 if (micGranted && !hasMicPermission) {
-                    FridayService.instance?.promoteToMicrophoneForeground()
+                    FridayForegroundService.start(context)
                 }
                 hasMicPermission = micGranted
                 hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -166,7 +167,7 @@ class MainActivity : ComponentActivity() {
         ) { permissions ->
             val micGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: hasMicPermission
             if (micGranted && !hasMicPermission) {
-                FridayService.instance?.promoteToMicrophoneForeground()
+                FridayForegroundService.start(context)
             }
             hasMicPermission = micGranted
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -290,9 +291,9 @@ class MainActivity : ComponentActivity() {
             )
 
             // System Active Banner
-            val allCorePermissionsGranted = hasMicPermission && hasOverlayPermission && hasAccessibilityPermission
+            val allCorePermissionsGranted = hasMicPermission && hasOverlayPermission
             val systemReady = allCorePermissionsGranted && llmLoaded && whisperLoaded
-            val serviceRunning = FridayService.instance != null
+            val fgServiceRunning = FridayForegroundService.instance != null
 
             Card(
                 modifier = Modifier
@@ -331,10 +332,17 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // Open Overlay button — always visible when Accessibility Service is running
-            if (serviceRunning) {
+            // Open Overlay button — visible when core microphone and overlay permissions are granted
+            if (hasMicPermission && hasOverlayPermission) {
                 Button(
-                    onClick = { FridayService.instance?.showOverlay() },
+                    onClick = {
+                        val activeFgService = FridayForegroundService.instance
+                        if (activeFgService != null) {
+                            activeFgService.showOverlay()
+                        } else {
+                            FridayForegroundService.start(context)
+                        }
+                    },
                     colors = ButtonDefaults.buttonColors(containerColor = NeonBlue),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -821,13 +829,10 @@ class MainActivity : ComponentActivity() {
     private fun startVoiceEnrollment(onProgress: (Float, String) -> Unit, onFinished: (Boolean) -> Unit) {
         lifecycleScope.launch(Dispatchers.IO) {
             var success = false
-            val activeService = FridayService.instance
             try {
                 val verifier = speakerVerifier ?: return@launch
 
-                // 1. Temporarily pause the background service's voice pipeline to release the mic hardware
-                activeService?.pauseVoicePipeline()
-                delay(600) // Wait longer to ensure AudioRecord hardware is fully released
+                delay(600) // Wait for any active audio captures to release
 
                 withContext(Dispatchers.Main) {
                     onProgress(0.05f, "Initializing Enrollment Session...")
@@ -904,7 +909,6 @@ class MainActivity : ComponentActivity() {
                 Log.e(TAG, "Error in startVoiceEnrollment", e)
             } finally {
                 delay(500)
-                activeService?.resumeVoicePipeline()
                 withContext(Dispatchers.Main) {
                     onFinished(success)
                 }

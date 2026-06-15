@@ -3,9 +3,8 @@ package com.friday.assistant.core
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.util.Log
-import com.friday.assistant.ui.FridayService
+import com.friday.assistant.ui.FridayForegroundService
 
 class BootReceiver : BroadcastReceiver() {
     companion object {
@@ -14,16 +13,11 @@ class BootReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
-            Log.i(TAG, "System boot completed. Automatically starting FridayService...")
+            Log.i(TAG, "System boot completed. Automatically starting FridayForegroundService...")
             try {
-                val serviceIntent = Intent(context, FridayService::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(serviceIntent)
-                } else {
-                    context.startService(serviceIntent)
-                }
+                FridayForegroundService.start(context)
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to start FridayService on boot", e)
+                Log.e(TAG, "Failed to start FridayForegroundService on boot", e)
             }
         }
     }

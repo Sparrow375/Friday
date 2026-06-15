@@ -59,20 +59,8 @@ fun FridayOverlayContent(
     val focusRequester = remember { FocusRequester() }
 
     LaunchedEffect(showTextInput) {
-        if (showTextInput) {
-            // Step 1: Make the overlay window focusable FIRST so the system IME can attach
-            onKeyboardActive(true)
-            // Step 2: Give WindowManager time to apply the flag update before requesting focus
-            delay(250)
-            try {
-                focusRequester.requestFocus()
-            } catch (e: Exception) {
-                Log.e("FridayOverlayContent", "Failed to request focus", e)
-            }
-        } else {
-            // Return window to non-focusable (pass-through touches to apps below)
-            onKeyboardActive(false)
-        }
+        // Toggle window focusability states
+        onKeyboardActive(showTextInput)
     }
 
     FridayTheme {
@@ -215,6 +203,8 @@ fun FridayOverlayContent(
                         enter = fadeIn(),
                         exit = fadeOut()
                     ) {
+                        val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+                        
                         OutlinedTextField(
                             value = textInput,
                             onValueChange = { textInput = it },
@@ -254,6 +244,17 @@ fun FridayOverlayContent(
                                 .padding(horizontal = 8.dp)
                                 .focusRequester(focusRequester)
                         )
+
+                        LaunchedEffect(Unit) {
+                            // Delay slightly for window manager updates and keyboard layout animations to sync
+                            delay(300)
+                            try {
+                                focusRequester.requestFocus()
+                                keyboardController?.show()
+                            } catch (e: Exception) {
+                                Log.e("FridayOverlayContent", "Failed to focus OutlinedTextField", e)
+                            }
+                        }
                     }
 
                     if (!showTextInput && pipelineState == PipelineState.IDLE) {

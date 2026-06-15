@@ -145,11 +145,20 @@ class OverlayManager(
         if (view != null && p != null) {
             if (focusable) {
                 p.flags = p.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+                p.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE or WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
             } else {
                 p.flags = p.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                p.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
+                
+                // Force hide the soft keyboard
+                val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+                imm?.hideSoftInputFromWindow(view.windowToken, 0)
             }
             try {
                 windowManager.updateViewLayout(view, p)
+                if (focusable) {
+                    view.requestFocus()
+                }
                 Log.d(TAG, "Overlay focusable updated: $focusable")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to update focusability layout params", e)

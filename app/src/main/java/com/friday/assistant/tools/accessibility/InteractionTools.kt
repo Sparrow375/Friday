@@ -110,7 +110,7 @@ class GlobalActionTool : Tool {
     override val name: String = "global_system_action"
     
     override val description: String = """
-        Performs a system-wide action like going back, returning to home screen, or showing recent apps.
+        Performs a system-wide action like going back, returning to home screen, showing recent apps, or locking the screen.
     """.trimIndent()
 
     override val parameters: JsonObject = JsonParser.parseString("""
@@ -119,7 +119,7 @@ class GlobalActionTool : Tool {
           "properties": {
             "action": {
               "type": "string",
-              "enum": ["back", "home", "recents"],
+              "enum": ["back", "home", "recents", "lock"],
               "description": "The system action to perform"
             }
           },
@@ -133,6 +133,13 @@ class GlobalActionTool : Tool {
             "back" -> AccessibilityService.GLOBAL_ACTION_BACK
             "home" -> AccessibilityService.GLOBAL_ACTION_HOME
             "recents" -> AccessibilityService.GLOBAL_ACTION_RECENTS
+            "lock" -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN
+                } else {
+                    return ToolResult(false, "Lock action is only supported on Android 9 (API 28) and above")
+                }
+            }
             else -> return ToolResult(false, "Invalid action: $actionStr")
         }
         val success = UIAutomator.performGlobalAction(actionId)
