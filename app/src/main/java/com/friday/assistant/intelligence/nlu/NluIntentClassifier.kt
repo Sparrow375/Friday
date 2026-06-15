@@ -2,9 +2,9 @@ package com.friday.assistant.intelligence.nlu
 
 import android.content.Context
 import android.util.Log
-import com.microsoft.onnxruntime.OnnxTensor
-import com.microsoft.onnxruntime.OrtEnvironment
-import com.microsoft.onnxruntime.OrtSession
+import ai.onnxruntime.OnnxTensor
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
 import java.io.File
 import java.nio.LongBuffer
 
@@ -114,13 +114,14 @@ class NluIntentClassifier(private val context: Context) {
             )
 
             ortSession!!.run(inputs).use { results ->
-                val outputTensor = results[0] as OnnxTensor
-                val floatArray = outputTensor.floatBuffer
-                val outputShape = outputTensor.info.shape
-                val numClasses = outputShape[1].toInt()
+                val outputValue = results[0].value
+                val logits = when {
+                    outputValue is Array<*> && outputValue[0] is FloatArray -> outputValue[0] as FloatArray
+                    outputValue is FloatArray -> outputValue
+                    else -> return Pair("unknown", 0f)
+                }
 
-                val logits = FloatArray(numClasses)
-                floatArray.get(logits)
+                val numClasses = logits.size
 
                 // Softmax selection
                 var maxIdx = 0
