@@ -136,7 +136,11 @@ class MainActivity : ComponentActivity() {
         // Periodically refresh permission states
         LaunchedEffect(Unit) {
             while (true) {
-                hasMicPermission = checkPermission(Manifest.permission.RECORD_AUDIO)
+                val micGranted = checkPermission(Manifest.permission.RECORD_AUDIO)
+                if (micGranted && !hasMicPermission) {
+                    FridayService.instance?.promoteToMicrophoneForeground()
+                }
+                hasMicPermission = micGranted
                 hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     checkPermission(Manifest.permission.POST_NOTIFICATIONS)
                 } else {
@@ -162,7 +166,11 @@ class MainActivity : ComponentActivity() {
         val permissionLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.RequestMultiplePermissions()
         ) { permissions ->
-            hasMicPermission = permissions[Manifest.permission.RECORD_AUDIO] ?: hasMicPermission
+            val micGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: hasMicPermission
+            if (micGranted && !hasMicPermission) {
+                FridayService.instance?.promoteToMicrophoneForeground()
+            }
+            hasMicPermission = micGranted
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 hasNotificationPermission = permissions[Manifest.permission.POST_NOTIFICATIONS] ?: hasNotificationPermission
             }
@@ -180,10 +188,15 @@ class MainActivity : ComponentActivity() {
                     try {
                         val contentResolver = context.contentResolver
                         var name = "qwen2.5-3b-instruct-q4_k_m.gguf"
+                        var totalBytes = -1L
                         contentResolver.query(uri, null, null, null, null)?.use { cursor ->
                             val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                             if (nameIndex != -1 && cursor.moveToFirst()) {
                                 name = cursor.getString(nameIndex)
+                            }
+                            val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                            if (sizeIndex != -1 && cursor.moveToFirst()) {
+                                totalBytes = cursor.getLong(sizeIndex)
                             }
                         }
 
@@ -198,10 +211,6 @@ class MainActivity : ComponentActivity() {
                         }
                         val destFile = File(destDir, name)
                         val tempFile = File(destDir, "$name.tmp")
-
-                        val pfd = contentResolver.openAssetFileDescriptor(uri, "r")
-                        val totalBytes = pfd?.length ?: -1L
-                        pfd?.close()
 
                         contentResolver.openInputStream(uri)?.use { inputStream ->
                             FileOutputStream(tempFile).use { outputStream ->
@@ -531,14 +540,19 @@ class MainActivity : ComponentActivity() {
                                     if (!hasMicPermission) {
                                         permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
                                     } else {
-                                        startVoiceEnrollment { progress, text ->
-                                            enrollmentProgress = progress
-                                            enrollmentStatusText = text
-                                            isEnrolling = progress < 1f
-                                            if (progress >= 1f) {
-                                                isEnrolled = true
+                                        isEnrolling = true
+                                        startVoiceEnrollment(
+                                            onProgress = { progress, text ->
+                                                enrollmentProgress = progress
+                                                enrollmentStatusText = text
+                                            },
+                                            onFinished = { success ->
+                                                isEnrolling = false
+                                                if (success) {
+                                                    isEnrolled = true
+                                                }
                                             }
-                                        }
+                                        )
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = NeonBlue),
@@ -790,115 +804,123 @@ class MainActivity : ComponentActivity() {
         return false
     }
 
-    private fun startVoiceEnrollment(onProgress: (Float, String) -> Unit) {
+    private fun startVoiceEnrollment(onProgress: (Float, String) -> Unit, onFinished: (Boolean) -> Unit) {
         lifecycleScope.launch(Dispatchers.IO) {
-            val verifier = speakerVerifier ?: return@launch
-            
-            // 1. Temporarily pause the background service's voice pipeline if it's active
+            var success = false
             val activeService = FridayService.instance
-            activeService?.pauseVoicePipeline()
-            delay(300) // Allow service to release hardware MIC
+            try {
+                val verifier = speakerVerifier ?: return@launch
+                
+                // 1. Temporarily pause the background service's voice pipeline if it's active
+                activeService?.pauseVoicePipeline()
+                delay(300) // Allow service to release hardware MIC
 
-            withContext(Dispatchers.Main) {
-                onProgress(0.05f, "Initializing Enrollment Session...")
-            }
-            verifier.startEnrollmentSession()
-
-            // 2. Start local capture
-            val captureStarted = audioCaptureManager.startCapture()
-            if (!captureStarted) {
                 withContext(Dispatchers.Main) {
-                    onProgress(0f, "Failed to initialize microphone. Is another app using it?")
+                    onProgress(0.05f, "Initializing Enrollment Session...")
                 }
-                activeService?.resumeVoicePipeline()
-                return@launch
-            }
+                verifier.startEnrollmentSession()
 
-            // 3. Try to ensure Whisper is loaded locally so we can transcribe what the user says
-            val whisperEngine = FridayApplication.whisperEngine
-            if (!whisperEngine.isModelLoaded()) {
-                val whisperPath = modelManager.getWhisperModelPath()
-                if (File(whisperPath).exists()) {
-                    whisperEngine.loadModel(whisperPath)
-                }
-            }
-
-            val samplesToCollect = 5
-            var successCount = 0
-            
-            for (i in 1..samplesToCollect) {
-                withContext(Dispatchers.Main) {
-                    onProgress((i - 1).toFloat() / samplesToCollect, "Say: 'Hey Friday' (Sample $i of $samplesToCollect)")
-                }
-
-                // Buffer speech clip (approx 2.5s)
-                val audioData = captureEnrollmentSample()
-                if (audioData == null) {
+                // 2. Start local capture
+                val captureStarted = audioCaptureManager.startCapture()
+                if (!captureStarted) {
                     withContext(Dispatchers.Main) {
-                        onProgress(0f, "Microphone capture timed out. Please try again.")
+                        onProgress(0f, "Failed to initialize microphone. Is another app using it?")
                     }
-                    audioCaptureManager.stopCapture()
-                    activeService?.resumeVoicePipeline()
                     return@launch
                 }
 
-                val added = verifier.addEnrollmentSample(audioData)
-                if (added) {
-                    successCount++
+                // 3. Try to ensure Whisper is loaded locally so we can transcribe what the user says
+                val whisperEngine = FridayApplication.whisperEngine
+                if (!whisperEngine.isModelLoaded()) {
+                    val whisperPath = modelManager.getWhisperModelPath()
+                    if (File(whisperPath).exists()) {
+                        whisperEngine.loadModel(whisperPath)
+                    }
                 }
 
-                // Run local Whisper transcription to show user what we captured
-                var transcriptionText = "Heard: silence or noise"
-                try {
-                    val floatData = FloatArray(audioData.size) { idx -> audioData[idx].toFloat() / 32768.0f }
-                    if (whisperEngine.isModelLoaded()) {
-                        val transcript = whisperEngine.transcribe(floatData).trim()
-                        if (transcript.isNotEmpty()) {
-                            transcriptionText = "Heard: \"$transcript\""
-                        }
+                val samplesToCollect = 5
+                var successCount = 0
+                
+                for (i in 1..samplesToCollect) {
+                    withContext(Dispatchers.Main) {
+                        onProgress((i - 1).toFloat() / samplesToCollect, "Say: 'Hey Friday' (Sample $i of $samplesToCollect)")
                     }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to run preview transcription", e)
+
+                    // Buffer speech clip (approx 2.5s)
+                    val audioData = captureEnrollmentSample()
+                    if (audioData == null) {
+                        withContext(Dispatchers.Main) {
+                            onProgress(0f, "Microphone capture timed out. Please try again.")
+                        }
+                        audioCaptureManager.stopCapture()
+                        return@launch
+                    }
+
+                    val added = verifier.addEnrollmentSample(audioData)
+                    if (added) {
+                        successCount++
+                    }
+
+                    // Run local Whisper transcription to show user what we captured
+                    var transcriptionText = "Heard: silence or noise"
+                    try {
+                        val floatData = FloatArray(audioData.size) { idx -> audioData[idx].toFloat() / 32768.0f }
+                        if (whisperEngine.isModelLoaded()) {
+                            val transcript = whisperEngine.transcribe(floatData).trim()
+                            if (transcript.isNotEmpty()) {
+                                transcriptionText = "Heard: \"$transcript\""
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to run preview transcription", e)
+                    }
+
+                    withContext(Dispatchers.Main) {
+                        onProgress(
+                            i.toFloat() / samplesToCollect,
+                            "Sample $i of $samplesToCollect added ($transcriptionText)"
+                        )
+                    }
+                    delay(1200) // Let user prepare and clean the screen log
                 }
 
                 withContext(Dispatchers.Main) {
-                    onProgress(
-                        i.toFloat() / samplesToCollect,
-                        "Sample $i of $samplesToCollect added ($transcriptionText)"
-                    )
+                    onProgress(0.9f, "Finalizing voice profile...")
                 }
-                delay(1200) // Let user prepare and clean the screen log
-            }
-
-            withContext(Dispatchers.Main) {
-                onProgress(0.9f, "Finalizing voice profile...")
-            }
-            audioCaptureManager.stopCapture()
-            
-            val success = successCount > 0 && verifier.finalizeEnrollment()
-            withContext(Dispatchers.Main) {
-                if (success) {
-                    onProgress(1.0f, "Voice Enrollment Complete!")
-                } else {
-                    onProgress(0f, "Voice Enrollment Failed.")
+                audioCaptureManager.stopCapture()
+                
+                success = successCount > 0 && verifier.finalizeEnrollment()
+                withContext(Dispatchers.Main) {
+                    if (success) {
+                        onProgress(1.0f, "Voice Enrollment Complete!")
+                    } else {
+                        onProgress(0f, "Voice Enrollment Failed.")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in startVoiceEnrollment", e)
+            } finally {
+                audioCaptureManager.stopCapture()
+                delay(500)
+                activeService?.resumeVoicePipeline()
+                withContext(Dispatchers.Main) {
+                    onFinished(success)
                 }
             }
-            
-            // 4. Resume service voice pipeline
-            delay(500)
-            activeService?.resumeVoicePipeline()
         }
     }
 
     private suspend fun captureEnrollmentSample(): ShortArray? {
         // Collect 2.5 seconds of 16kHz audio = 40,000 samples
         val targetSize = 16000 * 25 / 10
-        val collected = mutableListOf<Short>()
+        val collected = ArrayList<Short>()
         
         val listener = object : AudioCaptureManager.AudioFrameListener {
             override fun onAudioFrame(pcmData: ShortArray) {
-                if (collected.size < targetSize) {
-                    pcmData.forEach { collected.add(it) }
+                synchronized(collected) {
+                    if (collected.size < targetSize) {
+                        pcmData.forEach { collected.add(it) }
+                    }
                 }
             }
         }
@@ -908,8 +930,13 @@ class MainActivity : ComponentActivity() {
         val startTime = System.currentTimeMillis()
         var timedOut = false
         
-        while (collected.size < targetSize) {
+        while (true) {
             delay(100)
+            synchronized(collected) {
+                if (collected.size >= targetSize) {
+                    return@synchronized
+                }
+            }
             if (System.currentTimeMillis() - startTime > 5000) { // 5-second safety timeout
                 timedOut = true
                 break
@@ -918,9 +945,13 @@ class MainActivity : ComponentActivity() {
         
         audioCaptureManager.unregisterListener(listener)
 
-        if (timedOut || collected.isEmpty()) {
-            return null
+        val result = synchronized(collected) {
+            if (timedOut || collected.isEmpty()) {
+                null
+            } else {
+                collected.take(targetSize).toShortArray()
+            }
         }
-        return collected.take(targetSize).toShortArray()
+        return result
     }
 }

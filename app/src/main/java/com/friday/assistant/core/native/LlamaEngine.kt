@@ -72,7 +72,7 @@ class LlamaEngine {
     }
 
     suspend fun generate(prompt: String, maxTokens: Int = 256, temp: Float = 0.7f): String = mutex.withLock {
-        withContext(Dispatchers.Default) {
+        withContext(Dispatchers.IO) {
             if (statePtr == 0L) {
                 return@withContext "Error: Model not loaded"
             }

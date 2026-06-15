@@ -133,7 +133,10 @@ class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
         overlayManager = OverlayManager(
             context = this,
             onMicClick = { voicePipeline.forceTrigger() },
-            onClose = { Log.d(TAG, "Overlay close clicked") },
+            onClose = {
+                Log.i(TAG, "Overlay close clicked - dismissing overlay")
+                overlayManager?.dismiss()
+            },
             onTextSubmit = { text ->
                 serviceScope.launch {
                     executeAgentQuery(text)
@@ -175,16 +178,8 @@ class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
         Log.i(TAG, "Accessibility Service Connected. Starting Foreground notification.")
         instance = this
         
-        // Promote AccessibilityService to Foreground Service with microphone service type (required for targetSdk 34+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                createNotification(),
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, createNotification())
-        }
+        // Safe foreground service start
+        promoteToMicrophoneForeground()
 
         // Show floating bubble UI overlay
         overlayManager?.show()
@@ -196,6 +191,28 @@ class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
 
         // Activate voice pipeline
         voicePipeline.startPipeline()
+    }
+
+    fun promoteToMicrophoneForeground() {
+        val hasMicPerm = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!hasMicPerm) {
+            Log.w(TAG, "RECORD_AUDIO permission not granted yet. Skipping startForeground promotion.")
+            return
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    createNotification(),
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+                Log.i(TAG, "Promoted service to MICROPHONE foreground service")
+            } else {
+                startForeground(NOTIFICATION_ID, createNotification())
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to start/promote foreground service", e)
+        }
     }
 
     private fun createNotification(): Notification {

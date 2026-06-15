@@ -99,7 +99,9 @@ class VoicePipeline(
     private suspend fun triggerWake() {
         Log.i(TAG, "Transitioning from IDLE to LISTENING")
         _state.value = PipelineState.LISTENING
-        commandAudioBuffer.clear()
+        synchronized(commandAudioBuffer) {
+            commandAudioBuffer.clear()
+        }
         commandStartTimestamp = System.currentTimeMillis()
         silenceStartTimestamp = 0L
         
@@ -111,7 +113,9 @@ class VoicePipeline(
         
         if (currentState == PipelineState.LISTENING) {
             // Store audio samples
-            pcmData.forEach { commandAudioBuffer.add(it) }
+            synchronized(commandAudioBuffer) {
+                pcmData.forEach { commandAudioBuffer.add(it) }
+            }
 
             val now = System.currentTimeMillis()
             val rms = calculateRMS(pcmData)
@@ -140,8 +144,11 @@ class VoicePipeline(
 
     private suspend fun processSpeechCommand() {
         _state.value = PipelineState.PROCESSING
-        val audioData = commandAudioBuffer.toShortArray()
-        commandAudioBuffer.clear()
+        val audioData = synchronized(commandAudioBuffer) {
+            val arr = commandAudioBuffer.toShortArray()
+            commandAudioBuffer.clear()
+            arr
+        }
 
         // 1. Run speaker verification in parallel
         val isVerified = speakerVerifier.verify(audioData)

@@ -28,6 +28,9 @@ class AgentCore(
         Log.i(TAG, "AgentCore processing query: '$userInput'")
         _agentStatusFlow.emit("Thinking...")
 
+        // Clear native LLM history before processing a new query since we build the full context prompt
+        llamaEngine.clearHistory()
+
         // Build the initial prompt (includes system prompts, tool schemas, preferences, history)
         var currentPrompt = promptBuilder.buildPrompt(userInput)
         var loopCount = 0

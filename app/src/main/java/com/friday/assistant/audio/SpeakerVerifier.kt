@@ -41,7 +41,7 @@ class SpeakerVerifier(private val context: Context, private val modelManager: Mo
             } else {
                 Log.e(TAG, "Speaker model does not exist at: $modelPath")
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Failed to initialize ONNX Runtime or load speaker model", e)
         }
     }

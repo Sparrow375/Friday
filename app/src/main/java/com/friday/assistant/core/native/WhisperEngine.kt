@@ -61,7 +61,7 @@ class WhisperEngine {
     }
 
     suspend fun transcribe(audioSamples: FloatArray): String = mutex.withLock {
-        withContext(Dispatchers.Default) {
+        withContext(Dispatchers.IO) {
             if (contextPtr == 0L) {
                 Log.e(TAG, "Whisper model not loaded")
                 return@withContext ""

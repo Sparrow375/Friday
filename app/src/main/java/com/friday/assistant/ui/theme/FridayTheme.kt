@@ -12,12 +12,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 // Sleek, Premium & Simple Color System (Revamped from cyber-neon)
-val NeonBlue = Color(0xFF6366F1)       // Premium Indigo
+val NeonBlue = Color(0xFF2563EB)       // Premium Blue
 val NeonCyan = Color(0xFF0EA5E9)       // Premium Sky Blue
 val ObsidianDark = Color(0xFF090A0F)   // Deep Charcoal/Obsidian background
 val GlassObsidian = Color(0xF2171923)  // Dark premium card/sheet container
 val SlateGray = Color(0xFF1F2232)      // Modern Slate Gray card background
-val CyberBorder = Color(0x1F6366F1)    // Soft indigo outline border
+val CyberBorder = Color(0x1F2563EB)    // Soft blue outline border
 val SilverText = Color(0xFF94A3B8)     // Cool muted gray subtext
 val GlowGreen = Color(0xFF10B981)      // Elegant Emerald Green for success/active states
 val AlertRed = Color(0xFFEF4444)       // Clean Coral Red for alerts/error states

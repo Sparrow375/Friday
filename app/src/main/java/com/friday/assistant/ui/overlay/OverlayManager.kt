@@ -61,12 +61,14 @@ class OverlayManager(
         savedStateRegistryController.performRestore(null)
     }
 
+    private var params: WindowManager.LayoutParams? = null
+
     fun show() {
         if (isVisible) return
         Log.i(TAG, "Showing overlay window")
         
         try {
-            val params = WindowManager.LayoutParams(
+            val layoutParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -75,12 +77,15 @@ class OverlayManager(
                     @Suppress("DEPRECATION")
                     WindowManager.LayoutParams.TYPE_PHONE
                 },
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP
                 windowAnimations = android.R.style.Animation_Toast
+                x = 0
+                y = 0
             }
+            this.params = layoutParams
 
             composeView = ComposeView(context).apply {
                 setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
@@ -107,17 +112,47 @@ class OverlayManager(
                             onClose()
                         },
                         onMicClick = onMicClick,
-                        onTextSubmit = onTextSubmit
+                        onTextSubmit = onTextSubmit,
+                        onDrag = { dx, dy ->
+                            val view = composeView
+                            val p = params
+                            if (view != null && p != null) {
+                                p.x += dx
+                                p.y += dy
+                                windowManager.updateViewLayout(view, p)
+                            }
+                        },
+                        onKeyboardActive = { active ->
+                            setFocusable(active)
+                        }
                     )
                 }
             }
 
-            windowManager.addView(composeView, params)
+            windowManager.addView(composeView, layoutParams)
             lifecycleRegistry.currentState = Lifecycle.State.STARTED
             lifecycleRegistry.currentState = Lifecycle.State.RESUMED
             isVisible = true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to add overlay view to WindowManager", e)
+        }
+    }
+
+    fun setFocusable(focusable: Boolean) {
+        val view = composeView
+        val p = params
+        if (view != null && p != null) {
+            if (focusable) {
+                p.flags = p.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+            } else {
+                p.flags = p.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            }
+            try {
+                windowManager.updateViewLayout(view, p)
+                Log.d(TAG, "Overlay focusable updated: $focusable")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to update focusability layout params", e)
+            }
         }
     }
 

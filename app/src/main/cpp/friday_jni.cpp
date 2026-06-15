@@ -49,7 +49,7 @@ Java_com_friday_assistant_core_native_WhisperEngine_transcribeWhisper(JNIEnv *en
     jsize len = env->GetArrayLength(audio_samples);
 
     struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    params.n_threads = 4;
+    params.n_threads = 1;
     params.print_progress = false;
     params.print_realtime = false;
     params.print_special = false;
@@ -108,7 +108,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_initLlama(JNIEnv *env, jobject
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = 2048; // Context size
     cparams.n_batch = 512;
-    cparams.n_threads = 4;
+    cparams.n_threads = 2;
     
     llama_context *ctx = llama_new_context_with_model(model, cparams);
     if (ctx == nullptr) {

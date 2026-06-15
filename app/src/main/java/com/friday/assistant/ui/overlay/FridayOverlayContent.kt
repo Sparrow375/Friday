@@ -7,6 +7,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -26,6 +27,7 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -45,10 +47,16 @@ fun FridayOverlayContent(
     audioAmplitude: Float,
     onClose: () -> Unit,
     onMicClick: () -> Unit,
-    onTextSubmit: (String) -> Unit
+    onTextSubmit: (String) -> Unit,
+    onDrag: (Int, Int) -> Unit,
+    onKeyboardActive: (Boolean) -> Unit
 ) {
     var textInput by remember { mutableStateOf("") }
     var showTextInput by remember { mutableStateOf(false) }
+
+    LaunchedEffect(showTextInput) {
+        onKeyboardActive(showTextInput)
+    }
 
     FridayTheme {
         Box(
@@ -62,6 +70,12 @@ fun FridayOverlayContent(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .pointerInput(Unit) {
+                        detectDragGestures { change, dragAmount ->
+                            change.consume()
+                            onDrag(dragAmount.x.toInt(), dragAmount.y.toInt())
+                        }
+                    }
                     .border(
                         width = 1.dp,
                         brush = Brush.linearGradient(
