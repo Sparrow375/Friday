@@ -28,16 +28,20 @@ The project uses a clean package namespace `com.friday.assistant`:
 
 2. **`audio/`**:
    - `AudioCaptureManager.kt`: Continuous high-priority microphone capture (16kHz mono 16-bit PCM).
-   - `WakeWordDetector.kt`: Implements energy/frequency-based VAD to spot voice activity and runs short Whisper checks to match the customizable wake word.
+   - `WakeWordDetector.kt`: Implements energy/frequency-based VAD to spot voice activity and runs short Whisper checks to match the customizable wake word (disabled by default).
    - `SpeakerVerifier.kt`: Computes 192-dimensional speaker embeddings using Microsoft ONNX Runtime (`speaker_verification.onnx`) to verify user voice profile.
-   - `VoicePipeline.kt`: Orchestrates transitions between IDLE, WAKE, RECORDING, VERIFY, and TTS states.
+   - `VoicePipeline.kt`: Orchestrates transitions between IDLE, WAKE, RECORDING, VERIFY, and TTS states (disabled in favor of native SpeechToTextHelper).
+   - `SpeechToTextHelper.kt`: Wraps Android's native `SpeechRecognizer` API to handle speech-to-text with real-time partial transcripts and amplitude updates.
 
 3. **`intelligence/`**:
-   - `AgentCore.kt`: Runs the tool-calling agent loop, parsing JSON commands from LLM.
+   - `AgentCore.kt`: Runs the tool-calling agent loop, parsing JSON commands from LLM. It routes queries to fast direct controllers (like volume adjustment, app launching, or Reddit search) using NLU.
    - `PromptBuilder.kt`: Formulates dynamic system prompts with tool schemas and retrieved memory context.
    - `ToolDispatcher.kt`: Directs LLM tool calls to the appropriate executor.
    - `MemoryManager.kt`: Coordinates semantic memory extraction and episodic history storage.
    - `PreferenceExtractor.kt`: Asynchronously extracts and learns user facts/preferences from conversation turns using background LLM inference.
+   - **`nlu/`**: On-device NLU intent classification logic.
+     * `WordpieceTokenizer.kt`: Custom subword WordPiece tokenizer loading `vocab.txt` from assets.
+     * `NluIntentClassifier.kt`: Loads custom `nlu_model.onnx` via ONNX Runtime to classify user intent on-device.
 
 4. **`tools/`**:
    - `Tool.kt`: Common interface for tools.
@@ -75,3 +79,5 @@ The project uses a clean package namespace `com.friday.assistant`:
   * *Updated (June 2026)*: Resolved targetSdk 36 foreground service crashes on startup by restricting promotion until runtime microphone permission is granted. Added thread-safe list synchronization for enrollment and voice recording buffers to prevent concurrent modification deadlocks. Implemented a dynamic `FLAG_NOT_FOCUSABLE` focus toggle to allow background touches except when the keyboard input is active. Added automatic history clearing in `AgentCore` before running text generation queries.
   * *Updated (June 2026 - Part 2)*: Refactored `AudioCaptureManager` into a shared application singleton to resolve microphone hardware lock collisions. Configured `softInputMode` and Compose `FocusRequester` on the overlay window to support the software keyboard on text field focus. Added voice activity state auto-show triggers and a dashboard "Open Overlay" button to let users restore/open the assistant overlay easily. Broadened JNI method catch blocks to `Throwable` inside engines to prevent linkage crashes.
   * *Updated (June 2026 - Part 3)*: **Critical architecture fix** — split foreground service notification out of `FridayService` (AccessibilityService) into a new dedicated `FridayForegroundService.kt`. An `AccessibilityService` must never call `startForeground()` — Android marks it as "Not working" in Accessibility Settings when it does. The new `FridayForegroundService` is a plain `Service` holding the `FOREGROUND_SERVICE_TYPE_MICROPHONE` notification. Fixed keyboard not appearing in overlay by correcting the `LaunchedEffect` call order: `onKeyboardActive(true)` (sets `FLAG_NOT_FOCUSABLE` off) must be called *before* `focusRequester.requestFocus()`, with a 250ms propagation delay. Fixed voice enrollment microphone timeout: enrollment now creates its own dedicated `AudioRecord` instead of sharing the global `AudioCaptureManager` singleton, avoiding hardware mic resource lock conflicts when the pipeline is paused. The "Open Overlay" button in `MainActivity` now appears whenever the Accessibility Service is running (not gated behind `systemReady`), as a full-width standalone button above the checklist cards.
+  * *Updated (June 2026 - Part 4)*: Decoupled overlay UI layout, TTS, local GGUF models, and speech processing from `FridayService` (Accessibility Service) into `FridayForegroundService`, resolving settings registration crashes (the Accessibility Service is now a minimal passive automation helper). Replaced the Whisper pipeline with Android's native `SpeechRecognizer` API for real-time word-by-word transcribing and rmsdB visual amplitude waveforms. Implemented an on-device ONNX NLU parser (`NluIntentClassifier` and `WordpieceTokenizer`) and wrote Python pipelines (`scripts/train_nlu.py` and `scripts/train_wakeword.py`) for custom model training. Updated `LaunchedEffect(Unit)` within the input text field composition scope to cleanly request overlay soft keyboard focus.
+
