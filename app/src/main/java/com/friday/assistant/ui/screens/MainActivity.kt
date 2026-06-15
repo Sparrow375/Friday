@@ -197,13 +197,14 @@ class MainActivity : ComponentActivity() {
                             destDir.mkdirs()
                         }
                         val destFile = File(destDir, name)
+                        val tempFile = File(destDir, "$name.tmp")
 
                         val pfd = contentResolver.openAssetFileDescriptor(uri, "r")
                         val totalBytes = pfd?.length ?: -1L
                         pfd?.close()
 
                         contentResolver.openInputStream(uri)?.use { inputStream ->
-                            FileOutputStream(destFile).use { outputStream ->
+                            FileOutputStream(tempFile).use { outputStream ->
                                 val buffer = ByteArray(64 * 1024)
                                 var bytesRead: Int
                                 var bytesCopied = 0L
@@ -220,12 +221,23 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        withContext(Dispatchers.Main) {
-                            modelManager.setLlmModelPath(destFile.absolutePath)
-                            llmLoaded = true
-                            llmPathInput = destFile.absolutePath
-                            copyingProgress = -1f
-                            Toast.makeText(context, "LLM Model copied successfully", Toast.LENGTH_SHORT).show()
+                        if (tempFile.exists()) {
+                            if (destFile.exists()) {
+                                destFile.delete()
+                            }
+                            if (tempFile.renameTo(destFile)) {
+                                withContext(Dispatchers.Main) {
+                                    modelManager.setLlmModelPath(destFile.absolutePath)
+                                    llmLoaded = true
+                                    llmPathInput = destFile.absolutePath
+                                    copyingProgress = -1f
+                                    Toast.makeText(context, "LLM Model copied successfully", Toast.LENGTH_SHORT).show()
+                                }
+                            } else {
+                                throw Exception("Failed to rename temporary file to destination")
+                            }
+                        } else {
+                            throw Exception("Temporary file was not created")
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Error copying GGUF file", e)
@@ -781,15 +793,39 @@ class MainActivity : ComponentActivity() {
     private fun startVoiceEnrollment(onProgress: (Float, String) -> Unit) {
         lifecycleScope.launch(Dispatchers.IO) {
             val verifier = speakerVerifier ?: return@launch
+            
+            // 1. Temporarily pause the background service's voice pipeline if it's active
+            val activeService = FridayService.instance
+            activeService?.pauseVoicePipeline()
+            delay(300) // Allow service to release hardware MIC
+
             withContext(Dispatchers.Main) {
-                onProgress(0.1f, "Initializing Enrollment Session...")
+                onProgress(0.05f, "Initializing Enrollment Session...")
             }
             verifier.startEnrollmentSession()
 
-            // Capture manager start
-            audioCaptureManager.startCapture()
+            // 2. Start local capture
+            val captureStarted = audioCaptureManager.startCapture()
+            if (!captureStarted) {
+                withContext(Dispatchers.Main) {
+                    onProgress(0f, "Failed to initialize microphone. Is another app using it?")
+                }
+                activeService?.resumeVoicePipeline()
+                return@launch
+            }
+
+            // 3. Try to ensure Whisper is loaded locally so we can transcribe what the user says
+            val whisperEngine = FridayApplication.whisperEngine
+            if (!whisperEngine.isModelLoaded()) {
+                val whisperPath = modelManager.getWhisperModelPath()
+                if (File(whisperPath).exists()) {
+                    whisperEngine.loadModel(whisperPath)
+                }
+            }
 
             val samplesToCollect = 5
+            var successCount = 0
+            
             for (i in 1..samplesToCollect) {
                 withContext(Dispatchers.Main) {
                     onProgress((i - 1).toFloat() / samplesToCollect, "Say: 'Hey Friday' (Sample $i of $samplesToCollect)")
@@ -797,8 +833,41 @@ class MainActivity : ComponentActivity() {
 
                 // Buffer speech clip (approx 2.5s)
                 val audioData = captureEnrollmentSample()
-                verifier.addEnrollmentSample(audioData)
-                delay(500) // cool-down delay between records
+                if (audioData == null) {
+                    withContext(Dispatchers.Main) {
+                        onProgress(0f, "Microphone capture timed out. Please try again.")
+                    }
+                    audioCaptureManager.stopCapture()
+                    activeService?.resumeVoicePipeline()
+                    return@launch
+                }
+
+                val added = verifier.addEnrollmentSample(audioData)
+                if (added) {
+                    successCount++
+                }
+
+                // Run local Whisper transcription to show user what we captured
+                var transcriptionText = "Heard: silence or noise"
+                try {
+                    val floatData = FloatArray(audioData.size) { idx -> audioData[idx].toFloat() / 32768.0f }
+                    if (whisperEngine.isModelLoaded()) {
+                        val transcript = whisperEngine.transcribe(floatData).trim()
+                        if (transcript.isNotEmpty()) {
+                            transcriptionText = "Heard: \"$transcript\""
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to run preview transcription", e)
+                }
+
+                withContext(Dispatchers.Main) {
+                    onProgress(
+                        i.toFloat() / samplesToCollect,
+                        "Sample $i of $samplesToCollect added ($transcriptionText)"
+                    )
+                }
+                delay(1200) // Let user prepare and clean the screen log
             }
 
             withContext(Dispatchers.Main) {
@@ -806,7 +875,7 @@ class MainActivity : ComponentActivity() {
             }
             audioCaptureManager.stopCapture()
             
-            val success = verifier.finalizeEnrollment()
+            val success = successCount > 0 && verifier.finalizeEnrollment()
             withContext(Dispatchers.Main) {
                 if (success) {
                     onProgress(1.0f, "Voice Enrollment Complete!")
@@ -814,10 +883,14 @@ class MainActivity : ComponentActivity() {
                     onProgress(0f, "Voice Enrollment Failed.")
                 }
             }
+            
+            // 4. Resume service voice pipeline
+            delay(500)
+            activeService?.resumeVoicePipeline()
         }
     }
 
-    private suspend fun captureEnrollmentSample(): ShortArray {
+    private suspend fun captureEnrollmentSample(): ShortArray? {
         // Collect 2.5 seconds of 16kHz audio = 40,000 samples
         val targetSize = 16000 * 25 / 10
         val collected = mutableListOf<Short>()
@@ -831,11 +904,23 @@ class MainActivity : ComponentActivity() {
         }
 
         audioCaptureManager.registerListener(listener)
+        
+        val startTime = System.currentTimeMillis()
+        var timedOut = false
+        
         while (collected.size < targetSize) {
             delay(100)
+            if (System.currentTimeMillis() - startTime > 5000) { // 5-second safety timeout
+                timedOut = true
+                break
+            }
         }
+        
         audioCaptureManager.unregisterListener(listener)
 
+        if (timedOut || collected.isEmpty()) {
+            return null
+        }
         return collected.take(targetSize).toShortArray()
     }
 }

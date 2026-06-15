@@ -327,4 +327,14 @@ class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
         }
         return sqrt(sum / pcmData.size).toFloat()
     }
+
+    fun pauseVoicePipeline() {
+        Log.i(TAG, "Pausing voice pipeline for external audio use")
+        voicePipeline.stopPipeline()
+    }
+
+    fun resumeVoicePipeline() {
+        Log.i(TAG, "Resuming voice pipeline after external audio use")
+        voicePipeline.startPipeline()
+    }
 }

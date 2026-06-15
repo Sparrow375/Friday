@@ -58,7 +58,7 @@ The project uses a clean package namespace `com.friday.assistant`:
 6. **`ui/`**:
    - `FridayService.kt`: Background foreground service hosting window overlays and Accessibility Service; runs as a microphone foreground type on targetSdk 36.
    - `NotificationService.kt`: Background notification listener service that intercepts status bar events.
-   - **`overlay/`**: WindowManager overlay layouts, custom waveform canvases (`AudioWaveformComposable.kt`), and overlay controls (`OverlayManager.kt` implementing `ViewModelStoreOwner` for Compose safety).
+   - **`overlay/`**: WindowManager overlay layouts (top-placed to avoid obstructing bottom system navigation controls), custom waveform canvases (`AudioWaveformComposable.kt`), and overlay controls (`OverlayManager.kt` implementing `ViewModelStoreOwner` for Compose safety).
    - **`screens/`**: Clean minimalist settings/permission dashboard (`MainActivity.kt`) requesting Microphone, Notification, location/contacts permissions and including GGUF picker with background copy progress bar.
    - **`theme/`**: Sleek modern Indigo & Slate-dark Material 3 theme (`FridayTheme.kt`).
 

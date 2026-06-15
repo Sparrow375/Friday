@@ -56,7 +56,7 @@ fun FridayOverlayContent(
                 .fillMaxWidth()
                 .wrapContentHeight()
                 .padding(16.dp),
-            contentAlignment = Alignment.BottomCenter
+            contentAlignment = Alignment.TopCenter
         ) {
             // Glassmorphic Panel Card
             Card(

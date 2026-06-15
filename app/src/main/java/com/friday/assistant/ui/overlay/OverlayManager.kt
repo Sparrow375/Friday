@@ -78,8 +78,8 @@ class OverlayManager(
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
                 PixelFormat.TRANSLUCENT
             ).apply {
-                gravity = Gravity.BOTTOM
-                windowAnimations = android.R.style.Animation_InputMethod // Smooth slide-up animation
+                gravity = Gravity.TOP
+                windowAnimations = android.R.style.Animation_Toast
             }
 
             composeView = ComposeView(context).apply {
