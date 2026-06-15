@@ -58,6 +58,8 @@ class FridayForegroundService : Service(), TextToSpeech.OnInitListener {
         private const val TAG = "FridayFgService"
         const val NOTIFICATION_ID = 2026
         private const val UTTERANCE_ID = "friday_tts_utterance"
+        const val ACTION_RELOAD_MODELS = "com.friday.assistant.ACTION_RELOAD_MODELS"
+        const val ACTION_SHOW_OVERLAY = "com.friday.assistant.ACTION_SHOW_OVERLAY"
 
         @Volatile
         var instance: FridayForegroundService? = null
@@ -69,7 +71,7 @@ class FridayForegroundService : Service(), TextToSpeech.OnInitListener {
             ) == PackageManager.PERMISSION_GRANTED
 
             if (!hasMicPerm) {
-                Log.w(TAG, "RECORD_AUDIO not granted – skipping foreground start")
+                com.friday.assistant.core.FridayLogger.w(TAG, "RECORD_AUDIO not granted – skipping foreground start")
                 return
             }
             val intent = Intent(context, FridayForegroundService::class.java)
@@ -80,7 +82,30 @@ class FridayForegroundService : Service(), TextToSpeech.OnInitListener {
                     context.startService(intent)
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to start FridayForegroundService", e)
+                com.friday.assistant.core.FridayLogger.e(TAG, "Failed to start FridayForegroundService", e)
+            }
+        }
+
+        fun startWithOverlay(context: Context) {
+            val hasMicPerm = context.checkSelfPermission(
+                android.Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (!hasMicPerm) {
+                com.friday.assistant.core.FridayLogger.w(TAG, "RECORD_AUDIO not granted – skipping startWithOverlay")
+                return
+            }
+            val intent = Intent(context, FridayForegroundService::class.java).apply {
+                action = ACTION_SHOW_OVERLAY
+            }
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                com.friday.assistant.core.FridayLogger.e(TAG, "Failed to start FridayForegroundService with overlay", e)
             }
         }
 
@@ -96,6 +121,7 @@ class FridayForegroundService : Service(), TextToSpeech.OnInitListener {
     private lateinit var memoryManager: MemoryManager
     private lateinit var agentCore: AgentCore
     private lateinit var speechToTextHelper: SpeechToTextHelper
+    private var wakeWordDetector: com.friday.assistant.audio.WakeWordDetector? = null
     
     private var overlayManager: OverlayManager? = null
     private var tts: TextToSpeech? = null
@@ -105,7 +131,7 @@ class FridayForegroundService : Service(), TextToSpeech.OnInitListener {
 
     override fun onCreate() {
         super.onCreate()
-        Log.i(TAG, "FridayForegroundService onCreate")
+        com.friday.assistant.core.FridayLogger.i(TAG, "FridayForegroundService onCreate")
         instance = this
 
         // 1. Initialize core logic components
@@ -161,6 +187,9 @@ class FridayForegroundService : Service(), TextToSpeech.OnInitListener {
                 overlayManager?.updateState(state, status)
                 if (state == PipelineState.IDLE) {
                     overlayManager?.updateAmplitude(0f)
+                    startWakeWordListening()
+                } else {
+                    stopWakeWordListening()
                 }
             }
         )
@@ -170,11 +199,24 @@ class FridayForegroundService : Service(), TextToSpeech.OnInitListener {
             context = this,
             onMicClick = { toggleListening() },
             onClose = {
-                Log.i(TAG, "Overlay close clicked - dismissing overlay")
+                com.friday.assistant.core.FridayLogger.i(TAG, "Overlay close clicked - dismissing overlay and stopping speech/listening")
+                try {
+                    tts?.stop()
+                } catch (e: Exception) {
+                    com.friday.assistant.core.FridayLogger.e(TAG, "Error stopping TTS on close", e)
+                }
+                try {
+                    speechToTextHelper.stopListening()
+                } catch (e: Exception) {
+                    com.friday.assistant.core.FridayLogger.e(TAG, "Error stopping listening on close", e)
+                }
+                pipelineState.value = PipelineState.IDLE
                 overlayManager?.dismiss()
+                startWakeWordListening()
             },
             onTextSubmit = { text ->
                 serviceScope.launch {
+                    stopWakeWordListening()
                     executeAgentQuery(text)
                 }
             }
@@ -185,14 +227,30 @@ class FridayForegroundService : Service(), TextToSpeech.OnInitListener {
             overlayManager?.updateState(pipelineState.value, statusText)
         }.launchIn(serviceScope)
 
-        // 7. Setup native models if downloaded
+        // 7. Setup Wake Word Detector
+        wakeWordDetector = com.friday.assistant.audio.WakeWordDetector(this, FridayApplication.whisperEngine) {
+            com.friday.assistant.core.FridayLogger.i(TAG, "Wake word 'friday' detected!")
+            serviceScope.launch {
+                onWakeWordTriggered()
+            }
+        }
+
+        // 8. Setup native models if downloaded
         serviceScope.launch(Dispatchers.IO) {
             setupNativeModels()
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.i(TAG, "onStartCommand – promoting to foreground")
+        val action = intent?.action
+        com.friday.assistant.core.FridayLogger.i(TAG, "onStartCommand received action: $action")
+        
+        if (action == ACTION_RELOAD_MODELS) {
+            serviceScope.launch(Dispatchers.IO) {
+                setupNativeModels()
+            }
+        }
+
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
@@ -204,11 +262,14 @@ class FridayForegroundService : Service(), TextToSpeech.OnInitListener {
                 startForeground(NOTIFICATION_ID, buildNotification())
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "startForeground failed", e)
+            com.friday.assistant.core.FridayLogger.e(TAG, "startForeground failed", e)
         }
 
-        // Show floating bubble UI overlay on start
-        overlayManager?.show()
+        if (action == ACTION_SHOW_OVERLAY) {
+            overlayManager?.show()
+        }
+
+        startWakeWordListening()
 
         return START_STICKY
     }
@@ -221,17 +282,49 @@ class FridayForegroundService : Service(), TextToSpeech.OnInitListener {
 
         if (File(whisperPath).exists()) {
             val success = FridayApplication.whisperEngine.loadModel(whisperPath)
-            Log.i(TAG, "Whisper model loaded status: $success")
+            com.friday.assistant.core.FridayLogger.i(TAG, "Whisper model loaded status: $success")
         } else {
-            Log.w(TAG, "Whisper model file missing at: $whisperPath")
+            com.friday.assistant.core.FridayLogger.w(TAG, "Whisper model file missing at: $whisperPath")
         }
 
         if (File(llmPath).exists()) {
             val success = FridayApplication.llamaEngine.loadModel(llmPath)
-            Log.i(TAG, "Llama model loaded status: $success")
+            com.friday.assistant.core.FridayLogger.i(TAG, "Llama model loaded status: $success")
         } else {
-            Log.w(TAG, "Llama GGUF model file missing at: $llmPath")
+            com.friday.assistant.core.FridayLogger.w(TAG, "Llama GGUF model file missing at: $llmPath")
         }
+    }
+
+    private fun startWakeWordListening() {
+        val hasMicPerm = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (!hasMicPerm) {
+            com.friday.assistant.core.FridayLogger.w(TAG, "No mic permission - cannot start background wake-word listening")
+            return
+        }
+
+        if (pipelineState.value == PipelineState.IDLE) {
+            wakeWordDetector?.let { detector ->
+                com.friday.assistant.core.FridayLogger.d(TAG, "Registering WakeWordDetector to AudioCaptureManager")
+                FridayApplication.audioCaptureManager.registerListener(detector)
+                val started = FridayApplication.audioCaptureManager.startCapture()
+                com.friday.assistant.core.FridayLogger.d(TAG, "Background audio capture started: $started")
+            }
+        }
+    }
+
+    private fun stopWakeWordListening() {
+        wakeWordDetector?.let { detector ->
+            com.friday.assistant.core.FridayLogger.d(TAG, "Unregistering WakeWordDetector from AudioCaptureManager")
+            FridayApplication.audioCaptureManager.unregisterListener(detector)
+            FridayApplication.audioCaptureManager.stopCapture()
+        }
+    }
+
+    private suspend fun onWakeWordTriggered() {
+        stopWakeWordListening()
+        overlayManager?.show()
+        pipelineState.value = PipelineState.LISTENING
+        speechToTextHelper.startListening()
     }
 
     private fun toggleListening() {
@@ -257,14 +350,16 @@ class FridayForegroundService : Service(), TextToSpeech.OnInitListener {
 
     private fun speakResponse(response: String) {
         if (!isTtsInitialized || tts == null) {
-            Log.e(TAG, "TTS not initialized")
+            com.friday.assistant.core.FridayLogger.e(TAG, "TTS not initialized")
             pipelineState.value = PipelineState.IDLE
             overlayManager?.updateState(PipelineState.IDLE, "Active", resp = response)
+            startWakeWordListening()
             return
         }
 
         pipelineState.value = PipelineState.SPEAKING
         overlayManager?.updateState(PipelineState.SPEAKING, "Speaking...", resp = response)
+        stopWakeWordListening()
 
         tts?.speak(response, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID)
     }
@@ -278,38 +373,41 @@ class FridayForegroundService : Service(), TextToSpeech.OnInitListener {
             tts?.language = Locale.US
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
-                    Log.d(TAG, "TTS speaking started")
+                    com.friday.assistant.core.FridayLogger.d(TAG, "TTS speaking started")
                 }
 
                 override fun onDone(utteranceId: String?) {
-                    Log.d(TAG, "TTS speaking finished")
+                    com.friday.assistant.core.FridayLogger.d(TAG, "TTS speaking finished")
                     serviceScope.launch {
                         pipelineState.value = PipelineState.IDLE
                         overlayManager?.updateState(PipelineState.IDLE, "Active")
+                        startWakeWordListening()
                     }
                 }
 
                 @Deprecated("Deprecated in Java")
                 override fun onError(utteranceId: String?) {
-                    Log.e(TAG, "TTS speaking error")
+                    com.friday.assistant.core.FridayLogger.e(TAG, "TTS speaking error")
                     serviceScope.launch {
                         pipelineState.value = PipelineState.IDLE
                         overlayManager?.updateState(PipelineState.IDLE, "Active")
+                        startWakeWordListening()
                     }
                 }
             })
             isTtsInitialized = true
-            Log.i(TAG, "TTS Initialized successfully")
+            com.friday.assistant.core.FridayLogger.i(TAG, "TTS Initialized successfully")
         } else {
-            Log.e(TAG, "TTS Initialization failed")
+            com.friday.assistant.core.FridayLogger.e(TAG, "TTS Initialization failed")
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        Log.i(TAG, "FridayForegroundService destroyed")
+        com.friday.assistant.core.FridayLogger.i(TAG, "FridayForegroundService destroyed")
         instance = null
 
+        stopWakeWordListening()
         speechToTextHelper.destroy()
         overlayManager?.dismiss()
         tts?.shutdown()

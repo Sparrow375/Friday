@@ -47,27 +47,37 @@ class OverlayManager(
     val audioAmplitude = MutableStateFlow(0f)
 
     // Lifecycle requirements for Compose View
-    private val lifecycleRegistry = LifecycleRegistry(this)
-    override val lifecycle: Lifecycle = lifecycleRegistry
+    private var myLifecycleRegistry = LifecycleRegistry(this)
+    override val lifecycle: Lifecycle
+        get() = myLifecycleRegistry
 
-    private val savedStateRegistryController = SavedStateRegistryController.create(this)
-    override val savedStateRegistry: SavedStateRegistry = savedStateRegistryController.savedStateRegistry
+    private var mySavedStateRegistryController = SavedStateRegistryController.create(this)
+    override val savedStateRegistry: SavedStateRegistry
+        get() = mySavedStateRegistryController.savedStateRegistry
 
     private val myViewModelStore = ViewModelStore()
     override val viewModelStore: ViewModelStore = myViewModelStore
 
     init {
-        lifecycleRegistry.currentState = Lifecycle.State.INITIALIZED
-        savedStateRegistryController.performRestore(null)
+        myLifecycleRegistry.currentState = Lifecycle.State.INITIALIZED
+        mySavedStateRegistryController.performRestore(null)
     }
 
     private var params: WindowManager.LayoutParams? = null
 
     fun show() {
         if (isVisible) return
-        Log.i(TAG, "Showing overlay window")
+        com.friday.assistant.core.FridayLogger.i(TAG, "Showing overlay window")
         
         try {
+            if (myLifecycleRegistry.currentState == Lifecycle.State.DESTROYED) {
+                com.friday.assistant.core.FridayLogger.i(TAG, "Recreating LifecycleRegistry and SavedStateRegistry for new session")
+                myLifecycleRegistry = LifecycleRegistry(this)
+                mySavedStateRegistryController = SavedStateRegistryController.create(this)
+                mySavedStateRegistryController.performRestore(null)
+            }
+            myLifecycleRegistry.currentState = Lifecycle.State.CREATED
+
             val layoutParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -89,6 +99,8 @@ class OverlayManager(
             this.params = layoutParams
 
             composeView = ComposeView(context).apply {
+                isFocusable = true
+                isFocusableInTouchMode = true
                 setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
                 
                 // Attach lifecycle owners so Compose works inside a Service overlay
@@ -131,11 +143,11 @@ class OverlayManager(
             }
 
             windowManager.addView(composeView, layoutParams)
-            lifecycleRegistry.currentState = Lifecycle.State.STARTED
-            lifecycleRegistry.currentState = Lifecycle.State.RESUMED
+            myLifecycleRegistry.currentState = Lifecycle.State.STARTED
+            myLifecycleRegistry.currentState = Lifecycle.State.RESUMED
             isVisible = true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to add overlay view to WindowManager", e)
+        } catch (e: Throwable) {
+            com.friday.assistant.core.FridayLogger.e(TAG, "Failed to add overlay view to WindowManager", e)
         }
     }
 
@@ -157,21 +169,25 @@ class OverlayManager(
             try {
                 windowManager.updateViewLayout(view, p)
                 if (focusable) {
+                    view.isFocusable = true
+                    view.isFocusableInTouchMode = true
                     view.requestFocus()
+                    val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+                    imm?.showSoftInput(view, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
                 }
-                Log.d(TAG, "Overlay focusable updated: $focusable")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to update focusability layout params", e)
+                com.friday.assistant.core.FridayLogger.d(TAG, "Overlay focusable updated: $focusable")
+            } catch (e: Throwable) {
+                com.friday.assistant.core.FridayLogger.e(TAG, "Failed to update focusability layout params", e)
             }
         }
     }
 
     fun dismiss() {
         if (!isVisible) return
-        Log.i(TAG, "Dismissing overlay window")
+        com.friday.assistant.core.FridayLogger.i(TAG, "Dismissing overlay window")
         try {
-            lifecycleRegistry.currentState = Lifecycle.State.STARTED
-            lifecycleRegistry.currentState = Lifecycle.State.CREATED
+            myLifecycleRegistry.currentState = Lifecycle.State.STARTED
+            myLifecycleRegistry.currentState = Lifecycle.State.CREATED
             
             composeView?.let {
                 windowManager.removeView(it)
@@ -179,9 +195,10 @@ class OverlayManager(
             composeView = null
             isVisible = false
             
-            lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
-        } catch (e: Exception) {
-            Log.e(TAG, "Error removing overlay view from WindowManager", e)
+            myLifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+            myViewModelStore.clear()
+        } catch (e: Throwable) {
+            com.friday.assistant.core.FridayLogger.e(TAG, "Error removing overlay view from WindowManager", e)
         }
     }
 

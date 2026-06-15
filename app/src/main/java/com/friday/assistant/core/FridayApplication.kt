@@ -31,7 +31,8 @@ class FridayApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        Log.i(TAG, "Initializing Project Friday Application")
+        FridayLogger.init(this)
+        FridayLogger.i(TAG, "Initializing Project Friday Application")
         
         // Initialize Database
         database = FridayDatabase.getDatabase(this)

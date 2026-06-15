@@ -240,6 +240,12 @@ class MainActivity : ComponentActivity() {
                                     llmPathInput = destFile.absolutePath
                                     copyingProgress = -1f
                                     Toast.makeText(context, "LLM Model copied successfully", Toast.LENGTH_SHORT).show()
+                                    
+                                    // Notify FridayForegroundService to reload models
+                                    val reloadIntent = Intent(context, FridayForegroundService::class.java).apply {
+                                        action = FridayForegroundService.ACTION_RELOAD_MODELS
+                                    }
+                                    context.startService(reloadIntent)
                                 }
                             } else {
                                 throw Exception("Failed to rename temporary file to destination")
@@ -340,7 +346,7 @@ class MainActivity : ComponentActivity() {
                         if (activeFgService != null) {
                             activeFgService.showOverlay()
                         } else {
-                            FridayForegroundService.start(context)
+                            FridayForegroundService.startWithOverlay(context)
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = NeonBlue),
