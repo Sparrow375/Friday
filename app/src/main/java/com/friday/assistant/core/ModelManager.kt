@@ -32,24 +32,17 @@ class ModelManager(private val context: Context) {
     }
 
     fun getWhisperModelPath(): String {
-        val savedPath = sharedPrefs.getString(KEY_WHISPER_PATH, null)
-        if (!savedPath.isNullOrEmpty() && File(savedPath).exists()) {
-            return savedPath
+        val file = File(context.filesDir, "ggml-tiny-q5_0.bin")
+        if (!file.exists()) {
+            copyModelFromAssets("ggml-tiny-q5_0.bin", file)
         }
-        // Fallback default path
-        val defaultDir = context.getExternalFilesDir("models")
-        val defaultFile = File(defaultDir, "ggml-tiny-q5_0.bin")
-        return defaultFile.absolutePath
-    }
-
-    fun setWhisperModelPath(path: String) {
-        sharedPrefs.edit().putString(KEY_WHISPER_PATH, path).apply()
+        return file.absolutePath
     }
 
     fun getSpeakerModelPath(): String {
         val file = File(context.filesDir, SPEAKER_MODEL_NAME)
         if (!file.exists()) {
-            copySpeakerModelFromAssets(file)
+            copyModelFromAssets(SPEAKER_MODEL_NAME, file)
         }
         return file.absolutePath
     }
@@ -60,17 +53,17 @@ class ModelManager(private val context: Context) {
 
     fun isSpeakerLoaded(): Boolean = File(getSpeakerModelPath()).exists()
 
-    private fun copySpeakerModelFromAssets(destFile: File) {
+    private fun copyModelFromAssets(assetName: String, destFile: File) {
         try {
-            Log.i(TAG, "Copying speaker verification ONNX model from assets to: ${destFile.absolutePath}")
-            context.assets.open(SPEAKER_MODEL_NAME).use { inputStream ->
+            Log.i(TAG, "Copying model $assetName from assets to: ${destFile.absolutePath}")
+            context.assets.open(assetName).use { inputStream ->
                 FileOutputStream(destFile).use { outputStream ->
                     inputStream.copyTo(outputStream)
                 }
             }
-            Log.d(TAG, "ONNX model copied successfully")
+            Log.d(TAG, "$assetName copied successfully")
         } catch (e: Exception) {
-            Log.e(TAG, "Error copying speaker verification model from assets", e)
+            Log.e(TAG, "Error copying $assetName from assets", e)
         }
     }
 }

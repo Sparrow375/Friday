@@ -13,7 +13,10 @@ import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
@@ -26,7 +29,7 @@ class OverlayManager(
     private val onMicClick: () -> Unit,
     private val onClose: () -> Unit,
     private val onTextSubmit: (String) -> Unit
-) : LifecycleOwner, SavedStateRegistryOwner {
+) : LifecycleOwner, SavedStateRegistryOwner, ViewModelStoreOwner {
 
     companion object {
         private const val TAG = "OverlayManager"
@@ -49,6 +52,9 @@ class OverlayManager(
 
     private val savedStateRegistryController = SavedStateRegistryController.create(this)
     override val savedStateRegistry: SavedStateRegistry = savedStateRegistryController.savedStateRegistry
+
+    private val myViewModelStore = ViewModelStore()
+    override val viewModelStore: ViewModelStore = myViewModelStore
 
     init {
         lifecycleRegistry.currentState = Lifecycle.State.INITIALIZED
@@ -82,6 +88,7 @@ class OverlayManager(
                 // Attach lifecycle owners so Compose works inside a Service overlay
                 setViewTreeLifecycleOwner(this@OverlayManager)
                 setViewTreeSavedStateRegistryOwner(this@OverlayManager)
+                setViewTreeViewModelStoreOwner(this@OverlayManager)
                 
                 setContent {
                     val state by pipelineState.collectAsState()

@@ -22,7 +22,7 @@ The project uses a clean package namespace `com.friday.assistant`:
 1. **`core/`**:
    - `FridayApplication.kt`: Application entry point, setups database and notifications.
    - `BootReceiver.kt`: Listens for system boot to launch the assistant service automatically.
-   - `ModelManager.kt`: Validates and tracks local model files (Whisper, Qwen GGUF, Speaker ONNX) on external storage.
+   - `ModelManager.kt`: Manages local model files (Whisper, Qwen GGUF, Speaker ONNX); handles automated copying of Whisper and speaker ONNX models from assets to internal storage.
    - **`db/`**: SQLite Room database schema, entities, and DAOs for notes, routines, usage tracking, and multi-layer memory tables.
    - **`native/`**: Kotlin wrappers (`LlamaEngine.kt`, `WhisperEngine.kt`) interfacing with the C++ JNI bridge.
 
@@ -56,11 +56,11 @@ The project uses a clean package namespace `com.friday.assistant`:
    - `UIAutomator.kt`: Simulates UI actions (taps, text input, scroll, global system controls) on accessibility nodes.
 
 6. **`ui/`**:
-   - `FridayService.kt`: Background foreground service hosting window overlays and Accessibility Service.
+   - `FridayService.kt`: Background foreground service hosting window overlays and Accessibility Service; runs as a microphone foreground type on targetSdk 36.
    - `NotificationService.kt`: Background notification listener service that intercepts status bar events.
-   - **`overlay/`**: WindowManager overlay layouts, custom waveform canvases (`AudioWaveformComposable.kt`), and glass panel contents (`FridayOverlayContent.kt`).
-   - **`screens/`**: Compose settings dashboard (`MainActivity.kt`) and setup/enrollment wizard (`SetupWizard.kt`).
-   - **`theme/`**: Cyberpunk-inspired dark theme (`FridayTheme.kt`) with Outfit/Inter fonts.
+   - **`overlay/`**: WindowManager overlay layouts, custom waveform canvases (`AudioWaveformComposable.kt`), and overlay controls (`OverlayManager.kt` implementing `ViewModelStoreOwner` for Compose safety).
+   - **`screens/`**: Clean minimalist settings/permission dashboard (`MainActivity.kt`) requesting Microphone, Notification, location/contacts permissions and including GGUF picker with background copy progress bar.
+   - **`theme/`**: Sleek modern Indigo & Slate-dark Material 3 theme (`FridayTheme.kt`).
 
 ---
 

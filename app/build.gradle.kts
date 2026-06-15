@@ -124,3 +124,36 @@ dependencies {
   implementation("androidx.compose.material:material-icons-core")
   implementation("androidx.compose.material:material-icons-extended")
 }
+
+val downloadWhisperModelTask = tasks.register("downloadWhisperModel") {
+    val assetsDir = file("src/main/assets")
+    val whisperFile = File(assetsDir, "ggml-tiny-q5_0.bin")
+    
+    inputs.property("url", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_0.bin")
+    outputs.file(whisperFile)
+    
+    doLast {
+        if (!assetsDir.exists()) {
+            assetsDir.mkdirs()
+        }
+        if (!whisperFile.exists()) {
+            println("Downloading Whisper model from Hugging Face...")
+            val url = java.net.URL("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_0.bin")
+            url.openStream().use { input ->
+                whisperFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            println("Whisper model downloaded successfully.")
+        } else {
+            println("Whisper model already exists, skipping download.")
+        }
+    }
+}
+
+tasks.configureEach {
+    if (name.startsWith("preBuild")) {
+        dependsOn(downloadWhisperModelTask)
+    }
+}
+

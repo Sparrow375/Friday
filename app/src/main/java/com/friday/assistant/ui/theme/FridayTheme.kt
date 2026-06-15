@@ -11,16 +11,16 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-// Cybernetic / Sci-Fi Harmonies Color System
-val NeonBlue = Color(0xFF00F2FE)
-val NeonCyan = Color(0xFF4FACFE)
-val ObsidianDark = Color(0xFF0A0B0E)
-val GlassObsidian = Color(0xD90E1118) // Translucent base for glassmorphism
-val SlateGray = Color(0xFF1B2230)
-val CyberBorder = Color(0x3300F2FE) // Semi-transparent neon border
-val SilverText = Color(0xFFC5C6C7)
-val GlowGreen = Color(0xFF39FF14)
-val AlertRed = Color(0xFFFF073A)
+// Sleek, Premium & Simple Color System (Revamped from cyber-neon)
+val NeonBlue = Color(0xFF6366F1)       // Premium Indigo
+val NeonCyan = Color(0xFF0EA5E9)       // Premium Sky Blue
+val ObsidianDark = Color(0xFF090A0F)   // Deep Charcoal/Obsidian background
+val GlassObsidian = Color(0xF2171923)  // Dark premium card/sheet container
+val SlateGray = Color(0xFF1F2232)      // Modern Slate Gray card background
+val CyberBorder = Color(0x1F6366F1)    // Soft indigo outline border
+val SilverText = Color(0xFF94A3B8)     // Cool muted gray subtext
+val GlowGreen = Color(0xFF10B981)      // Elegant Emerald Green for success/active states
+val AlertRed = Color(0xFFEF4444)       // Clean Coral Red for alerts/error states
 
 private val DarkColorScheme = darkColorScheme(
     primary = NeonBlue,

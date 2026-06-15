@@ -1,16 +1,22 @@
 package com.friday.assistant.ui.screens
 
+import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.provider.Settings
-import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.view.accessibility.AccessibilityManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -18,8 +24,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,10 +32,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.friday.assistant.audio.AudioCaptureManager
 import com.friday.assistant.audio.SpeakerVerifier
@@ -43,6 +51,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 
 class MainActivity : ComponentActivity() {
 
@@ -79,12 +88,27 @@ class MainActivity : ComponentActivity() {
         val context = LocalContext.current
         val scrollState = rememberScrollState()
 
-        // Permissions states
+        // Core Permission statuses
+        var hasMicPermission by remember { mutableStateOf(checkPermission(Manifest.permission.RECORD_AUDIO)) }
+        var hasNotificationPermission by remember { 
+            mutableStateOf(
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    checkPermission(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    true
+                }
+            )
+        }
         var hasOverlayPermission by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
         var hasAccessibilityPermission by remember { mutableStateOf(isAccessibilityServiceEnabled()) }
         var hasWriteSettingsPermission by remember { mutableStateOf(Settings.System.canWrite(context)) }
 
-        // Model states
+        // Optional Permissions statuses
+        var hasLocationPermission by remember { mutableStateOf(checkPermission(Manifest.permission.ACCESS_FINE_LOCATION)) }
+        var hasContactsPermission by remember { mutableStateOf(checkPermission(Manifest.permission.READ_CONTACTS)) }
+        var hasPhonePermission by remember { mutableStateOf(checkPermission(Manifest.permission.CALL_PHONE)) }
+
+        // Model statuses
         var whisperLoaded by remember { mutableStateOf(modelManager.isWhisperLoaded()) }
         var llmLoaded by remember { mutableStateOf(modelManager.isLlmLoaded()) }
         var speakerLoaded by remember { mutableStateOf(modelManager.isSpeakerLoaded()) }
@@ -98,47 +122,264 @@ class MainActivity : ComponentActivity() {
         // Settings inputs
         var customWakeWord by remember { mutableStateOf("") }
         var llmPathInput by remember { mutableStateOf(modelManager.getLlmModelPath()) }
-        var whisperPathInput by remember { mutableStateOf(modelManager.getWhisperModelPath()) }
+
+        // Copy GGUF model states
+        var copyingProgress by remember { mutableStateOf(-1f) }
+        var copyingFileName by remember { mutableStateOf("") }
+
+        // Refresh wake word default text on start
+        LaunchedEffect(Unit) {
+            val prefs = context.getSharedPreferences("friday_wakeword_prefs", Context.MODE_PRIVATE)
+            customWakeWord = prefs.getString("custom_wakeword", "friday") ?: "friday"
+        }
 
         // Periodically refresh permission states
         LaunchedEffect(Unit) {
             while (true) {
+                hasMicPermission = checkPermission(Manifest.permission.RECORD_AUDIO)
+                hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    checkPermission(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    true
+                }
                 hasOverlayPermission = Settings.canDrawOverlays(context)
                 hasAccessibilityPermission = isAccessibilityServiceEnabled()
                 hasWriteSettingsPermission = Settings.System.canWrite(context)
+                hasLocationPermission = checkPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                hasContactsPermission = checkPermission(Manifest.permission.READ_CONTACTS)
+                hasPhonePermission = checkPermission(Manifest.permission.CALL_PHONE)
+                
+                // Also update model loading status
+                whisperLoaded = modelManager.isWhisperLoaded()
+                llmLoaded = modelManager.isLlmLoaded()
+                speakerLoaded = modelManager.isSpeakerLoaded()
+                
                 delay(1500)
+            }
+        }
+
+        // Permission request launcher
+        val permissionLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+            hasMicPermission = permissions[Manifest.permission.RECORD_AUDIO] ?: hasMicPermission
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                hasNotificationPermission = permissions[Manifest.permission.POST_NOTIFICATIONS] ?: hasNotificationPermission
+            }
+            hasLocationPermission = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: hasLocationPermission
+            hasContactsPermission = permissions[Manifest.permission.READ_CONTACTS] ?: hasContactsPermission
+            hasPhonePermission = permissions[Manifest.permission.CALL_PHONE] ?: hasPhonePermission
+        }
+
+        // LLF GGUF File Picker launcher
+        val filePickerLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocument()
+        ) { uri ->
+            if (uri != null) {
+                lifecycleScope.launch(Dispatchers.IO) {
+                    try {
+                        val contentResolver = context.contentResolver
+                        var name = "qwen2.5-3b-instruct-q4_k_m.gguf"
+                        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            if (nameIndex != -1 && cursor.moveToFirst()) {
+                                name = cursor.getString(nameIndex)
+                            }
+                        }
+
+                        withContext(Dispatchers.Main) {
+                            copyingFileName = name
+                            copyingProgress = 0f
+                        }
+
+                        val destDir = context.getExternalFilesDir("models") ?: context.filesDir
+                        if (!destDir.exists()) {
+                            destDir.mkdirs()
+                        }
+                        val destFile = File(destDir, name)
+
+                        val pfd = contentResolver.openAssetFileDescriptor(uri, "r")
+                        val totalBytes = pfd?.length ?: -1L
+                        pfd?.close()
+
+                        contentResolver.openInputStream(uri)?.use { inputStream ->
+                            FileOutputStream(destFile).use { outputStream ->
+                                val buffer = ByteArray(64 * 1024)
+                                var bytesRead: Int
+                                var bytesCopied = 0L
+                                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                                    outputStream.write(buffer, 0, bytesRead)
+                                    bytesCopied += bytesRead
+                                    if (totalBytes > 0) {
+                                        val progress = bytesCopied.toFloat() / totalBytes
+                                        withContext(Dispatchers.Main) {
+                                            copyingProgress = progress
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        withContext(Dispatchers.Main) {
+                            modelManager.setLlmModelPath(destFile.absolutePath)
+                            llmLoaded = true
+                            llmPathInput = destFile.absolutePath
+                            copyingProgress = -1f
+                            Toast.makeText(context, "LLM Model copied successfully", Toast.LENGTH_SHORT).show()
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error copying GGUF file", e)
+                        withContext(Dispatchers.Main) {
+                            copyingProgress = -1f
+                            Toast.makeText(context, "Failed to copy model: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
             }
         }
 
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(24.dp)
+                .padding(20.dp)
                 .verticalScroll(scrollState),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Header Cyber Title
+            // Sleek Minimal Header
+            Spacer(modifier = Modifier.height(16.dp))
+            Icon(
+                imageVector = Icons.Default.Mic,
+                contentDescription = "Friday Logo",
+                tint = NeonBlue,
+                modifier = Modifier
+                    .size(48.dp)
+                    .background(NeonBlue.copy(alpha = 0.1f), RoundedCornerShape(14.dp))
+                    .padding(8.dp)
+            )
+            Spacer(modifier = Modifier.height(12.dp))
             Text(
-                text = "FRIDAY TERMINAL",
+                text = "Friday",
                 style = MaterialTheme.typography.displayLarge,
-                fontWeight = FontWeight.ExtraBold,
-                color = NeonBlue,
-                letterSpacing = 2.sp,
-                modifier = Modifier.padding(top = 16.dp)
+                fontWeight = FontWeight.Bold,
+                color = Color.White
             )
             Text(
-                text = "Offline Intelligent Assistant Config",
-                style = MaterialTheme.typography.labelMedium,
-                color = SilverText.copy(alpha = 0.7f),
-                modifier = Modifier.padding(bottom = 32.dp)
+                text = "Offline Voice Assistant Dashboard",
+                style = MaterialTheme.typography.bodyLarge,
+                color = SilverText,
+                modifier = Modifier.padding(bottom = 24.dp)
             )
 
-            // 1. System Integrations (Permissions) Card
-            DashboardCard(title = "SYSTEM INTEGRATION") {
-                PermissionItem(
-                    title = "Overlay Bubble (SYSTEM_ALERT)",
-                    isEnabled = hasOverlayPermission,
-                    onRequest = {
+            // System Active Banner
+            val allCorePermissionsGranted = hasMicPermission && hasOverlayPermission && hasAccessibilityPermission
+            val systemReady = allCorePermissionsGranted && llmLoaded && whisperLoaded
+            
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 20.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (systemReady) GlowGreen.copy(alpha = 0.08f) else AlertRed.copy(alpha = 0.08f)
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (systemReady) Icons.Default.CheckCircle else Icons.Default.Warning,
+                        contentDescription = "Status Icon",
+                        tint = if (systemReady) GlowGreen else AlertRed,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = if (systemReady) "Friday is Active & Listening" else "Setup Required",
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = if (systemReady) "Wake-word trigger: '$customWakeWord'" else "Resolve checklist items to activate the assistant",
+                            color = SilverText,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                }
+            }
+
+            // Copying Progress indicator
+            if (copyingProgress >= 0f) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 20.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = SlateGray)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Copying model file...",
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = copyingFileName,
+                            color = SilverText,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                        LinearProgressIndicator(
+                            progress = copyingProgress,
+                            color = NeonBlue,
+                            trackColor = Color.DarkGray,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "${(copyingProgress * 100).toInt()}%",
+                            color = NeonCyan,
+                            fontWeight = FontWeight.Medium,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.align(Alignment.End)
+                        )
+                    }
+                }
+            }
+
+            // 1. Core Integration Card
+            DashboardCard(title = "Core Integrations & Permissions") {
+                ChecklistItem(
+                    title = "Microphone Access",
+                    description = "Used to capture wake word and speech input",
+                    status = hasMicPermission,
+                    onAction = { permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO)) }
+                )
+                Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
+                
+                ChecklistItem(
+                    title = "Notification Service",
+                    description = "Required to show active listening background notification",
+                    status = hasNotificationPermission,
+                    onAction = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+                        }
+                    }
+                )
+                Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
+                
+                ChecklistItem(
+                    title = "Overlay Bubble (Alert Window)",
+                    description = "Displays the bottom interactive voice waveform",
+                    status = hasOverlayPermission,
+                    onAction = {
                         val intent = Intent(
                             Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                             Uri.parse("package:$packageName")
@@ -146,20 +387,24 @@ class MainActivity : ComponentActivity() {
                         startActivity(intent)
                     }
                 )
-                Divider(color = CyberBorder, modifier = Modifier.padding(vertical = 8.dp))
-                PermissionItem(
-                    title = "UI Automation (ACCESSIBILITY)",
-                    isEnabled = hasAccessibilityPermission,
-                    onRequest = {
+                Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
+                
+                ChecklistItem(
+                    title = "Accessibility Automation",
+                    description = "Powers click, type, and screen automation features",
+                    status = hasAccessibilityPermission,
+                    onAction = {
                         val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
                         startActivity(intent)
                     }
                 )
-                Divider(color = CyberBorder, modifier = Modifier.padding(vertical = 8.dp))
-                PermissionItem(
-                    title = "Write Settings (BRIGHTNESS)",
-                    isEnabled = hasWriteSettingsPermission,
-                    onRequest = {
+                Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
+                
+                ChecklistItem(
+                    title = "Modify System Settings",
+                    description = "Allows Friday to control brightness and volumes",
+                    status = hasWriteSettingsPermission,
+                    onAction = {
                         val intent = Intent(
                             Settings.ACTION_MANAGE_WRITE_SETTINGS,
                             Uri.parse("package:$packageName")
@@ -169,23 +414,59 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
-            // 2. Local Model Status Card
-            DashboardCard(title = "ON-DEVICE BRAIN MODELS") {
-                ModelStatusItem(name = "Speech Recognition (Whisper)", isLoaded = whisperLoaded, path = whisperPathInput)
-                Divider(color = CyberBorder, modifier = Modifier.padding(vertical = 8.dp))
-                ModelStatusItem(name = "Reasoning Engine (Qwen GGUF)", isLoaded = llmLoaded, path = llmPathInput)
-                Divider(color = CyberBorder, modifier = Modifier.padding(vertical = 8.dp))
-                ModelStatusItem(name = "Voice Authenticator (ONNX)", isLoaded = speakerLoaded, path = modelManager.getSpeakerModelPath())
+            // 2. Local Models Card
+            DashboardCard(title = "On-Device AI Brain Models") {
+                ModelRow(
+                    name = "Speech Recognition (Whisper)",
+                    status = whisperLoaded,
+                    details = "Auto-configured ggml-tiny-q5_0 model"
+                )
+                Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
+                
+                ModelRow(
+                    name = "Voice Authenticator (ONNX)",
+                    status = speakerLoaded,
+                    details = "Auto-configured speaker verification profile"
+                )
+                Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Reasoning Engine (Qwen GGUF)",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = Color.White
+                        )
+                        Text(
+                            text = if (llmLoaded) "Loaded: ${llmPathInput.substringAfterLast("/")}" else "File missing, select GGUF file to initialize",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (llmLoaded) GlowGreen else AlertRed
+                        )
+                    }
+                    Button(
+                        onClick = { filePickerLauncher.launch(arrayOf("*/*")) },
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonBlue)
+                    ) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = "Select GGUF")
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(if (llmLoaded) "Change" else "Choose File", color = Color.White)
+                    }
+                }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
-            // 3. Speaker Enrollment Card
-            DashboardCard(title = "SPEAKER VERIFICATION PROFILE") {
+            // 3. Speaker Voice Profile
+            DashboardCard(title = "Speaker Verification Enrollment") {
                 Text(
-                    text = "Enrolling your voice prevents Friday from responding to other speakers.",
+                    text = "Teach Friday your unique voice. Unrecognized speaker requests will be rejected.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = SilverText,
                     modifier = Modifier.padding(bottom = 16.dp)
@@ -198,18 +479,20 @@ class MainActivity : ComponentActivity() {
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "Speaker Profile Active",
+                            text = "Voice Signature Active",
                             color = GlowGreen,
                             fontWeight = FontWeight.Bold
                         )
-                        Button(
+                        TextButton(
                             onClick = {
                                 speakerVerifier?.clearEnrollment()
                                 isEnrolled = false
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = AlertRed)
+                            colors = ButtonDefaults.textButtonColors(contentColor = AlertRed)
                         ) {
-                            Text("Delete Profile", color = Color.White)
+                            Icon(Icons.Default.Delete, contentDescription = "Delete Profile")
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Reset Profile")
                         }
                     }
                 } else {
@@ -233,70 +516,69 @@ class MainActivity : ComponentActivity() {
                         } else {
                             Button(
                                 onClick = {
-                                    startVoiceEnrollment { progress, text ->
-                                        enrollmentProgress = progress
-                                        enrollmentStatusText = text
-                                        isEnrolling = progress < 1f
-                                        if (progress >= 1f) {
-                                            isEnrolled = true
+                                    if (!hasMicPermission) {
+                                        permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+                                    } else {
+                                        startVoiceEnrollment { progress, text ->
+                                            enrollmentProgress = progress
+                                            enrollmentStatusText = text
+                                            isEnrolling = progress < 1f
+                                            if (progress >= 1f) {
+                                                isEnrolled = true
+                                            }
                                         }
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = NeonBlue),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("Start Voice Enrollment", color = Color.Black)
+                                Text("Enroll My Voice", color = Color.White)
                             }
                         }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
-            // 4. Configuration Card
-            DashboardCard(title = "SETTINGS") {
+            // 4. Optional Permissions Card
+            DashboardCard(title = "Optional Tool Permissions") {
+                OptionalPermissionRow(
+                    name = "Contacts Directory",
+                    description = "Enables Friday to read contacts and look up phone numbers",
+                    status = hasContactsPermission,
+                    onGrant = { permissionLauncher.launch(arrayOf(Manifest.permission.READ_CONTACTS)) }
+                )
+                Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
+                
+                OptionalPermissionRow(
+                    name = "Phone Dialer",
+                    description = "Allows Friday to draft calls and open dialer automatically",
+                    status = hasPhonePermission,
+                    onGrant = { permissionLauncher.launch(arrayOf(Manifest.permission.CALL_PHONE)) }
+                )
+                Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
+                
+                OptionalPermissionRow(
+                    name = "Location Services",
+                    description = "Powers location lookup tools to fetch nearby details",
+                    status = hasLocationPermission,
+                    onGrant = { permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // 5. Settings Card
+            DashboardCard(title = "Preferences") {
                 OutlinedTextField(
                     value = customWakeWord,
                     onValueChange = { customWakeWord = it },
-                    label = { Text("Custom Wake Word", color = NeonCyan) },
-                    placeholder = { Text("e.g. jarvis, friday", color = SilverText.copy(alpha = 0.5f)) },
+                    label = { Text("Wake Word", color = SilverText) },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = NeonBlue,
-                        unfocusedBorderColor = CyberBorder,
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                OutlinedTextField(
-                    value = llmPathInput,
-                    onValueChange = { llmPathInput = it },
-                    label = { Text("Qwen GGUF Path", color = NeonCyan) },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = NeonBlue,
-                        unfocusedBorderColor = CyberBorder,
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                OutlinedTextField(
-                    value = whisperPathInput,
-                    onValueChange = { whisperPathInput = it },
-                    label = { Text("Whisper BIN Path", color = NeonCyan) },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = NeonBlue,
-                        unfocusedBorderColor = CyberBorder,
+                        unfocusedBorderColor = Color.DarkGray,
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White
                     ),
@@ -311,22 +593,17 @@ class MainActivity : ComponentActivity() {
                             val trigger = customWakeWord.trim().lowercase()
                             context.getSharedPreferences("friday_wakeword_prefs", Context.MODE_PRIVATE)
                                 .edit().putString("custom_wakeword", trigger).apply()
+                            Toast.makeText(context, "Settings Applied", Toast.LENGTH_SHORT).show()
                         }
-                        modelManager.setLlmModelPath(llmPathInput)
-                        modelManager.setWhisperModelPath(whisperPathInput)
-                        
-                        // Validate paths
-                        whisperLoaded = File(whisperPathInput).exists()
-                        llmLoaded = File(llmPathInput).exists()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = NeonCyan),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Apply & Save Settings", color = Color.Black)
+                    Text("Save Settings", color = Color.White)
                 }
             }
 
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(40.dp))
         }
     }
 
@@ -340,24 +617,22 @@ class MainActivity : ComponentActivity() {
                 .fillMaxWidth()
                 .border(
                     width = 1.dp,
-                    brush = Brush.linearGradient(
-                        colors = listOf(CyberBorder, Color.Transparent)
-                    ),
+                    color = CyberBorder,
                     shape = RoundedCornerShape(16.dp)
                 ),
             shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = SlateGray.copy(alpha = 0.4f))
+            colors = CardDefaults.cardColors(containerColor = SlateGray)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(20.dp)
+                    .padding(16.dp)
             ) {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
-                    color = NeonBlue,
+                    color = NeonCyan,
                     modifier = Modifier.padding(bottom = 16.dp)
                 )
                 content()
@@ -366,10 +641,11 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    fun PermissionItem(
+    fun ChecklistItem(
         title: String,
-        isEnabled: Boolean,
-        onRequest: () -> Unit
+        description: String,
+        status: Boolean,
+        onAction: () -> Unit
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -377,61 +653,116 @@ class MainActivity : ComponentActivity() {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(text = title, style = MaterialTheme.typography.bodyLarge, color = Color.White)
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.White
+                )
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = SilverText
+                )
             }
-            if (isEnabled) {
+            Spacer(modifier = Modifier.width(8.dp))
+            if (status) {
                 Icon(
                     imageVector = Icons.Default.CheckCircle,
-                    contentDescription = "Permission granted",
+                    contentDescription = "Status Active",
                     tint = GlowGreen,
                     modifier = Modifier.size(24.dp)
                 )
             } else {
                 Button(
-                    onClick = onRequest,
+                    onClick = onAction,
                     colors = ButtonDefaults.buttonColors(containerColor = AlertRed)
                 ) {
-                    Text("Enable", color = Color.White)
+                    Text("Grant", color = Color.White)
                 }
             }
         }
     }
 
     @Composable
-    fun ModelStatusItem(
+    fun OptionalPermissionRow(
         name: String,
-        isLoaded: Boolean,
-        path: String
+        description: String,
+        status: Boolean,
+        onGrant: () -> Unit
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(text = name, style = MaterialTheme.typography.bodyLarge, color = Color.White)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = if (isLoaded) Icons.Default.CheckCircle else Icons.Default.Warning,
-                        contentDescription = if (isLoaded) "Loaded" else "Missing",
-                        tint = if (isLoaded) GlowGreen else AlertRed,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = if (isLoaded) "Found" else "Missing",
-                        color = if (isLoaded) GlowGreen else AlertRed,
-                        fontWeight = FontWeight.Bold
-                    )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.White
+                )
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = SilverText
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            if (status) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = "Granted",
+                    tint = GlowGreen,
+                    modifier = Modifier.size(20.dp)
+                )
+            } else {
+                TextButton(
+                    onClick = onGrant,
+                    colors = ButtonDefaults.textButtonColors(contentColor = NeonCyan)
+                ) {
+                    Text("Grant")
                 }
             }
-            Text(
-                text = "Path: $path",
-                style = MaterialTheme.typography.labelMedium,
-                color = SilverText.copy(alpha = 0.5f),
-                modifier = Modifier.padding(top = 4.dp)
+        }
+    }
+
+    @Composable
+    fun ModelRow(
+        name: String,
+        status: Boolean,
+        details: String
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column {
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.White
+                )
+                Text(
+                    text = details,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = SilverText
+                )
+            }
+            Icon(
+                imageVector = if (status) Icons.Default.CheckCircle else Icons.Default.Warning,
+                contentDescription = if (status) "Found" else "Not Configured",
+                tint = if (status) GlowGreen else AlertRed,
+                modifier = Modifier.size(20.dp)
             )
         }
+    }
+
+    private fun checkPermission(permission: String): Boolean {
+        return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun isAccessibilityServiceEnabled(): Boolean {
