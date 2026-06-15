@@ -1,3 +1,5 @@
+import java.net.URL
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
@@ -138,11 +140,16 @@ val downloadWhisperModelTask = tasks.register("downloadWhisperModel") {
         }
         if (!whisperFile.exists()) {
             println("Downloading Whisper model from Hugging Face...")
-            val url = java.net.URL("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_0.bin")
-            url.openStream().use { input ->
-                whisperFile.outputStream().use { output ->
-                    input.copyTo(output)
-                }
+            val url = URL("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_0.bin")
+            val connection = url.openConnection()
+            connection.connect()
+            val inputStream = connection.getInputStream()
+            val outputStream = whisperFile.outputStream()
+            try {
+                inputStream.copyTo(outputStream)
+            } finally {
+                inputStream.close()
+                outputStream.close()
             }
             println("Whisper model downloaded successfully.")
         } else {
