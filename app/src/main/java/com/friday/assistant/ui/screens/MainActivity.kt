@@ -40,7 +40,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import com.friday.assistant.audio.AudioCaptureManager
 import com.friday.assistant.audio.SpeakerVerifier
 import com.friday.assistant.core.FridayApplication
 import com.friday.assistant.core.ModelManager
@@ -61,7 +60,6 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var modelManager: ModelManager
     private var speakerVerifier: SpeakerVerifier? = null
-    private val audioCaptureManager = FridayApplication.audioCaptureManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -294,11 +292,12 @@ class MainActivity : ComponentActivity() {
             // System Active Banner
             val allCorePermissionsGranted = hasMicPermission && hasOverlayPermission && hasAccessibilityPermission
             val systemReady = allCorePermissionsGranted && llmLoaded && whisperLoaded
-            
+            val serviceRunning = FridayService.instance != null
+
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 20.dp),
+                    .padding(bottom = 12.dp),
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = if (systemReady) GlowGreen.copy(alpha = 0.08f) else AlertRed.copy(alpha = 0.08f)
@@ -329,19 +328,21 @@ class MainActivity : ComponentActivity() {
                             style = MaterialTheme.typography.labelMedium
                         )
                     }
-                    if (systemReady && FridayService.instance != null) {
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Button(
-                            onClick = {
-                                FridayService.instance?.showOverlay()
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = NeonBlue),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                            modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 1.dp)
-                        ) {
-                            Text("Open Overlay", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
+                }
+            }
+
+            // Open Overlay button — always visible when Accessibility Service is running
+            if (serviceRunning) {
+                Button(
+                    onClick = { FridayService.instance?.showOverlay() },
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonBlue),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 20.dp)
+                ) {
+                    Icon(Icons.Default.Mic, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Open Assistant Overlay", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -823,26 +824,17 @@ class MainActivity : ComponentActivity() {
             val activeService = FridayService.instance
             try {
                 val verifier = speakerVerifier ?: return@launch
-                
-                // 1. Temporarily pause the background service's voice pipeline if it's active
+
+                // 1. Temporarily pause the background service's voice pipeline to release the mic hardware
                 activeService?.pauseVoicePipeline()
-                delay(300) // Allow service to release hardware MIC
+                delay(600) // Wait longer to ensure AudioRecord hardware is fully released
 
                 withContext(Dispatchers.Main) {
                     onProgress(0.05f, "Initializing Enrollment Session...")
                 }
                 verifier.startEnrollmentSession()
 
-                // 2. Start local capture
-                val captureStarted = audioCaptureManager.startCapture()
-                if (!captureStarted) {
-                    withContext(Dispatchers.Main) {
-                        onProgress(0f, "Failed to initialize microphone. Is another app using it?")
-                    }
-                    return@launch
-                }
-
-                // 3. Try to ensure Whisper is loaded locally so we can transcribe what the user says
+                // 2. Try to ensure Whisper is loaded locally so we can transcribe what the user says
                 val whisperEngine = FridayApplication.whisperEngine
                 if (!whisperEngine.isModelLoaded()) {
                     val whisperPath = modelManager.getWhisperModelPath()
@@ -853,19 +845,18 @@ class MainActivity : ComponentActivity() {
 
                 val samplesToCollect = 5
                 var successCount = 0
-                
+
                 for (i in 1..samplesToCollect) {
                     withContext(Dispatchers.Main) {
                         onProgress((i - 1).toFloat() / samplesToCollect, "Say: 'Hey Friday' (Sample $i of $samplesToCollect)")
                     }
 
-                    // Buffer speech clip (approx 2.5s)
+                    // Capture 2.5s of audio using a dedicated AudioRecord (not the shared manager)
                     val audioData = captureEnrollmentSample()
                     if (audioData == null) {
                         withContext(Dispatchers.Main) {
-                            onProgress(0f, "Microphone capture timed out. Please try again.")
+                            onProgress(0f, "Microphone capture failed. Is mic permission granted?")
                         }
-                        audioCaptureManager.stopCapture()
                         return@launch
                     }
 
@@ -900,8 +891,7 @@ class MainActivity : ComponentActivity() {
                 withContext(Dispatchers.Main) {
                     onProgress(0.9f, "Finalizing voice profile...")
                 }
-                audioCaptureManager.stopCapture()
-                
+
                 success = successCount > 0 && verifier.finalizeEnrollment()
                 withContext(Dispatchers.Main) {
                     if (success) {
@@ -913,7 +903,6 @@ class MainActivity : ComponentActivity() {
             } catch (e: Exception) {
                 Log.e(TAG, "Error in startVoiceEnrollment", e)
             } finally {
-                audioCaptureManager.stopCapture()
                 delay(500)
                 activeService?.resumeVoicePipeline()
                 withContext(Dispatchers.Main) {
@@ -923,48 +912,81 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @android.annotation.SuppressLint("MissingPermission")
     private suspend fun captureEnrollmentSample(): ShortArray? {
-        // Collect 2.5 seconds of 16kHz audio = 40,000 samples
-        val targetSize = 16000 * 25 / 10
-        val collected = ArrayList<Short>()
-        
-        val listener = object : AudioCaptureManager.AudioFrameListener {
-            override fun onAudioFrame(pcmData: ShortArray) {
-                synchronized(collected) {
-                    if (collected.size < targetSize) {
-                        pcmData.forEach { collected.add(it) }
+        // Collect 2.5 seconds of 16kHz mono audio = 40,000 samples
+        val sampleRate = 16000
+        val targetSamples = sampleRate * 25 / 10  // 2.5 seconds
+        val channelConfig = android.media.AudioFormat.CHANNEL_IN_MONO
+        val audioFormat = android.media.AudioFormat.ENCODING_PCM_16BIT
+        val minBuf = android.media.AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+
+        if (minBuf <= 0) {
+            Log.e(TAG, "AudioRecord getMinBufferSize failed: $minBuf")
+            return null
+        }
+
+        val bufferSize = minBuf * 2
+        val record = try {
+            android.media.AudioRecord(
+                android.media.MediaRecorder.AudioSource.MIC,
+                sampleRate,
+                channelConfig,
+                audioFormat,
+                bufferSize
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create enrollment AudioRecord", e)
+            return null
+        }
+
+        if (record.state != android.media.AudioRecord.STATE_INITIALIZED) {
+            Log.e(TAG, "Enrollment AudioRecord not initialized (mic may still be locked)")
+            record.release()
+            return null
+        }
+
+        return try {
+            record.startRecording()
+            val frameSize = sampleRate / 10  // 100ms frames = 1600 samples
+            val collected = ArrayList<Short>(targetSamples)
+            val frameBuffer = ShortArray(frameSize)
+            val deadlineMs = System.currentTimeMillis() + 8000L // 8-second absolute timeout
+
+            while (collected.size < targetSamples) {
+                if (System.currentTimeMillis() > deadlineMs) {
+                    Log.w(TAG, "Enrollment capture timed out after 8 seconds")
+                    break
+                }
+                val read = record.read(frameBuffer, 0, frameSize)
+                if (read > 0) {
+                    for (i in 0 until read) {
+                        if (collected.size < targetSamples) collected.add(frameBuffer[i])
                     }
+                } else if (read < 0) {
+                    Log.e(TAG, "AudioRecord read error during enrollment: $read")
+                    break
                 }
+                // Yield to prevent blocking the dispatcher completely
+                kotlinx.coroutines.yield()
             }
-        }
 
-        audioCaptureManager.registerListener(listener)
-        
-        val startTime = System.currentTimeMillis()
-        var timedOut = false
-        
-        while (true) {
-            delay(100)
-            synchronized(collected) {
-                if (collected.size >= targetSize) {
-                    return@synchronized
-                }
-            }
-            if (System.currentTimeMillis() - startTime > 5000) { // 5-second safety timeout
-                timedOut = true
-                break
-            }
-        }
-        
-        audioCaptureManager.unregisterListener(listener)
-
-        val result = synchronized(collected) {
-            if (timedOut || collected.isEmpty()) {
+            if (collected.size < targetSamples / 2) {
+                Log.w(TAG, "Only captured ${collected.size} of $targetSamples samples – aborting")
                 null
             } else {
-                collected.take(targetSize).toShortArray()
+                collected.take(targetSamples).toShortArray()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception during enrollment capture", e)
+            null
+        } finally {
+            try {
+                record.stop()
+                record.release()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error releasing enrollment AudioRecord", e)
             }
         }
-        return result
     }
 }

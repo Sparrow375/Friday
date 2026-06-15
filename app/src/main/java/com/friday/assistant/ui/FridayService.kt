@@ -1,17 +1,12 @@
 package com.friday.assistant.ui
 
 import android.accessibilityservice.AccessibilityService
-import android.app.Notification
-import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
-import androidx.core.app.NotificationCompat
-import com.friday.assistant.R
 import com.friday.assistant.audio.AudioCaptureManager
 import com.friday.assistant.audio.PipelineState
 import com.friday.assistant.audio.SpeakerVerifier
@@ -42,7 +37,6 @@ import com.friday.assistant.tools.accessibility.ScrollScreenTool
 import com.friday.assistant.tools.accessibility.GlobalActionTool
 import com.friday.assistant.tools.whatsapp.WhatsAppTool
 import com.friday.assistant.tools.email.EmailTool
-import com.friday.assistant.ui.screens.MainActivity
 import com.friday.assistant.ui.overlay.OverlayManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -57,7 +51,6 @@ class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
 
     companion object {
         private const val TAG = "FridayService"
-        private const val NOTIFICATION_ID = 2026
         private const val UTTERANCE_ID = "friday_tts_utterance"
 
         @Volatile
@@ -181,11 +174,13 @@ class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        Log.i(TAG, "Accessibility Service Connected. Starting Foreground notification.")
+        Log.i(TAG, "Accessibility Service Connected")
         instance = this
-        
-        // Safe foreground service start
-        promoteToMicrophoneForeground()
+
+        // Start the dedicated foreground service for the persistent notification.
+        // AccessibilityService must NOT call startForeground() itself – doing so causes
+        // Android to mark the service as "Not working" in Accessibility Settings.
+        FridayForegroundService.start(this)
 
         // Show floating bubble UI overlay
         overlayManager?.show()
@@ -200,41 +195,9 @@ class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
     }
 
     fun promoteToMicrophoneForeground() {
-        val hasMicPerm = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
-        if (!hasMicPerm) {
-            Log.w(TAG, "RECORD_AUDIO permission not granted yet. Skipping startForeground promotion.")
-            return
-        }
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    createNotification(),
-                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                )
-                Log.i(TAG, "Promoted service to MICROPHONE foreground service")
-            } else {
-                startForeground(NOTIFICATION_ID, createNotification())
-            }
-        } catch (e: Throwable) {
-            Log.e(TAG, "Failed to start/promote foreground service", e)
-        }
-    }
-
-    private fun createNotification(): Notification {
-        val intent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        return NotificationCompat.Builder(this, FridayApplication.CHANNEL_ID)
-            .setContentTitle("Friday Assistant")
-            .setContentText("Offline voice assistant is active and listening")
-            .setSmallIcon(R.mipmap.ic_launcher) // Fallback to launcher icon
-            .setContentIntent(pendingIntent)
-            .setOngoing(true)
-            .build()
+        // Delegate to FridayForegroundService so that the AccessibilityService
+        // is never responsible for its own foreground promotion.
+        FridayForegroundService.start(this)
     }
 
     private suspend fun setupNativeModels() {
@@ -326,6 +289,7 @@ class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
         voicePipeline.stopPipeline()
         overlayManager?.dismiss()
         tts?.shutdown()
+        FridayForegroundService.stop(this)
         
         serviceScope.launch(Dispatchers.IO) {
             FridayApplication.llamaEngine.freeModel()

@@ -59,14 +59,19 @@ fun FridayOverlayContent(
     val focusRequester = remember { FocusRequester() }
 
     LaunchedEffect(showTextInput) {
-        onKeyboardActive(showTextInput)
         if (showTextInput) {
-            delay(150)
+            // Step 1: Make the overlay window focusable FIRST so the system IME can attach
+            onKeyboardActive(true)
+            // Step 2: Give WindowManager time to apply the flag update before requesting focus
+            delay(250)
             try {
                 focusRequester.requestFocus()
             } catch (e: Exception) {
                 Log.e("FridayOverlayContent", "Failed to request focus", e)
             }
+        } else {
+            // Return window to non-focusable (pass-through touches to apps below)
+            onKeyboardActive(false)
         }
     }
 

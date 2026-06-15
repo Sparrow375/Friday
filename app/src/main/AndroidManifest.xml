@@ -58,8 +58,7 @@
             android:name="com.friday.assistant.ui.FridayService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:enabled="true"
-            android:exported="true"
-            android:foregroundServiceType="microphone">
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
@@ -67,6 +66,14 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <!-- Dedicated Foreground Service for holding the persistent notification.
+             Must be separate from the AccessibilityService. -->
+        <service
+            android:name="com.friday.assistant.ui.FridayForegroundService"
+            android:foregroundServiceType="microphone"
+            android:enabled="true"
+            android:exported="false" />
 
         <!-- Notification Listener Service -->
         <service
