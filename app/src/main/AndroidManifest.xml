@@ -8,9 +8,7 @@
     <!-- Overlay UI -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <!-- Foreground Service -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- System Settings & Controls -->
@@ -67,13 +65,7 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
-        <!-- Dedicated Foreground Service for holding the persistent notification.
-             Must be separate from the AccessibilityService. -->
-        <service
-            android:name="com.friday.assistant.ui.FridayForegroundService"
-            android:foregroundServiceType="microphone"
-            android:enabled="true"
-            android:exported="false" />
+
 
         <!-- Notification Listener Service -->
         <service

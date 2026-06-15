@@ -247,7 +247,7 @@ fun FridayOverlayContent(
 
                         LaunchedEffect(Unit) {
                             // Delay slightly for window manager updates and keyboard layout animations to sync
-                            delay(300)
+                            delay(350)
                             try {
                                 focusRequester.requestFocus()
                                 keyboardController?.show()

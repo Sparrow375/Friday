@@ -27,6 +27,7 @@ class AgentCore(
     private val llamaEngine = FridayApplication.llamaEngine
     private val promptBuilder = PromptBuilder(memoryManager)
     private val nluClassifier = NluIntentClassifier(context)
+    private val modelManager = com.friday.assistant.core.ModelManager(context)
 
     // Flow to emit streaming output/status events for the UI overlay to show in real time
     private val _agentStatusFlow = MutableSharedFlow<String>(extraBufferCapacity = 10)
@@ -407,7 +408,17 @@ class AgentCore(
         }
 
         // 3. Fallback: LLM Reasoner or Search Fallback
-        if (llamaEngine.isModelLoaded()) {
+        if (modelManager.isLlmLoaded()) {
+            if (!llamaEngine.isModelLoaded()) {
+                _agentStatusFlow.emit("Loading reasoning brain...")
+                val path = modelManager.getLlmModelPath()
+                com.friday.assistant.core.FridayLogger.i(TAG, "Lazy loading LLM GGUF model from: $path")
+                val success = llamaEngine.loadModel(path)
+                com.friday.assistant.core.FridayLogger.i(TAG, "LLM GGUF model load success: $success")
+                if (!success) {
+                    return "Failed to load the local reasoning brain. Please check if your device has enough free memory."
+                }
+            }
             _agentStatusFlow.emit("Thinking...")
             llamaEngine.clearHistory()
             var currentPrompt = promptBuilder.buildPrompt(userInput)

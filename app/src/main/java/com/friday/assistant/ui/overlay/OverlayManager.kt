@@ -68,6 +68,13 @@ class OverlayManager(
     fun show() {
         if (isVisible) return
         com.friday.assistant.core.FridayLogger.i(TAG, "Showing overlay window")
+
+        // Reset state flows to clear any previous responses/transcripts
+        pipelineState.value = PipelineState.IDLE
+        statusText.value = "Active"
+        transcript.value = ""
+        assistantResponse.value = ""
+        audioAmplitude.value = 0f
         
         try {
             if (myLifecycleRegistry.currentState == Lifecycle.State.DESTROYED) {
@@ -81,12 +88,7 @@ class OverlayManager(
             val layoutParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                } else {
-                    @Suppress("DEPRECATION")
-                    WindowManager.LayoutParams.TYPE_PHONE
-                },
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
                 PixelFormat.TRANSLUCENT
             ).apply {
@@ -171,9 +173,13 @@ class OverlayManager(
                 if (focusable) {
                     view.isFocusable = true
                     view.isFocusableInTouchMode = true
-                    view.requestFocus()
-                    val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
-                    imm?.showSoftInput(view, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                    view.postDelayed({
+                        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+                        view.requestFocus()
+                        imm?.restartInput(view)
+                        imm?.showSoftInput(view, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                        com.friday.assistant.core.FridayLogger.d(TAG, "Overlay soft input restarted and shown via postDelayed")
+                    }, 200)
                 }
                 com.friday.assistant.core.FridayLogger.d(TAG, "Overlay focusable updated: $focusable")
             } catch (e: Throwable) {

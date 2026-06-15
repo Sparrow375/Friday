@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -44,7 +45,6 @@ import com.friday.assistant.audio.SpeakerVerifier
 import com.friday.assistant.core.FridayApplication
 import com.friday.assistant.core.ModelManager
 import com.friday.assistant.ui.FridayService
-import com.friday.assistant.ui.FridayForegroundService
 import com.friday.assistant.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -136,9 +136,6 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(Unit) {
             while (true) {
                 val micGranted = checkPermission(Manifest.permission.RECORD_AUDIO)
-                if (micGranted && !hasMicPermission) {
-                    FridayForegroundService.start(context)
-                }
                 hasMicPermission = micGranted
                 hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     checkPermission(Manifest.permission.POST_NOTIFICATIONS)
@@ -166,9 +163,6 @@ class MainActivity : ComponentActivity() {
             contract = ActivityResultContracts.RequestMultiplePermissions()
         ) { permissions ->
             val micGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: hasMicPermission
-            if (micGranted && !hasMicPermission) {
-                FridayForegroundService.start(context)
-            }
             hasMicPermission = micGranted
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 hasNotificationPermission = permissions[Manifest.permission.POST_NOTIFICATIONS] ?: hasNotificationPermission
@@ -241,11 +235,11 @@ class MainActivity : ComponentActivity() {
                                     copyingProgress = -1f
                                     Toast.makeText(context, "LLM Model copied successfully", Toast.LENGTH_SHORT).show()
                                     
-                                    // Notify FridayForegroundService to reload models
-                                    val reloadIntent = Intent(context, FridayForegroundService::class.java).apply {
-                                        action = FridayForegroundService.ACTION_RELOAD_MODELS
+                                    if (FridayService.instance != null) {
+                                        FridayService.reloadModels()
+                                    } else {
+                                        Toast.makeText(context, "Model GGUF copied. Enable accessibility to load it.", Toast.LENGTH_LONG).show()
                                     }
-                                    context.startService(reloadIntent)
                                 }
                             } else {
                                 throw Exception("Failed to rename temporary file to destination")
@@ -299,7 +293,6 @@ class MainActivity : ComponentActivity() {
             // System Active Banner
             val allCorePermissionsGranted = hasMicPermission && hasOverlayPermission
             val systemReady = allCorePermissionsGranted && llmLoaded && whisperLoaded
-            val fgServiceRunning = FridayForegroundService.instance != null
 
             Card(
                 modifier = Modifier
@@ -342,11 +335,17 @@ class MainActivity : ComponentActivity() {
             if (hasMicPermission && hasOverlayPermission) {
                 Button(
                     onClick = {
-                        val activeFgService = FridayForegroundService.instance
-                        if (activeFgService != null) {
-                            activeFgService.showOverlay()
+                        val activeService = FridayService.instance
+                        if (activeService != null) {
+                            activeService.showOverlay()
                         } else {
-                            FridayForegroundService.startWithOverlay(context)
+                            Toast.makeText(context, "Please enable Friday Accessibility Service in Settings first", Toast.LENGTH_LONG).show()
+                            try {
+                                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to launch accessibility settings", e)
+                            }
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = NeonBlue),
@@ -657,7 +656,83 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // 6. Log Viewer Card
+            var logsText by remember { mutableStateOf("No logs loaded.") }
+            LaunchedEffect(Unit) {
+                logsText = readLogs()
+            }
+
+            DashboardCard(title = "System Debug Logs") {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(200.dp)
+                        .background(Color.Black.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                        .padding(8.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = logsText,
+                        style = TextStyle(
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = Color.LightGray
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Button(
+                        onClick = { logsText = readLogs() },
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonBlue),
+                        modifier = Modifier.weight(1f).padding(end = 8.dp)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Refresh", color = Color.White)
+                    }
+                    Button(
+                        onClick = {
+                            com.friday.assistant.core.FridayLogger.clearLogs()
+                            logsText = readLogs()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AlertRed),
+                        modifier = Modifier.weight(1f).padding(start = 8.dp)
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = "Clear")
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Clear Logs", color = Color.White)
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(40.dp))
+        }
+    }
+
+    private fun readLogs(): String {
+        val file = com.friday.assistant.core.FridayLogger.getLogFile()
+        return if (file != null && file.exists()) {
+            try {
+                val lines = file.readLines()
+                if (lines.size > 200) {
+                    lines.takeLast(200).joinToString("\n")
+                } else {
+                    lines.joinToString("\n")
+                }
+            } catch (e: Exception) {
+                "Error reading logs: ${e.localizedMessage}"
+            }
+        } else {
+            "Log file does not exist yet."
         }
     }
 

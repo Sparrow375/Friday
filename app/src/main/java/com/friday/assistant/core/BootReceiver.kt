@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import com.friday.assistant.ui.FridayForegroundService
 
 class BootReceiver : BroadcastReceiver() {
     companion object {
@@ -13,12 +12,7 @@ class BootReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
-            Log.i(TAG, "System boot completed. Automatically starting FridayForegroundService...")
-            try {
-                FridayForegroundService.start(context)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start FridayForegroundService on boot", e)
-            }
+            Log.i(TAG, "System boot completed. Friday Accessibility service will auto-start if enabled in Settings.")
         }
     }
 }

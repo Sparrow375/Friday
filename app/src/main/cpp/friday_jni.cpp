@@ -146,7 +146,10 @@ Java_com_friday_assistant_core_native_LlamaEngine_clearLlamaHistory(JNIEnv *env,
     LlamaState *state = reinterpret_cast<LlamaState *>(state_ptr);
     if (state != nullptr) {
         state->history_tokens.clear();
-        LOGI("Llama context history cleared");
+        if (state->ctx) {
+            llama_kv_cache_clear(state->ctx);
+        }
+        LOGI("Llama context history and KV cache cleared");
     }
 }
 
