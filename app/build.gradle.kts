@@ -129,9 +129,9 @@ dependencies {
 
 val downloadWhisperModelTask = tasks.register("downloadWhisperModel") {
     val assetsDir = file("src/main/assets")
-    val whisperFile = File(assetsDir, "ggml-tiny-q5_0.bin")
+    val whisperFile = File(assetsDir, "ggml-tiny-q5_1.bin")
     
-    inputs.property("url", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_0.bin")
+    inputs.property("url", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin")
     outputs.file(whisperFile)
     
     doLast {
@@ -140,7 +140,7 @@ val downloadWhisperModelTask = tasks.register("downloadWhisperModel") {
         }
         if (!whisperFile.exists()) {
             println("Downloading Whisper model from Hugging Face...")
-            val url = URL("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_0.bin")
+            val url = URL("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin")
             val connection = url.openConnection()
             connection.connect()
             val inputStream = connection.getInputStream()

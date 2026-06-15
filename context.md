@@ -71,3 +71,4 @@ The project uses a clean package namespace `com.friday.assistant`:
 - **JNI Glue Layer**: `app/src/main/cpp/friday_jni.cpp` exports JNI methods for model loading, token generation, audio feed, and transcription.
   * *Updated (June 2026)*: Upgraded JNI calls to utilize the new `llama_vocab` struct APIs (`llama_model_get_vocab`, `llama_vocab_is_eog`, and `llama_token_to_piece` with vocab pointer) to remain compatible with the refactored upstream `llama.cpp` master.
 - **GitHub Actions**: Generates and signs `app-debug.apk` on every push to main/master, deploying it directly to GitHub Releases.
+  * *Updated (June 2026)*: Configured Gradle to automatically download `ggml-tiny-q5_1.bin` from Hugging Face during the pre-build stage to keep the repository lightweight and self-contained.

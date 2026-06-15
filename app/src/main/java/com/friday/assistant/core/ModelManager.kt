@@ -32,9 +32,9 @@ class ModelManager(private val context: Context) {
     }
 
     fun getWhisperModelPath(): String {
-        val file = File(context.filesDir, "ggml-tiny-q5_0.bin")
+        val file = File(context.filesDir, "ggml-tiny-q5_1.bin")
         if (!file.exists()) {
-            copyModelFromAssets("ggml-tiny-q5_0.bin", file)
+            copyModelFromAssets("ggml-tiny-q5_1.bin", file)
         }
         return file.absolutePath
     }

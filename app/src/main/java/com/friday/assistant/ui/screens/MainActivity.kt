@@ -421,7 +421,7 @@ class MainActivity : ComponentActivity() {
                 ModelRow(
                     name = "Speech Recognition (Whisper)",
                     status = whisperLoaded,
-                    details = "Auto-configured ggml-tiny-q5_0 model"
+                    details = "Auto-configured ggml-tiny-q5_1 model"
                 )
                 Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
                 
