@@ -189,7 +189,8 @@ Java_com_friday_assistant_core_native_LlamaEngine_clearLlamaHistory(JNIEnv *env,
     if (state != nullptr) {
         state->history_tokens.clear();
         if (state->ctx) {
-            llama_kv_cache_seq_rm(state->ctx, 0, 0, -1);
+            llama_memory_t kv = llama_get_memory(state->ctx);
+            llama_memory_clear(kv, true);
         }
         LOGI("Llama context history and KV cache cleared");
     }
@@ -239,7 +240,8 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
     // Truncate KV Cache to matched prefix length
     if (n_keep < state->history_tokens.size()) {
         LOGI("Cache mismatch. Truncating KV cache from position %d to end (-1)", (int)n_keep);
-        llama_kv_cache_seq_rm(state->ctx, 0, n_keep, -1);
+        llama_memory_t kv = llama_get_memory(state->ctx);
+        llama_memory_seq_rm(kv, 0, n_keep, -1);
         state->history_tokens.resize(n_keep);
     }
 
@@ -249,7 +251,8 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
     // to calculate its logits for sampling.
     if (n_new == 0 && n_keep > 0) {
         n_keep--;
-        llama_kv_cache_seq_rm(state->ctx, 0, n_keep, -1);
+        llama_memory_t kv = llama_get_memory(state->ctx);
+        llama_memory_seq_rm(kv, 0, n_keep, -1);
         state->history_tokens.resize(n_keep);
         n_new = prompt_tokens.size() - n_keep;
     }
