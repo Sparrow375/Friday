@@ -26,8 +26,9 @@ android {
 
         externalNativeBuild {
             cmake {
-                cppFlags += "-std=c++17"
+                cppFlags += listOf("-std=c++17", "-O3", "-DNDEBUG")
                 arguments += listOf(
+                    "-DCMAKE_BUILD_TYPE=Release",
                     "-DGGML_OPENMP=OFF",
                     "-DGGML_NATIVE=OFF",
                     "-DGGML_AVX=OFF",

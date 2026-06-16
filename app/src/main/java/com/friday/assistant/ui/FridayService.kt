@@ -211,8 +211,9 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         responseText: String = "",
         transcriptText: String = ""
     ) {
-        if (pipelineState.value != newState) {
-            com.friday.assistant.core.FridayLogger.d(TAG, "Transitioning state from ${pipelineState.value} to $newState")
+        val oldState = pipelineState.value
+        if (oldState != newState) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "Transitioning state from $oldState to $newState")
             pipelineState.value = newState
             val status = statusMessage ?: getStatusText(newState)
             overlayManager?.updateState(newState, status, trans = transcriptText, resp = responseText)
@@ -220,7 +221,16 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             if (newState == PipelineState.IDLE) {
                 overlayManager?.updateAmplitude(0f)
                 speechToTextHelper.destroy()
-                startWakeWordListening()
+                if (oldState == PipelineState.SPEAKING) {
+                    serviceScope.launch {
+                        kotlinx.coroutines.delay(1500)
+                        if (pipelineState.value == PipelineState.IDLE) {
+                            startWakeWordListening()
+                        }
+                    }
+                } else {
+                    startWakeWordListening()
+                }
             } else {
                 stopWakeWordListening()
             }

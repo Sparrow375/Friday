@@ -39,6 +39,7 @@ class WakeWordDetector(
 
     // VAD Variables
     private var backgroundRms = 100f
+    private var isBackgroundRmsInitialized = false
     private val rmsAlpha = 0.98f // Running average smoothing factor
     private var isSpeaking = false
     private var speechStartTimestamp = 0L
@@ -78,9 +79,17 @@ class WakeWordDetector(
     override fun onAudioFrame(pcmData: ShortArray) {
         val rms = calculateRMS(pcmData)
         
-        // Update background noise level (if it's quiet, track it)
-        if (rms < backgroundRms * 1.5f) {
-            backgroundRms = backgroundRms * rmsAlpha + rms * (1f - rmsAlpha)
+        if (!isBackgroundRmsInitialized) {
+            backgroundRms = rms.coerceIn(50f, 1000f)
+            isBackgroundRmsInitialized = true
+        } else {
+            // Update background noise level (if it's quiet, track it)
+            if (rms < backgroundRms * 1.5f) {
+                backgroundRms = backgroundRms * rmsAlpha + rms * (1f - rmsAlpha)
+            } else {
+                // Very slowly decay the background noise upwards in case of a sustained louder environment
+                backgroundRms = backgroundRms * 0.999f + rms * 0.001f
+            }
         }
 
         // Voice Activity Detection Threshold
