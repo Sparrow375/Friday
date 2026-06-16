@@ -86,10 +86,25 @@ struct LlamaState {
     std::vector<llama_token> history_tokens;
 };
 
+static void llama_log_callback_android(enum ggml_log_level level, const char * text, void * user_data) {
+    (void)user_data;
+    android_LogPriority priority = ANDROID_LOG_INFO;
+    switch (level) {
+        case GGML_LOG_LEVEL_ERROR: priority = ANDROID_LOG_ERROR; break;
+        case GGML_LOG_LEVEL_WARN:  priority = ANDROID_LOG_WARN; break;
+        case GGML_LOG_LEVEL_INFO:  priority = ANDROID_LOG_INFO; break;
+        default:                   priority = ANDROID_LOG_DEBUG; break;
+    }
+    __android_log_write(priority, "llama.cpp", text);
+}
+
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_friday_assistant_core_native_LlamaEngine_initLlama(JNIEnv *env, jobject thiz, jstring model_path) {
     const char *path = env->GetStringUTFChars(model_path, nullptr);
     LOGI("Initializing Llama backend and loading model: %s", path);
+    
+    // Set up Android logcat logging redirect
+    llama_log_set(llama_log_callback_android, nullptr);
     
     // Initialize backend
     llama_backend_init();

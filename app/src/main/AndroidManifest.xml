@@ -65,6 +65,25 @@
                 android:resource="@xml/interaction_service" />
         </service>
 
+        <!-- Assistant Session Service -->
+        <service
+            android:name="com.friday.assistant.ui.FridaySessionService"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:exported="true" />
+
+        <!-- Speech Recognition Service -->
+        <service
+            android:name="com.friday.assistant.ui.FridayRecognitionService"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.speech"
+                android:resource="@xml/recognition_service" />
+        </service>
+
 
 
         <!-- Notification Listener Service -->
