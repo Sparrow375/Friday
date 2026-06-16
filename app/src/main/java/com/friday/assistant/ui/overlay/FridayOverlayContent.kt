@@ -204,6 +204,8 @@ fun FridayOverlayContent(
                         exit = fadeOut()
                     ) {
                         val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+                        val view = androidx.compose.ui.platform.LocalView.current
+                        val context = androidx.compose.ui.platform.LocalContext.current
                         
                         OutlinedTextField(
                             value = textInput,
@@ -251,6 +253,11 @@ fun FridayOverlayContent(
                             try {
                                 focusRequester.requestFocus()
                                 keyboardController?.show()
+                                
+                                // Force restart input to bind IME to the newly focused text field
+                                val imm = context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+                                imm?.restartInput(view)
+                                imm?.showSoftInput(view, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
                             } catch (e: Exception) {
                                 Log.e("FridayOverlayContent", "Failed to focus OutlinedTextField", e)
                             }

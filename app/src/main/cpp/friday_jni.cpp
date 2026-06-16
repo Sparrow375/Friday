@@ -123,7 +123,8 @@ Java_com_friday_assistant_core_native_LlamaEngine_initLlama(JNIEnv *env, jobject
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = 2048; // Context size
     cparams.n_batch = 512;
-    cparams.n_threads = 2;
+    cparams.n_threads = 4;
+    cparams.n_threads_batch = 4;
     
     llama_context *ctx = llama_new_context_with_model(model, cparams);
     if (ctx == nullptr) {
@@ -185,21 +186,26 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
     std::string prompt(prompt_raw);
     env->ReleaseStringUTFChars(prompt_str, prompt_raw);
 
+    LOGI("generateLlama started. Prompt: '%s'", prompt.c_str());
+
     // Retrieve vocabulary from model
     const struct llama_vocab * vocab = llama_model_get_vocab(state->model);
 
     // Tokenize prompt
     // For llama.cpp, we calculate number of tokens first
     int n_tokens_prompt = -llama_tokenize(vocab, prompt.c_str(), prompt.length(), nullptr, 0, true, true);
+    LOGI("Prompt length: %d. Estimated tokens required: %d", (int)prompt.length(), n_tokens_prompt);
     std::vector<llama_token> prompt_tokens(n_tokens_prompt);
     if (llama_tokenize(vocab, prompt.c_str(), prompt.length(), prompt_tokens.data(), prompt_tokens.size(), true, true) < 0) {
         LOGE("Failed to tokenize prompt");
         return env->NewStringUTF("Error: Tokenization failed");
     }
+    LOGI("Tokenization complete. Actual prompt tokens count: %d", (int)prompt_tokens.size());
 
     // Append new prompt tokens to history
     size_t old_history_size = state->history_tokens.size();
     state->history_tokens.insert(state->history_tokens.end(), prompt_tokens.begin(), prompt_tokens.end());
+    LOGI("History size updated from %d to %d", (int)old_history_size, (int)state->history_tokens.size());
 
     // Simple decoder loop
     std::string response = "";
@@ -211,6 +217,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
     llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.95f, 1));
     llama_sampler_chain_add(smpl, llama_sampler_init_temp(temp));
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+    LOGI("Sampler initialized with temp=%.2f", temp);
 
     // Decode prompt first if history is new or decode everything sequentially
     // We decode in batches.
@@ -222,7 +229,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
         // Prepare batch
         size_t n_eval = total_tokens - current_pos;
         if (n_eval == 0) {
-            // Need to generate next token
+            LOGI("n_eval is 0, breaking loop");
             break;
         }
 
@@ -230,6 +237,9 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
         if (n_eval > 512) {
             n_eval = 512;
         }
+
+        LOGI("Loop iteration %d: n_eval=%d, current_pos=%d, total_tokens=%d", 
+             n_generated, (int)n_eval, (int)current_pos, (int)total_tokens);
 
         llama_batch batch = llama_batch_init(n_eval, 0, 1);
         batch.n_tokens = n_eval;
@@ -241,8 +251,12 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
             batch.logits[i] = (i == n_eval - 1); // Only compute logits for the last token in batch
         }
 
-        if (llama_decode(state->ctx, batch) != 0) {
-            LOGE("Llama decode failed");
+        LOGI("Calling llama_decode for %d tokens...", (int)n_eval);
+        int decode_res = llama_decode(state->ctx, batch);
+        LOGI("llama_decode returned: %d", decode_res);
+
+        if (decode_res != 0) {
+            LOGE("Llama decode failed with status %d", decode_res);
             llama_batch_free(batch);
             llama_sampler_free(smpl);
             return env->NewStringUTF("Error: Decode failed");
@@ -252,7 +266,9 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
         llama_batch_free(batch);
 
         // Sample next token
+        LOGI("Sampling next token...");
         llama_token id = llama_sampler_sample(smpl, state->ctx, -1);
+        LOGI("Sampled token: %d", id);
         
         // Add to history
         state->history_tokens.push_back(id);
@@ -260,6 +276,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
 
         // Check for EOS
         if (llama_vocab_is_eog(vocab, id)) {
+            LOGI("Sampled EOG token (id=%d), finishing generation", id);
             break;
         }
 
@@ -268,11 +285,15 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
         int n_chars = llama_token_to_piece(vocab, id, buf, sizeof(buf), 0, true);
         if (n_chars > 0) {
             response.append(buf, n_chars);
+            LOGI("Generated token piece: '%*s'", n_chars, buf);
+        } else {
+            LOGI("Generated empty token piece (n_chars=%d)", n_chars);
         }
 
         n_generated++;
     }
 
+    LOGI("generateLlama finished. Generated tokens count: %d. Response: '%s'", n_generated, response.c_str());
     llama_sampler_free(smpl);
     return env->NewStringUTF(response.c_str());
 }

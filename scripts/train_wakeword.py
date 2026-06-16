@@ -257,10 +257,26 @@ def train_wakeword():
 
     final_model_path = onnx_path
 
-    # Copy to assets folder
-    assets_dest = os.path.abspath("app/src/main/assets/wakeword.onnx")
-    shutil.copy2(final_model_path, assets_dest)
-    print(f"Copied finalized wake-word model to assets: {assets_dest}", flush=True)
+    # Convert ONNX model to embed weights (convert from external data format to embedded)
+    print("Converting ONNX model to embed weights...", flush=True)
+    try:
+        import onnx
+        from onnx.external_data_helper import convert_model_from_external_data
+        model_proto = onnx.load(onnx_path)
+        convert_model_from_external_data(model_proto)
+        
+        # Save self-contained model directly to assets destination
+        assets_dest = os.path.abspath("app/src/main/assets/wakeword.onnx")
+        if os.path.exists(assets_dest):
+            os.remove(assets_dest)
+        onnx.save_model(model_proto, assets_dest)
+        print(f"Saved self-contained wake-word model to assets: {assets_dest}", flush=True)
+    except Exception as ex:
+        print(f"Failed to embed weights in ONNX: {ex}", flush=True)
+        # Fallback to copy
+        assets_dest = os.path.abspath("app/src/main/assets/wakeword.onnx")
+        shutil.copy2(final_model_path, assets_dest)
+        print(f"Copied finalized wake-word model metadata to assets: {assets_dest}", flush=True)
 
     # Clean up temporary dataset folder
     print("Cleaning up temporary dataset files...", flush=True)
