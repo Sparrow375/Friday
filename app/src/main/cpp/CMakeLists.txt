@@ -16,6 +16,7 @@ set(GGML_F16C OFF CACHE BOOL "Disable F16C" FORCE)
 # For Android, ensure NEON is enabled for ARM64
 if(ANDROID_ABI STREQUAL "arm64-v8a")
     set(GGML_NEON ON CACHE BOOL "Enable NEON" FORCE)
+    add_compile_options(-march=armv8.2-a+dotprod)
 endif()
 
 # Speed up compile by disabling tests, examples, and server builds

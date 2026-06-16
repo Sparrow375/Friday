@@ -93,7 +93,7 @@ class WakeWordDetector(
         }
 
         // Voice Activity Detection Threshold
-        val vadThreshold = backgroundRms + 80f // Noise-adaptive threshold offset
+        val vadThreshold = backgroundRms * 1.5f + 100f // Noise-adaptive multiplicative threshold
         val now = System.currentTimeMillis()
 
         if (rms > vadThreshold) {

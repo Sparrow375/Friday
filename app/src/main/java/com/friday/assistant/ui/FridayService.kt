@@ -221,6 +221,17 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             if (newState == PipelineState.IDLE) {
                 overlayManager?.updateAmplitude(0f)
                 speechToTextHelper.destroy()
+                
+                // Auto-dismiss overlay UI when task finishes
+                val dismissDelay = if (oldState == PipelineState.SPEAKING) 4000L else 1500L
+                serviceScope.launch {
+                    kotlinx.coroutines.delay(dismissDelay)
+                    if (pipelineState.value == PipelineState.IDLE) {
+                        com.friday.assistant.core.FridayLogger.i(TAG, "Auto-dismissing overlay after task completion")
+                        overlayManager?.dismiss()
+                    }
+                }
+
                 if (oldState == PipelineState.SPEAKING) {
                     serviceScope.launch {
                         kotlinx.coroutines.delay(1500)
@@ -269,7 +280,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     private suspend fun onWakeWordTriggered() {
         overlayManager?.show()
         transitionToState(PipelineState.LISTENING)
-        kotlinx.coroutines.delay(350) // Allow mic resources to release completely
+        kotlinx.coroutines.delay(100) // Allow mic resources to release completely
         speechToTextHelper.startListening()
     }
 
@@ -283,7 +294,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             }
             serviceScope.launch {
                 transitionToState(PipelineState.LISTENING)
-                kotlinx.coroutines.delay(350) // Allow mic resources to release completely
+                kotlinx.coroutines.delay(100) // Allow mic resources to release completely
                 speechToTextHelper.startListening()
             }
         }
