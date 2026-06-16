@@ -130,15 +130,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 }
             },
             onStateChanged = { state ->
-                pipelineState.value = state
-                val status = getStatusText(state)
-                overlayManager?.updateState(state, status)
-                if (state == PipelineState.IDLE) {
-                    overlayManager?.updateAmplitude(0f)
-                    startWakeWordListening()
-                } else {
-                    stopWakeWordListening()
-                }
+                transitionToState(state)
             }
         )
 
@@ -153,14 +145,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 } catch (e: Exception) {
                     com.friday.assistant.core.FridayLogger.e(TAG, "Error stopping TTS on close", e)
                 }
-                try {
-                    speechToTextHelper.stopListening()
-                } catch (e: Exception) {
-                    com.friday.assistant.core.FridayLogger.e(TAG, "Error stopping listening on close", e)
-                }
-                pipelineState.value = PipelineState.IDLE
                 overlayManager?.dismiss()
-                startWakeWordListening()
+                transitionToState(PipelineState.IDLE)
             }
         )
 
@@ -219,6 +205,28 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         // GGUF model is loaded lazily inside AgentCore to prevent memory starvation at startup
     }
 
+    private fun transitionToState(
+        newState: PipelineState,
+        statusMessage: String? = null,
+        responseText: String = "",
+        transcriptText: String = ""
+    ) {
+        if (pipelineState.value != newState) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "Transitioning state from ${pipelineState.value} to $newState")
+            pipelineState.value = newState
+            val status = statusMessage ?: getStatusText(newState)
+            overlayManager?.updateState(newState, status, trans = transcriptText, resp = responseText)
+            
+            if (newState == PipelineState.IDLE) {
+                overlayManager?.updateAmplitude(0f)
+                speechToTextHelper.destroy()
+                startWakeWordListening()
+            } else {
+                stopWakeWordListening()
+            }
+        }
+    }
+
     private fun startWakeWordListening() {
         val hasMicPerm = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         if (!hasMicPerm) {
@@ -228,63 +236,63 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         if (pipelineState.value == PipelineState.IDLE) {
             wakeWordDetector?.let { detector ->
-                com.friday.assistant.core.FridayLogger.d(TAG, "Registering WakeWordDetector to AudioCaptureManager")
-                FridayApplication.audioCaptureManager.registerListener(detector)
-                val started = FridayApplication.audioCaptureManager.startCapture()
-                com.friday.assistant.core.FridayLogger.d(TAG, "Background audio capture started: $started")
+                if (!FridayApplication.audioCaptureManager.isActive()) {
+                    com.friday.assistant.core.FridayLogger.d(TAG, "Registering WakeWordDetector to AudioCaptureManager")
+                    FridayApplication.audioCaptureManager.registerListener(detector)
+                    val started = FridayApplication.audioCaptureManager.startCapture()
+                    com.friday.assistant.core.FridayLogger.d(TAG, "Background audio capture started: $started")
+                }
             }
         }
     }
 
     private fun stopWakeWordListening() {
         wakeWordDetector?.let { detector ->
-            com.friday.assistant.core.FridayLogger.d(TAG, "Unregistering WakeWordDetector from AudioCaptureManager")
-            FridayApplication.audioCaptureManager.unregisterListener(detector)
-            FridayApplication.audioCaptureManager.stopCapture()
+            if (FridayApplication.audioCaptureManager.isActive()) {
+                com.friday.assistant.core.FridayLogger.d(TAG, "Unregistering WakeWordDetector from AudioCaptureManager")
+                FridayApplication.audioCaptureManager.unregisterListener(detector)
+                FridayApplication.audioCaptureManager.stopCapture()
+            }
         }
     }
 
     private suspend fun onWakeWordTriggered() {
-        stopWakeWordListening()
         overlayManager?.show()
-        pipelineState.value = PipelineState.LISTENING
+        transitionToState(PipelineState.LISTENING)
+        kotlinx.coroutines.delay(350) // Allow mic resources to release completely
         speechToTextHelper.startListening()
     }
 
     private fun toggleListening() {
         if (pipelineState.value == PipelineState.LISTENING) {
-            speechToTextHelper.stopListening()
+            transitionToState(PipelineState.IDLE)
         } else {
             // Cancel TTS if speaking before listening
             if (pipelineState.value == PipelineState.SPEAKING) {
                 tts?.stop()
             }
-            speechToTextHelper.startListening()
+            serviceScope.launch {
+                transitionToState(PipelineState.LISTENING)
+                kotlinx.coroutines.delay(350) // Allow mic resources to release completely
+                speechToTextHelper.startListening()
+            }
         }
     }
 
     private suspend fun executeAgentQuery(query: String) {
-        pipelineState.value = PipelineState.THINKING
-        overlayManager?.updateState(PipelineState.THINKING, "Thinking...", trans = query)
-
+        transitionToState(PipelineState.THINKING, statusMessage = "Thinking...", transcriptText = query)
         val response = agentCore.processQuery(query)
-
         speakResponse(response)
     }
 
     private fun speakResponse(response: String) {
         if (!isTtsInitialized || tts == null) {
             com.friday.assistant.core.FridayLogger.e(TAG, "TTS not initialized")
-            pipelineState.value = PipelineState.IDLE
-            overlayManager?.updateState(PipelineState.IDLE, "Active", resp = response)
-            startWakeWordListening()
+            transitionToState(PipelineState.IDLE, responseText = response)
             return
         }
 
-        pipelineState.value = PipelineState.SPEAKING
-        overlayManager?.updateState(PipelineState.SPEAKING, "Speaking...", resp = response)
-        stopWakeWordListening()
-
+        transitionToState(PipelineState.SPEAKING, responseText = response)
         tts?.speak(response, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID)
     }
 
@@ -305,9 +313,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 override fun onDone(utteranceId: String?) {
                     com.friday.assistant.core.FridayLogger.d(TAG, "TTS speaking finished")
                     serviceScope.launch {
-                        pipelineState.value = PipelineState.IDLE
-                        overlayManager?.updateState(PipelineState.IDLE, "Active")
-                        startWakeWordListening()
+                        transitionToState(PipelineState.IDLE)
                     }
                 }
 
@@ -315,9 +321,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 override fun onError(utteranceId: String?) {
                     com.friday.assistant.core.FridayLogger.e(TAG, "TTS speaking error")
                     serviceScope.launch {
-                        pipelineState.value = PipelineState.IDLE
-                        overlayManager?.updateState(PipelineState.IDLE, "Active")
-                        startWakeWordListening()
+                        transitionToState(PipelineState.IDLE)
                     }
                 }
             })
