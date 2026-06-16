@@ -133,6 +133,7 @@ class MainActivity : ComponentActivity() {
         var llmLoaded by remember { mutableStateOf(modelManager.isLlmLoaded()) }
         var speakerLoaded by remember { mutableStateOf(modelManager.isSpeakerLoaded()) }
         var wakeWordLoaded by remember { mutableStateOf(modelManager.isWakeWordLoaded()) }
+        var nluLoaded by remember { mutableStateOf(modelManager.isNluLoaded()) }
 
         // Enrollment states
         var isEnrolled by remember { mutableStateOf(speakerVerifier?.isEnrolled() == true) }
@@ -176,6 +177,7 @@ class MainActivity : ComponentActivity() {
                 llmLoaded = modelManager.isLlmLoaded()
                 speakerLoaded = modelManager.isSpeakerLoaded()
                 wakeWordLoaded = modelManager.isWakeWordLoaded()
+                nluLoaded = modelManager.isNluLoaded()
                 
                 delay(1500)
             }
@@ -521,6 +523,13 @@ class MainActivity : ComponentActivity() {
                     name = "Offline Wake Word (ONNX)",
                     status = wakeWordLoaded,
                     details = "Custom 1D CNN 'Friday' wake-word model"
+                )
+                Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
+
+                ModelRow(
+                    name = "NLU Intent Classifier (ONNX)",
+                    status = nluLoaded,
+                    details = "Custom sequence classifier model"
                 )
                 Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
 

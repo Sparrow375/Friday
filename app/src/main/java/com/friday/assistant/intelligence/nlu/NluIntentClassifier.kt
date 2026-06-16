@@ -21,7 +21,12 @@ class NluIntentClassifier(private val context: Context) {
     private var isLoaded = false
 
     // Mapped labels expected from the fine-tuned ONNX classifier
-    private val intentLabels = listOf("volume_up", "volume_down", "lock_phone", "search_reddit", "open_app", "unknown")
+    private val intentLabels = listOf(
+        "volume_up", "volume_down", "brightness_up", "brightness_down", 
+        "torch_toggle", "torch_strength", "lock_phone", "open_app", 
+        "navigate_to", "set_alarm", "set_timer", "send_whatsapp", 
+        "play_media", "power_saver_toggle", "screencast_toggle", "unknown"
+    )
 
     init {
         loadModel()

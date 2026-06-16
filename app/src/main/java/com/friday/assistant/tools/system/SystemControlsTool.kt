@@ -1,6 +1,7 @@
 package com.friday.assistant.tools.system
 
 import android.content.Context
+import android.content.Intent
 import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.provider.Settings
@@ -22,8 +23,9 @@ class SystemControlsTool(private val context: Context) : Tool {
     override val name: String = "system_control"
     
     override val description: String = """
-        Controls physical device settings including flashlight, volume levels, screen brightness, 
-        WiFi status, Bluetooth status, and Do Not Disturb (DND).
+        Controls physical device settings including flashlight, flashlight strength level, volume levels, 
+        screen brightness, WiFi status, Bluetooth status, Do Not Disturb (DND), screen mirroring (screencast), 
+        and battery saver settings.
     """.trimIndent()
 
     override val parameters: JsonObject = JsonParser.parseString("""
@@ -32,7 +34,7 @@ class SystemControlsTool(private val context: Context) : Tool {
           "properties": {
             "action": {
               "type": "string",
-              "enum": ["toggle_torch", "set_volume", "set_brightness", "toggle_wifi", "toggle_bluetooth", "toggle_dnd"],
+              "enum": ["toggle_torch", "set_volume", "set_brightness", "toggle_wifi", "toggle_bluetooth", "toggle_dnd", "set_torch_strength", "toggle_screencast", "toggle_power_saver"],
               "description": "The system setting control action to execute"
             },
             "value": {
@@ -56,6 +58,9 @@ class SystemControlsTool(private val context: Context) : Tool {
                 "toggle_wifi" -> toggleWifi(value == "on")
                 "toggle_bluetooth" -> toggleBluetooth(value == "on")
                 "toggle_dnd" -> toggleDnd(value == "on")
+                "set_torch_strength" -> setTorchStrength(value)
+                "toggle_screencast" -> toggleScreencast()
+                "toggle_power_saver" -> togglePowerSaver()
                 else -> ToolResult(false, "Unknown system action: $action")
             }
         } catch (e: Exception) {
@@ -179,5 +184,61 @@ class SystemControlsTool(private val context: Context) : Tool {
         notificationManager.setInterruptionFilter(mode)
         val status = if (enable) "activated" else "deactivated"
         return ToolResult(true, "Do Not Disturb (DND) mode has been $status")
+    }
+
+    private fun setTorchStrength(value: String?): ToolResult {
+        if (value == null) {
+            return ToolResult(false, "Missing value for torch strength")
+        }
+        val pct = value.removeSuffix("%").toIntOrNull() ?: 50
+        val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        return try {
+            val cameraId = cameraManager.cameraIdList.firstOrNull()
+            if (cameraId != null) {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+                    val maxStrength = characteristics.get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_STRENGTH_MAXIMUM_LEVEL) ?: 1
+                    if (maxStrength > 1) {
+                        val targetStrength = (maxStrength * (pct / 100.0)).toInt().coerceIn(1, maxStrength)
+                        cameraManager.turnOnTorchWithStrengthLevel(cameraId, targetStrength)
+                        ToolResult(true, "Flashlight strength set to $pct% (level $targetStrength of $maxStrength)")
+                    } else {
+                        cameraManager.setTorchMode(cameraId, true)
+                        ToolResult(true, "Flashlight turned on (device does not support strength adjustment)")
+                    }
+                } else {
+                    cameraManager.setTorchMode(cameraId, true)
+                    ToolResult(true, "Flashlight turned on (strength adjustment requires Android 13+)")
+                }
+            } else {
+                ToolResult(false, "No camera flash unit found")
+            }
+        } catch (e: Exception) {
+            ToolResult(false, "Failed to set flashlight strength: ${e.message}")
+        }
+    }
+
+    private fun toggleScreencast(): ToolResult {
+        return try {
+            val intent = Intent(Settings.ACTION_CAST_SETTINGS).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(intent)
+            ToolResult(true, "Opening Screen Cast / Screen Mirroring settings...")
+        } catch (e: Exception) {
+            ToolResult(false, "Failed to open Screen Cast settings: ${e.message}")
+        }
+    }
+
+    private fun togglePowerSaver(): ToolResult {
+        return try {
+            val intent = Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(intent)
+            ToolResult(true, "Opening Battery Saver settings...")
+        } catch (e: Exception) {
+            ToolResult(false, "Failed to open Battery Saver settings: ${e.message}")
+        }
     }
 }

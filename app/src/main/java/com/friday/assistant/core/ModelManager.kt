@@ -10,6 +10,8 @@ class ModelManager(private val context: Context) {
         private const val TAG = "ModelManager"
         const val SPEAKER_MODEL_NAME = "speaker_verification.onnx"
         const val WAKEWORD_MODEL_NAME = "wakeword.onnx"
+        const val NLU_MODEL_NAME = "nlu_model.onnx"
+        const val NLU_VOCAB_NAME = "vocab.txt"
         const val PREFS_NAME = "friday_model_prefs"
         const val KEY_LLM_PATH = "llm_model_path"
         const val KEY_WHISPER_PATH = "whisper_model_path"
@@ -170,6 +172,21 @@ class ModelManager(private val context: Context) {
         val file = File(path)
         val assetSize = getAssetSize(WAKEWORD_MODEL_NAME)
         return file.exists() && (assetSize <= 0 || file.length() == assetSize)
+    }
+
+    fun isNluLoaded(): Boolean {
+        try {
+            val destDir = context.getExternalFilesDir("models") ?: context.filesDir
+            val modelFile = File(destDir, NLU_MODEL_NAME)
+            val vocabFile = File(destDir, NLU_VOCAB_NAME)
+            if (modelFile.exists() && vocabFile.exists()) {
+                return true
+            }
+            val assetsList = context.assets.list("") ?: emptyArray()
+            return assetsList.contains(NLU_MODEL_NAME) && assetsList.contains(NLU_VOCAB_NAME)
+        } catch (e: Exception) {
+            return false
+        }
     }
 
     private fun copyModelFromAssets(assetName: String, destFile: File) {

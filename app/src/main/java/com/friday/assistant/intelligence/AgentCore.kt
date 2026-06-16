@@ -453,6 +453,247 @@ class AgentCore(
             }
         }
 
+        // N. Flashlight Strength Adjustment
+        val isTorchStrength = matchedIntent == "torch_strength" && confidence > 0.7f ||
+                cleanQuery.contains("torch strength") || cleanQuery.contains("flashlight strength") || cleanQuery.contains("torch level")
+        if (isTorchStrength) {
+            val pctMatch = Regex("(\\d+)").find(cleanQuery)
+            val pct = if (pctMatch != null) {
+                val num = pctMatch.groupValues[1].toInt()
+                if (num <= 5) (num * 20).toString() else num.toString()
+            } else if (cleanQuery.contains("max") || cleanQuery.contains("full")) {
+                "100"
+            } else if (cleanQuery.contains("low") || cleanQuery.contains("min")) {
+                "20"
+            } else if (cleanQuery.contains("medium") || cleanQuery.contains("half")) {
+                "50"
+            } else {
+                "50"
+            }
+            _agentStatusFlow.emit("Setting torch strength to $pct%...")
+            val tool = ToolRegistry.get("system_control")
+            if (tool != null) {
+                val result = tool.execute(JsonObject().apply {
+                    addProperty("action", "set_torch_strength")
+                    addProperty("value", "$pct%")
+                })
+                return if (result.success) result.data else "Failed to adjust torch strength."
+            }
+        }
+
+        // O. Screen Mirroring / Screencast Toggle
+        val isScreencast = matchedIntent == "screencast_toggle" && confidence > 0.7f ||
+                cleanQuery.contains("screen cast") || cleanQuery.contains("screencast") || cleanQuery.contains("smart view") || cleanQuery.contains("mirror screen") || cleanQuery.contains("screen mirroring")
+        if (isScreencast) {
+            _agentStatusFlow.emit("Opening screen mirroring...")
+            val tool = ToolRegistry.get("system_control")
+            if (tool != null) {
+                val result = tool.execute(JsonObject().apply {
+                    addProperty("action", "toggle_screencast")
+                })
+                return if (result.success) result.data else "Failed to open screen cast settings."
+            }
+        }
+
+        // P. Battery Saver Toggle
+        val isPowerSaver = matchedIntent == "power_saver_toggle" && confidence > 0.7f ||
+                cleanQuery.contains("power saver") || cleanQuery.contains("battery saver") || cleanQuery.contains("low power mode")
+        if (isPowerSaver) {
+            _agentStatusFlow.emit("Opening battery saver...")
+            val tool = ToolRegistry.get("system_control")
+            if (tool != null) {
+                val result = tool.execute(JsonObject().apply {
+                    addProperty("action", "toggle_power_saver")
+                })
+                return if (result.success) result.data else "Failed to open battery saver settings."
+            }
+        }
+
+        // Q. Turn-by-Turn Navigation (Maps)
+        val isNavigateTo = matchedIntent == "navigate_to" && confidence > 0.7f ||
+                Regex("navigate\\s+to\\s+(.+)").containsMatchIn(cleanQuery) ||
+                Regex("directions\\s+to\\s+(.+)").containsMatchIn(cleanQuery)
+        if (isNavigateTo) {
+            val patterns = listOf(
+                "(?i)navigate\\s+to\\s+(.+)".toRegex(),
+                "(?i)directions\\s+to\\s+(.+)".toRegex(),
+                "(?i)go\\s+to\\s+(.+)".toRegex(),
+                "(?i)routes\\s+to\\s+(.+)".toRegex()
+            )
+            var destination = ""
+            for (p in patterns) {
+                val match = p.find(userInput)
+                if (match != null) {
+                    destination = match.groupValues[1].trim()
+                    break
+                }
+            }
+            if (destination.isEmpty()) {
+                destination = cleanQuery.replace("navigate", "").replace("to", "").replace("directions", "").replace("show", "").trim()
+            }
+            
+            if (destination.isNotEmpty()) {
+                _agentStatusFlow.emit("Navigating to $destination...")
+                val locationTool = ToolRegistry.get("location_control")
+                if (locationTool != null) {
+                    val result = locationTool.execute(JsonObject().apply {
+                        addProperty("action", "navigate")
+                        addProperty("destination", destination)
+                    })
+                    return result.data
+                }
+            }
+        }
+
+        // R. Create System Alarm
+        val isSetAlarm = matchedIntent == "set_alarm" && confidence > 0.7f ||
+                Regex("alarm\\s+for").containsMatchIn(cleanQuery) ||
+                Regex("wake\\s+me\\s+up\\s+at").containsMatchIn(cleanQuery)
+        if (isSetAlarm) {
+            var hour = 7
+            var minute = 0
+            var label = "Friday Alarm"
+            
+            val labelMatch = Regex("called\\s+([a-zA-Z0-9 ]+)").find(cleanQuery)
+            if (labelMatch != null) {
+                label = labelMatch.groupValues[1].trim()
+            }
+            
+            val timeMatch = Regex("(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?").find(cleanQuery)
+            if (timeMatch != null) {
+                var h = timeMatch.groupValues[1].toInt()
+                val m = if (timeMatch.groupValues[2].isNotEmpty()) timeMatch.groupValues[2].toInt() else 0
+                val ampm = timeMatch.groupValues[3].lowercase()
+                
+                if (ampm == "pm" && h < 12) {
+                    h += 12
+                } else if (ampm == "am" && h == 12) {
+                    h = 0
+                }
+                hour = h.coerceIn(0, 23)
+                minute = m.coerceIn(0, 59)
+            } else if (cleanQuery.contains("noon")) {
+                hour = 12
+                minute = 0
+            } else if (cleanQuery.contains("midnight")) {
+                hour = 0
+                minute = 0
+            }
+            
+            _agentStatusFlow.emit("Setting alarm...")
+            val calendarTool = ToolRegistry.get("calendar_control")
+            if (calendarTool != null) {
+                val result = calendarTool.execute(JsonObject().apply {
+                    addProperty("action", "set_alarm")
+                    addProperty("hour", hour)
+                    addProperty("minute", minute)
+                    addProperty("title", label)
+                })
+                return result.data
+            }
+        }
+
+        // S. Create Countdown Timer
+        val isSetTimer = matchedIntent == "set_timer" && confidence > 0.7f ||
+                Regex("timer\\s+for").containsMatchIn(cleanQuery) ||
+                Regex("countdown\\s+for").containsMatchIn(cleanQuery)
+        if (isSetTimer) {
+            var durationSeconds = 300 // default 5 minutes
+            var label = "Friday Timer"
+            
+            val labelMatch = Regex("(?:named|called|label)\\s+([a-zA-Z0-9 ]+)").find(cleanQuery)
+            if (labelMatch != null) {
+                label = labelMatch.groupValues[1].trim()
+            }
+            
+            val durationMatch = Regex("(\\d+)\\s*(hour|hr|minute|min|second|sec)s?").find(cleanQuery)
+            if (durationMatch != null) {
+                val value = durationMatch.groupValues[1].toInt()
+                val unit = durationMatch.groupValues[2].lowercase()
+                durationSeconds = when {
+                    unit.startsWith("hour") || unit.startsWith("hr") -> value * 3600
+                    unit.startsWith("minute") || unit.startsWith("min") -> value * 60
+                    else -> value
+                }
+            }
+            
+            _agentStatusFlow.emit("Setting timer...")
+            val calendarTool = ToolRegistry.get("calendar_control")
+            if (calendarTool != null) {
+                val result = calendarTool.execute(JsonObject().apply {
+                    addProperty("action", "set_timer")
+                    addProperty("duration", durationSeconds)
+                    addProperty("title", label)
+                })
+                return result.data
+            }
+        }
+
+        // T. Play Media / Search Music
+        val isPlayMedia = matchedIntent == "play_media" && confidence > 0.7f ||
+                Regex("play\\s+(.+)").containsMatchIn(cleanQuery) ||
+                Regex("listen\\s+to\\s+(.+)").containsMatchIn(cleanQuery)
+        if (isPlayMedia) {
+            val patterns = listOf(
+                "(?i)play\\s+(.+)".toRegex(),
+                "(?i)listen\\s+to\\s+(.+)".toRegex(),
+                "(?i)start\\s+playing\\s+(.+)".toRegex()
+            )
+            var searchQuery = ""
+            for (p in patterns) {
+                val match = p.find(userInput)
+                if (match != null) {
+                    searchQuery = match.groupValues[1].trim()
+                    break
+                }
+            }
+            if (searchQuery.isEmpty()) {
+                searchQuery = cleanQuery.replace("play", "").replace("listen", "").replace("to", "").replace("music", "").trim()
+            }
+            
+            if (searchQuery.isNotEmpty()) {
+                _agentStatusFlow.emit("Playing music...")
+                val mediaTool = ToolRegistry.get("media_control")
+                if (mediaTool != null) {
+                    val result = mediaTool.execute(JsonObject().apply {
+                        addProperty("action", "play_search")
+                        addProperty("query", searchQuery)
+                    })
+                    return result.data
+                }
+            }
+        }
+
+        // U. WhatsApp Send Message (NLU Route Integration)
+        if (matchedIntent == "send_whatsapp" && confidence > 0.7f) {
+            val patterns = listOf(
+                "(?i)(?:message|text|send message to)\\s+(.+?)\\s+on\\s+whatsapp\\s+(?:saying|text|message)?\\s*(.+)".toRegex(),
+                "(?i)(?:message|text|send message to)\\s+(.+?)\\s+(?:saying|text|message)?\\s*(.+)\\s+on\\s+whatsapp".toRegex(),
+                "(?i)whatsapp\\s+(.+?)\\s+(?:saying|text|message)?\\s*(.+)".toRegex()
+            )
+            var recipient = ""
+            var msgText = ""
+            for (pattern in patterns) {
+                val match = pattern.find(userInput)
+                if (match != null) {
+                    recipient = match.groupValues[1].trim()
+                    msgText = match.groupValues[2].removePrefix("\"").removeSuffix("\"").trim()
+                    break
+                }
+            }
+            if (recipient.isNotEmpty() && msgText.isNotEmpty()) {
+                _agentStatusFlow.emit("Messaging $recipient on WhatsApp...")
+                val whatsappTool = ToolRegistry.get("whatsapp_send")
+                if (whatsappTool != null) {
+                    val result = whatsappTool.execute(JsonObject().apply {
+                        addProperty("recipient", recipient)
+                        addProperty("message", msgText)
+                    })
+                    return result.data
+                }
+            }
+        }
+
         // 3. Fallback: LLM Chat Brain (Free of Tool Calling Loop)
         val sharedPrefs = context.getSharedPreferences("friday_model_prefs", Context.MODE_PRIVATE)
         val useLlm = sharedPrefs.getBoolean("use_llm", true)
@@ -469,7 +710,6 @@ class AgentCore(
                 }
             }
             _agentStatusFlow.emit("Thinking...")
-            llamaEngine.clearHistory()
             val currentPrompt = promptBuilder.buildPrompt(userInput)
             val response = llamaEngine.generate(currentPrompt, maxTokens = 128, temp = 0.7f).trim()
             val finalResponse = sanitizeResponse(response)

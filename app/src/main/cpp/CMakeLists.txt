@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Configure GGML / llama.cpp / whisper.cpp flags for Android before fetching
+set(GGML_VULKAN ON CACHE BOOL "Enable Vulkan" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "Disable OpenMP" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "Disable Native compiler optimizations" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "Disable llamafile" FORCE)

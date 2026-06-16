@@ -3,12 +3,30 @@
 #include <vector>
 #include <android/log.h>
 #include <cmath>
+#include <sched.h>
+#include <unistd.h>
 #include "whisper.h"
 #include "llama.h"
 
 #define LOG_TAG "FridayJNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+// Helper to set CPU core affinity to high-performance cores (4-7)
+static void set_thread_affinity() {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(4, &cpuset);
+    CPU_SET(5, &cpuset);
+    CPU_SET(6, &cpuset);
+    CPU_SET(7, &cpuset);
+    pid_t tid = gettid();
+    if (sched_setaffinity(tid, sizeof(cpu_set_t), &cpuset) != 0) {
+        LOGE("Failed to set thread affinity for thread %d", tid);
+    } else {
+        LOGI("Successfully bound thread %d to performance CPU cores 4-7", tid);
+    }
+}
 
 // ==========================================
 // Whisper.cpp JNI Wrapper
@@ -45,11 +63,14 @@ Java_com_friday_assistant_core_native_WhisperEngine_transcribeWhisper(JNIEnv *en
         return env->NewStringUTF("");
     }
 
+    // Bind Whisper transcription execution to high-performance cores
+    set_thread_affinity();
+
     jfloat *samples = env->GetFloatArrayElements(audio_samples, nullptr);
     jsize len = env->GetArrayLength(audio_samples);
 
     struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    params.n_threads = 1;
+    params.n_threads = 4; // Multi-threaded Whisper decoding
     params.print_progress = false;
     params.print_realtime = false;
     params.print_special = false;
@@ -111,6 +132,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_initLlama(JNIEnv *env, jobject
     
     // Load model
     llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = 99; // Offload all layers to Vulkan GPU if available
     llama_model *model = llama_load_model_from_file(path, mparams);
     env->ReleaseStringUTFChars(model_path, path);
     
@@ -119,6 +141,10 @@ Java_com_friday_assistant_core_native_LlamaEngine_initLlama(JNIEnv *env, jobject
         return 0;
     }
     
+    // Bind current thread to performance cores BEFORE context creation
+    // so that the internal llama.cpp threadpool inherits the CPU affinity
+    set_thread_affinity();
+
     // Create context
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = 2048; // Context size
@@ -163,10 +189,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_clearLlamaHistory(JNIEnv *env,
     if (state != nullptr) {
         state->history_tokens.clear();
         if (state->ctx) {
-            llama_memory_t mem = llama_get_memory(state->ctx);
-            if (mem != nullptr) {
-                llama_memory_clear(mem, true);
-            }
+            llama_kv_cache_seq_rm(state->ctx, 0, 0, -1);
         }
         LOGI("Llama context history and KV cache cleared");
     }
@@ -182,64 +205,84 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
         return env->NewStringUTF("Error: Model state is null");
     }
 
+    // Bind generation calling thread to high-performance cores
+    set_thread_affinity();
+
     const char *prompt_raw = env->GetStringUTFChars(prompt_str, nullptr);
     std::string prompt(prompt_raw);
     env->ReleaseStringUTFChars(prompt_str, prompt_raw);
 
-    LOGI("generateLlama started. Prompt: '%s'", prompt.c_str());
+    LOGI("generateLlama started. Prompt length: %d", (int)prompt.length());
 
     // Retrieve vocabulary from model
     const struct llama_vocab * vocab = llama_model_get_vocab(state->model);
 
     // Tokenize prompt
-    // For llama.cpp, we calculate number of tokens first
     int n_tokens_prompt = -llama_tokenize(vocab, prompt.c_str(), prompt.length(), nullptr, 0, true, true);
-    LOGI("Prompt length: %d. Estimated tokens required: %d", (int)prompt.length(), n_tokens_prompt);
     std::vector<llama_token> prompt_tokens(n_tokens_prompt);
     if (llama_tokenize(vocab, prompt.c_str(), prompt.length(), prompt_tokens.data(), prompt_tokens.size(), true, true) < 0) {
         LOGE("Failed to tokenize prompt");
         return env->NewStringUTF("Error: Tokenization failed");
     }
-    LOGI("Tokenization complete. Actual prompt tokens count: %d", (int)prompt_tokens.size());
+    LOGI("Tokenization complete. Prompt tokens count: %d", (int)prompt_tokens.size());
 
-    // Append new prompt tokens to history
-    size_t old_history_size = state->history_tokens.size();
-    state->history_tokens.insert(state->history_tokens.end(), prompt_tokens.begin(), prompt_tokens.end());
-    LOGI("History size updated from %d to %d", (int)old_history_size, (int)state->history_tokens.size());
+    // Find longest common prefix between incoming prompt and existing cache
+    size_t n_keep = 0;
+    while (n_keep < state->history_tokens.size() &&
+           n_keep < prompt_tokens.size() &&
+           state->history_tokens[n_keep] == prompt_tokens[n_keep]) {
+        n_keep++;
+    }
 
-    // Simple decoder loop
-    std::string response = "";
-    int n_generated = 0;
+    LOGI("KV cache comparison: n_keep = %d, history_size = %d", (int)n_keep, (int)state->history_tokens.size());
+
+    // Truncate KV Cache to matched prefix length
+    if (n_keep < state->history_tokens.size()) {
+        LOGI("Cache mismatch. Truncating KV cache from position %d to end (-1)", (int)n_keep);
+        llama_kv_cache_seq_rm(state->ctx, 0, n_keep, -1);
+        state->history_tokens.resize(n_keep);
+    }
+
+    size_t n_new = prompt_tokens.size() - n_keep;
     
+    // Fallback/Correction: If prefix matches completely (n_new == 0), re-evaluate the last token
+    // to calculate its logits for sampling.
+    if (n_new == 0 && n_keep > 0) {
+        n_keep--;
+        llama_kv_cache_seq_rm(state->ctx, 0, n_keep, -1);
+        state->history_tokens.resize(n_keep);
+        n_new = prompt_tokens.size() - n_keep;
+    }
+
+    // Append new suffix tokens to history
+    if (n_new > 0) {
+        state->history_tokens.insert(state->history_tokens.end(),
+                                     prompt_tokens.begin() + n_keep,
+                                     prompt_tokens.end());
+    }
+
     // Setup sampler
     struct llama_sampler * smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
     llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
     llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.95f, 1));
     llama_sampler_chain_add(smpl, llama_sampler_init_temp(temp));
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
-    LOGI("Sampler initialized with temp=%.2f", temp);
 
-    // Decode prompt first if history is new or decode everything sequentially
-    // We decode in batches.
-    size_t current_pos = old_history_size;
+    std::string response = "";
+    int n_generated = 0;
+    size_t current_pos = n_keep;
     size_t total_tokens = state->history_tokens.size();
 
     // Decode loop
     while (n_generated < max_tokens) {
-        // Prepare batch
         size_t n_eval = total_tokens - current_pos;
         if (n_eval == 0) {
-            LOGI("n_eval is 0, breaking loop");
             break;
         }
 
-        // Clip batch size
         if (n_eval > 512) {
             n_eval = 512;
         }
-
-        LOGI("Loop iteration %d: n_eval=%d, current_pos=%d, total_tokens=%d", 
-             n_generated, (int)n_eval, (int)current_pos, (int)total_tokens);
 
         llama_batch batch = llama_batch_init(n_eval, 0, 1);
         batch.n_tokens = n_eval;
@@ -248,13 +291,10 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
             batch.pos[i] = current_pos + i;
             batch.n_seq_id[i] = 1;
             batch.seq_id[i][0] = 0;
-            batch.logits[i] = (i == n_eval - 1); // Only compute logits for the last token in batch
+            batch.logits[i] = (i == n_eval - 1); // Compute logits only for the last token in batch
         }
 
-        LOGI("Calling llama_decode for %d tokens...", (int)n_eval);
         int decode_res = llama_decode(state->ctx, batch);
-        LOGI("llama_decode returned: %d", decode_res);
-
         if (decode_res != 0) {
             LOGE("Llama decode failed with status %d", decode_res);
             llama_batch_free(batch);
@@ -266,34 +306,27 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
         llama_batch_free(batch);
 
         // Sample next token
-        LOGI("Sampling next token...");
         llama_token id = llama_sampler_sample(smpl, state->ctx, -1);
-        LOGI("Sampled token: %d", id);
         
-        // Add to history
         state->history_tokens.push_back(id);
         total_tokens++;
 
-        // Check for EOS
+        // Check for End of Generation
         if (llama_vocab_is_eog(vocab, id)) {
-            LOGI("Sampled EOG token (id=%d), finishing generation", id);
+            LOGI("EOG token (id=%d) detected, generation stopped", id);
             break;
         }
 
-        // Convert token to piece
+        // Convert token to char piece
         char buf[128];
         int n_chars = llama_token_to_piece(vocab, id, buf, sizeof(buf), 0, true);
         if (n_chars > 0) {
             response.append(buf, n_chars);
-            LOGI("Generated token piece: '%*s'", n_chars, buf);
-        } else {
-            LOGI("Generated empty token piece (n_chars=%d)", n_chars);
         }
 
         n_generated++;
     }
 
-    LOGI("generateLlama finished. Generated tokens count: %d. Response: '%s'", n_generated, response.c_str());
     llama_sampler_free(smpl);
     return env->NewStringUTF(response.c_str());
 }

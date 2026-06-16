@@ -37,12 +37,12 @@ class CalendarTool(private val context: Context) : Tool {
           "properties": {
             "action": {
               "type": "string",
-              "enum": ["add_event", "list_events", "set_alarm"],
+              "enum": ["add_event", "list_events", "set_alarm", "set_timer"],
               "description": "The action to perform"
             },
             "title": {
               "type": "string",
-              "description": "The title of the calendar event or alarm label"
+              "description": "The title of the calendar event, alarm label, or timer label"
             },
             "description": {
               "type": "string",
@@ -54,7 +54,7 @@ class CalendarTool(private val context: Context) : Tool {
             },
             "duration": {
               "type": "integer",
-              "description": "The duration of the calendar event in minutes"
+              "description": "The duration of the calendar event in minutes, or timer duration in seconds"
             },
             "hour": {
               "type": "integer",
@@ -90,6 +90,12 @@ class CalendarTool(private val context: Context) : Tool {
                     val minute = args.get("minute")?.asInt ?: 0
                     val label = args.get("title")?.asString ?: "Friday Alarm"
                     setAlarm(hour, minute, label)
+                }
+                "set_timer" -> {
+                    val duration = args.get("duration")?.asInt
+                        ?: return ToolResult(false, "Missing parameter 'duration' (seconds) for action 'set_timer'")
+                    val label = args.get("title")?.asString ?: "Friday Timer"
+                    setTimer(duration, label)
                 }
                 else -> ToolResult(false, "Unknown calendar action: $action")
             }
@@ -192,6 +198,21 @@ class CalendarTool(private val context: Context) : Tool {
             ToolResult(true, "Successfully set system alarm for $timeStr with label '$label'")
         } catch (e: Exception) {
             ToolResult(false, "Failed to set alarm: ${e.message}")
+        }
+    }
+
+    private fun setTimer(durationSec: Int, label: String): ToolResult {
+        return try {
+            val intent = Intent(AlarmClock.ACTION_SET_TIMER).apply {
+                putExtra(AlarmClock.EXTRA_LENGTH, durationSec)
+                putExtra(AlarmClock.EXTRA_MESSAGE, label)
+                putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(intent)
+            ToolResult(true, "Successfully set timer for $durationSec seconds ($label)")
+        } catch (e: Exception) {
+            ToolResult(false, "Failed to set timer: ${e.message}")
         }
     }
 }
