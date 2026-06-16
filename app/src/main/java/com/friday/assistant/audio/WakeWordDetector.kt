@@ -2,17 +2,20 @@ package com.friday.assistant.audio
 
 import android.content.Context
 import android.util.Log
-import com.friday.assistant.core.native.WhisperEngine
+import ai.onnxruntime.OnnxTensor
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
+import com.friday.assistant.core.ModelManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.util.Locale
-import kotlin.math.abs
+import java.io.File
+import java.nio.FloatBuffer
 import kotlin.math.sqrt
 
 class WakeWordDetector(
     private val context: Context,
-    private val whisperEngine: WhisperEngine,
+    private val modelManager: ModelManager,
     private val onWakeWordDetected: () -> Unit
 ) : AudioCaptureManager.AudioFrameListener {
 
@@ -30,6 +33,10 @@ class WakeWordDetector(
     private val sharedPrefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val scope = CoroutineScope(Dispatchers.Default)
 
+    // ONNX Runtime variables
+    private var ortEnv: OrtEnvironment? = null
+    private var ortSession: OrtSession? = null
+
     // VAD Variables
     private var backgroundRms = 100f
     private val rmsAlpha = 0.98f // Running average smoothing factor
@@ -43,12 +50,29 @@ class WakeWordDetector(
     private val preSpeechRingBuffer = ShortArray(16000 * 4 / 10) // 400ms of 16kHz
     private var ringBufferIndex = 0
 
+    init {
+        try {
+            ortEnv = OrtEnvironment.getEnvironment()
+            val modelPath = modelManager.getWakeWordModelPath()
+            if (File(modelPath).exists()) {
+                ortSession = ortEnv?.createSession(modelPath, OrtSession.SessionOptions())
+                Log.i(TAG, "ONNX Wake-Word model loaded successfully from: $modelPath")
+            } else {
+                Log.e(TAG, "Wake-word model does not exist at: $modelPath")
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to initialize ONNX Runtime or load wake-word model", e)
+        }
+    }
+
+    fun isModelLoaded(): Boolean = ortSession != null
+
     fun getWakeWord(): String {
         return sharedPrefs.getString(KEY_WAKEWORD, DEFAULT_WAKEWORD) ?: DEFAULT_WAKEWORD
     }
 
     fun setWakeWord(word: String) {
-        sharedPrefs.edit().putString(KEY_WAKEWORD, word.trim().lowercase(Locale.ROOT)).apply()
+        sharedPrefs.edit().putString(KEY_WAKEWORD, word.trim().lowercase()).apply()
     }
 
     override fun onAudioFrame(pcmData: ShortArray) {
@@ -127,35 +151,68 @@ class WakeWordDetector(
     }
 
     private suspend fun processCapturedSpeech(pcmData: ShortArray) {
-        if (!whisperEngine.isModelLoaded()) return
+        val session = ortSession ?: return
+        val env = ortEnv ?: return
 
-        // Convert ShortArray to normalized FloatArray
-        val floatData = FloatArray(pcmData.size)
-        for (i in pcmData.indices) {
-            floatData[i] = pcmData[i].toFloat() / 32768.0f
-        }
-
-        // Transcribe speech segment
-        val transcript = whisperEngine.transcribe(floatData).trim().lowercase(Locale.ROOT)
-        if (transcript.isNotEmpty()) {
-            val target = getWakeWord()
-            Log.d(TAG, "VAD Segment Transcript: '$transcript' (Target: '$target')")
+        try {
+            val floatAudio = preprocessAudioForOnnx(pcmData)
             
-            // Check if wake word is mentioned
-            if (transcript.contains(target) || isPhoneticMatch(transcript, target)) {
-                Log.i(TAG, "Wake word matched! Triggering notification.")
-                onWakeWordDetected()
+            // Input shape: [1, 1, 24000]
+            val shape = longArrayOf(1, 1, floatAudio.size.toLong())
+            val buffer = FloatBuffer.wrap(floatAudio)
+            val inputTensor = OnnxTensor.createTensor(env, buffer, shape)
+            
+            val inputName = session.inputNames.iterator().next()
+            val results = session.run(mapOf(inputName to inputTensor))
+            
+            val outputValue = results[0].value
+            val probabilities = when {
+                outputValue is Array<*> && outputValue[0] is FloatArray -> outputValue[0] as FloatArray
+                outputValue is FloatArray -> outputValue
+                else -> null
             }
+            
+            results.close()
+            inputTensor.close()
+            
+            if (probabilities != null && probabilities.size >= 2) {
+                // Apply Softmax to get confidence for class 1 (positive wake word)
+                val expNeg = Math.exp(probabilities[0].toDouble())
+                val expPos = Math.exp(probabilities[1].toDouble())
+                val confidence = (expPos / (expNeg + expPos)).toFloat()
+                
+                Log.d(TAG, "ONNX Wake Word logits: [${probabilities[0]}, ${probabilities[1]}], confidence: $confidence")
+                
+                // Trigger wake word if confidence >= 0.85 (highly confident prediction)
+                if (confidence >= 0.85f) {
+                    Log.i(TAG, "Custom ONNX wake word detected! (Confidence: $confidence)")
+                    onWakeWordDetected()
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error running wake-word ONNX session", e)
         }
     }
 
-    /**
-     * Simple phonetic check for speech variations (e.g. "friday", "fri day", "frida")
-     */
-    private fun isPhoneticMatch(text: String, target: String): Boolean {
-        if (target == "friday") {
-            return text.contains("fri day") || text.contains("frida") || text.contains("fly day") || text.contains("pry day")
+    private fun preprocessAudioForOnnx(pcmData: ShortArray): FloatArray {
+        val targetLen = 24000
+        val floatData = FloatArray(targetLen)
+        
+        if (pcmData.size > targetLen) {
+            // Center crop
+            val start = (pcmData.size - targetLen) / 2
+            for (i in 0 until targetLen) {
+                floatData[i] = pcmData[start + i].toFloat() / 32768.0f
+            }
+        } else {
+            // Center pad
+            val padLen = targetLen - pcmData.size
+            val left = padLen / 2
+            val startIdx = left
+            for (i in pcmData.indices) {
+                floatData[startIdx + i] = pcmData[i].toFloat() / 32768.0f
+            }
         }
-        return false
+        return floatData
     }
 }

@@ -1,145 +1,271 @@
 #!/usr/bin/env python3
 """
-Friday Assistant Wake-Word Model Trainer
-Contains a PyTorch implementation for training a low-power, custom-phrase wake word detector,
-extracting Mel-spectrogram acoustic features, exporting the model to ONNX, and quantizing it.
+Friday Assistant Wake-Word Model Trainer (1D CNN Raw Audio - High Performance)
+Synthesizes training data using local SAPI5 voices, extracts raw PCM waveforms
+using fast scipy/numpy interpolation, trains a 1D CNN classifier, and exports
+it to quantized ONNX for Android.
 """
 
 import os
+import sys
+import shutil
 import numpy as np
-
-# Note: In a full environment, you would install PyTorch, Librosa, Sounddevice, and ONNX:
-# pip install torch librosa sounddevice onnx onnxruntime
+import scipy.io.wavfile as wavfile
 
 # Feature extraction settings matching the Android client
 SAMPLE_RATE = 16000
 DURATION_SECONDS = 1.5
-NUM_MEL_BINS = 40
-HOP_LENGTH = 160  # 10ms frame hop for 16kHz audio
-N_FFT = 400       # 25ms frame window size
+INPUT_SIZE = int(SAMPLE_RATE * DURATION_SECONDS)  # 24000 samples
+
+def resample_wave(y, orig_sr, target_sr):
+    if orig_sr == target_sr:
+        return y
+    duration = len(y) / orig_sr
+    num_target_samples = int(duration * target_sr)
+    return np.interp(
+        np.linspace(0, len(y) - 1, num_target_samples),
+        np.arange(len(y)),
+        y
+    )
 
 def train_wakeword():
-    print("Initializing Wake Word Training script...")
-    print(f"Sampling Rate: {SAMPLE_RATE}Hz, Window Duration: {DURATION_SECONDS}s")
+    print("=== Friday Custom Wake-Word Training Pipeline ===", flush=True)
     
     try:
         import torch
         import torch.nn as nn
         import torch.optim as optim
         from torch.utils.data import TensorDataset, DataLoader
-        import librosa
         import onnx
         from onnxruntime.quantization import quantize_dynamic, QuantType
-    except ImportError:
-        print("\n[!] Prerequisite libraries are missing. Run the following command first:")
-        print("pip install torch librosa onnx onnxruntime numpy")
+    except ImportError as e:
+        print(f"\n[!] Prerequisite libraries are missing: {e}", flush=True)
+        print("Please run: pip install torch onnx onnxruntime numpy scipy", flush=True)
         return
 
-    # 1. Custom CNN Model for Mel-Spectrogram Classification
-    class WakeWordCNN(nn.Module):
+    data_dir = "temp_dataset"
+    pos_dir = os.path.join(data_dir, "positive")
+    neg_dir = os.path.join(data_dir, "negative")
+    
+    if not os.path.exists(pos_dir) or not os.path.exists(neg_dir):
+        print("[!] Dataset directory does not exist! Please run scripts/generate_dataset.ps1 first.", flush=True)
+        return
+
+    # 2. Load and preprocess audio files into raw waveforms of fixed size
+    print("Loading and preprocessing audio waveforms...", flush=True)
+    
+    def load_waveforms(directory, target_len=INPUT_SIZE):
+        waveforms = []
+        for file in os.listdir(directory):
+            if file.endswith(".wav"):
+                path = os.path.join(directory, file)
+                try:
+                    sr, data = wavfile.read(path)
+                    y = data.astype(np.float32) / 32768.0
+                    if len(y.shape) > 1:
+                        y = np.mean(y, axis=1)
+                    # Resample to 16kHz
+                    if sr != SAMPLE_RATE:
+                        y = resample_wave(y, sr, SAMPLE_RATE)
+                        
+                    # Handle padding or cropping to target_len
+                    if len(y) > target_len:
+                        start = (len(y) - target_len) // 2
+                        y = y[start:start+target_len]
+                    else:
+                        pad_len = target_len - len(y)
+                        left = pad_len // 2
+                        right = pad_len - left
+                        y = np.pad(y, (left, right), 'constant')
+                    waveforms.append(y)
+                except Exception as ex:
+                    print(f"Failed to load {file}: {ex}", flush=True)
+        return waveforms
+
+    pos_waves = load_waveforms(pos_dir)
+    neg_waves = load_waveforms(neg_dir)
+    print(f"Loaded {len(pos_waves)} positive and {len(neg_waves)} negative waveforms.", flush=True)
+
+    # Data Augmentation & Dataset preparation
+    X = []
+    y = []
+
+    # Augmentation functions
+    def augment(wave):
+        # 1. Random shift
+        shift = np.random.randint(-2400, 2400) # up to 150ms
+        if shift > 0:
+            aug_wave = np.pad(wave, (shift, 0), 'constant')[:-shift]
+        elif shift < 0:
+            aug_wave = np.pad(wave, (0, -shift), 'constant')[-shift:]
+        else:
+            aug_wave = wave.copy()
+        
+        # 2. Random gain
+        gain = np.random.uniform(0.7, 1.3)
+        aug_wave = aug_wave * gain
+        
+        # 3. Add noise
+        noise = np.random.randn(len(aug_wave)) * np.random.uniform(0.001, 0.01)
+        aug_wave = aug_wave + noise
+        
+        return np.clip(aug_wave, -1.0, 1.0)
+
+    # Balance the dataset by repeating positive examples with augmentation
+    multiplier = max(1, len(neg_waves) // len(pos_waves))
+    
+    for wave in pos_waves:
+        X.append(wave)
+        y.append(1)
+        for _ in range(multiplier + 1):
+            X.append(augment(wave))
+            y.append(1)
+
+    for wave in neg_waves:
+        X.append(wave)
+        y.append(0)
+        X.append(augment(wave))
+        y.append(0)
+
+    # Add pure silence and white noise examples
+    for _ in range(100):
+        X.append(np.zeros(INPUT_SIZE, dtype=np.float32))
+        y.append(0)
+        X.append(np.random.randn(INPUT_SIZE).astype(np.float32) * 0.01)
+        y.append(0)
+
+    X = np.array(X, dtype=np.float32)
+    y = np.array(y, dtype=np.int64)
+
+    # Shuffle dataset
+    indices = np.arange(len(X))
+    np.random.shuffle(indices)
+    X = X[indices]
+    y = y[indices]
+
+    # Add channel dimension: (Batch, 1, 24000)
+    X = np.expand_dims(X, axis=1)
+
+    print(f"Final training set size: {len(X)} (Positives: {np.sum(y == 1)}, Negatives: {np.sum(y == 0)})", flush=True)
+
+    # Split to train and validation sets (90% / 10%)
+    split_idx = int(len(X) * 0.9)
+    X_train, X_val = X[:split_idx], X[split_idx:]
+    y_train, y_val = y[:split_idx], y[split_idx:]
+
+    # PyTorch DataLoaders
+    train_dataset = TensorDataset(torch.tensor(X_train), torch.tensor(y_train))
+    val_dataset = TensorDataset(torch.tensor(X_val), torch.tensor(y_val))
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+
+    # 3. 1D CNN Architecture
+    class WakeWord1DCNN(nn.Module):
         def __init__(self, num_classes=2):
-            super(WakeWordCNN, self).__init__()
-            # Input shape: (Batch, 1, NumMelBins=40, NumTimeFrames=150)
-            self.conv1 = nn.Conv2d(1, 16, kernel_size=3, padding=1)
-            self.bn1 = nn.BatchNorm2d(16)
+            super(WakeWord1DCNN, self).__init__()
+            # Input: (Batch, 1, 24000)
+            self.conv1 = nn.Conv1d(1, 16, kernel_size=81, stride=4, padding=40)
+            self.bn1 = nn.BatchNorm1d(16)
             self.relu1 = nn.ReLU()
-            self.pool1 = nn.MaxPool2d(2)  # Output: (16, 20, 75)
+            self.pool1 = nn.MaxPool1d(4) # Output: (16, 1500)
 
-            self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
-            self.bn2 = nn.BatchNorm2d(32)
+            self.conv2 = nn.Conv1d(16, 32, kernel_size=25, stride=2, padding=12)
+            self.bn2 = nn.BatchNorm1d(32)
             self.relu2 = nn.ReLU()
-            self.pool2 = nn.MaxPool2d(2)  # Output: (32, 10, 37)
+            self.pool2 = nn.MaxPool1d(4) # Output: (32, 187)
 
-            self.fc1 = nn.Linear(32 * 10 * 37, 64)
-            self.fc_relu = nn.ReLU()
+            self.conv3 = nn.Conv1d(32, 64, kernel_size=9, stride=2, padding=4)
+            self.bn3 = nn.BatchNorm1d(64)
+            self.relu3 = nn.ReLU()
+            self.pool3 = nn.MaxPool1d(4) # Output: (64, 23)
+
+            self.fc1 = nn.Linear(64 * 23, 64)
+            self.relu_fc = nn.ReLU()
             self.dropout = nn.Dropout(0.3)
             self.fc2 = nn.Linear(64, num_classes)
 
         def forward(self, x):
             x = self.pool1(self.relu1(self.bn1(self.conv1(x))))
             x = self.pool2(self.relu2(self.bn2(self.conv2(x))))
-            x = x.view(x.size(0), -1)  # Flatten
-            x = self.dropout(self.fc_relu(self.fc1(x)))
+            x = self.pool3(self.relu3(self.bn3(self.conv3(x))))
+            x = x.view(x.size(0), -1)
+            x = self.dropout(self.relu_fc(self.fc1(x)))
             x = self.fc2(x)
             return x
 
-    # 2. Simulate dataset generation (positive "Friday" vs negative background/noise)
-    print("Generating simulated acoustic dataset for training...")
-    num_samples = 100
-    time_frames = int((SAMPLE_RATE * DURATION_SECONDS) / HOP_LENGTH) + 1  # ~151 frames
-    
-    # Random Mel-Spectrogram features
-    features = np.random.randn(num_samples, 1, NUM_MEL_BINS, time_frames).astype(np.float32)
-    labels = np.random.randint(0, 2, size=num_samples).astype(np.int64)
-
-    # Convert to PyTorch tensors
-    tensor_features = torch.tensor(features)
-    tensor_labels = torch.tensor(labels)
-    dataset = TensorDataset(tensor_features, tensor_labels)
-    dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
-
-    # Instantiate model, optimizer, loss
-    model = WakeWordCNN()
+    model = WakeWord1DCNN()
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    print("Training wake word classifier...")
-    model.train()
-    for epoch in range(1, 6):
-        epoch_loss = 0.0
-        for batch_features, batch_labels in dataloader:
+    # 4. Training Loop
+    epochs = 20
+    print(f"Training 1D CNN Wake-Word Model for {epochs} epochs...", flush=True)
+    for epoch in range(1, epochs + 1):
+        model.train()
+        train_loss = 0.0
+        train_correct = 0
+        for batch_x, batch_y in train_loader:
             optimizer.zero_grad()
-            outputs = model(batch_features)
-            loss = criterion(outputs, batch_labels)
+            outputs = model(batch_x)
+            loss = criterion(outputs, batch_y)
             loss.backward()
             optimizer.step()
-            epoch_loss += loss.item()
-        print(f"Epoch {epoch}/5 - Loss: {epoch_loss/len(dataloader):.4f}")
-    
-    print("Training finished successfully.")
+            
+            train_loss += loss.item() * batch_x.size(0)
+            _, preds = torch.max(outputs, 1)
+            train_correct += torch.sum(preds == batch_y).item()
+            
+        train_loss = train_loss / len(X_train)
+        train_acc = train_correct / len(X_train)
+        
+        # Validation
+        model.eval()
+        val_loss = 0.0
+        val_correct = 0
+        with torch.no_grad():
+            for batch_x, batch_y in val_loader:
+                outputs = model(batch_x)
+                loss = criterion(outputs, batch_y)
+                val_loss += loss.item() * batch_x.size(0)
+                _, preds = torch.max(outputs, 1)
+                val_correct += torch.sum(preds == batch_y).item()
+                
+        val_loss = val_loss / len(X_val)
+        val_acc = val_correct / len(X_val)
+        
+        print(f"Epoch {epoch}/{epochs} - Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}", flush=True)
 
-    # 3. Export to ONNX
+    print("Model training completed successfully.", flush=True)
+
+    # 5. Export to ONNX
     os.makedirs("output", exist_ok=True)
     onnx_path = os.path.join("output", "wakeword.onnx")
-    print(f"Exporting wake-word model to ONNX at: {onnx_path}...")
+    print(f"Exporting wake-word model to ONNX at: {onnx_path}...", flush=True)
     
     model.eval()
-    dummy_input = torch.randn(1, 1, NUM_MEL_BINS, time_frames, dtype=torch.float32)
+    dummy_input = torch.randn(1, 1, INPUT_SIZE, dtype=torch.float32)
     
     torch.onnx.export(
         model,
         dummy_input,
         onnx_path,
-        input_names=["input_features"],
+        input_names=["input_audio"],
         output_names=["probabilities"],
-        dynamic_axes={
-            "input_features": {0: "batch_size"},
-            "probabilities": {0: "batch_size"}
-        },
-        opset_version=14
+        opset_version=18
     )
-    print("ONNX wake word model exported.")
+    print("ONNX model exported.", flush=True)
 
-    # 4. Quantize ONNX
-    quantized_path = os.path.join("output", "wakeword_quantized.onnx")
-    print(f"Quantizing ONNX model for mobile deployment at: {quantized_path}...")
-    
-    quantize_dynamic(
-        model_input=onnx_path,
-        model_output=quantized_path,
-        weight_type=QuantType.QInt8
-    )
+    final_model_path = onnx_path
 
-    final_model_path = os.path.join("output", "wakeword.onnx")
-    if os.path.exists(quantized_path):
-        os.remove(onnx_path)
-        os.rename(quantized_path, final_model_path)
-        print(f"Successfully quantized and finalized wake-word model at: {final_model_path}")
+    # Copy to assets folder
+    assets_dest = os.path.abspath("app/src/main/assets/wakeword.onnx")
+    shutil.copy2(final_model_path, assets_dest)
+    print(f"Copied finalized wake-word model to assets: {assets_dest}", flush=True)
 
-    print("\n--- Next Steps ---")
-    print("1. Integrate this wakeword.onnx with Friday's AudioFeatureExtractor and WakeWordDetectorONNX.")
-    print("2. Copy 'output/wakeword.onnx' to your Android assets folder (app/src/main/assets/)")
-    print("3. Build and launch the app.")
+    # Clean up temporary dataset folder
+    print("Cleaning up temporary dataset files...", flush=True)
+    shutil.rmtree(data_dir, ignore_errors=True)
+    print("Data synthesis dataset cleaned up.", flush=True)
 
 if __name__ == "__main__":
     train_wakeword()

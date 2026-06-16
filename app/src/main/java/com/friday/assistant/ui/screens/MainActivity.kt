@@ -111,6 +111,7 @@ class MainActivity : ComponentActivity() {
         var whisperLoaded by remember { mutableStateOf(modelManager.isWhisperLoaded()) }
         var llmLoaded by remember { mutableStateOf(modelManager.isLlmLoaded()) }
         var speakerLoaded by remember { mutableStateOf(modelManager.isSpeakerLoaded()) }
+        var wakeWordLoaded by remember { mutableStateOf(modelManager.isWakeWordLoaded()) }
 
         // Enrollment states
         var isEnrolled by remember { mutableStateOf(speakerVerifier?.isEnrolled() == true) }
@@ -153,6 +154,7 @@ class MainActivity : ComponentActivity() {
                 whisperLoaded = modelManager.isWhisperLoaded()
                 llmLoaded = modelManager.isLlmLoaded()
                 speakerLoaded = modelManager.isSpeakerLoaded()
+                wakeWordLoaded = modelManager.isWakeWordLoaded()
                 
                 delay(1500)
             }
@@ -477,6 +479,13 @@ class MainActivity : ComponentActivity() {
                     name = "Voice Authenticator (ONNX)",
                     status = speakerLoaded,
                     details = "Auto-configured speaker verification profile"
+                )
+                Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
+                
+                ModelRow(
+                    name = "Offline Wake Word (ONNX)",
+                    status = wakeWordLoaded,
+                    details = "Custom 1D CNN 'Friday' wake-word model"
                 )
                 Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
 

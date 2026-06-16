@@ -12,7 +12,7 @@ class BootReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
-            Log.i(TAG, "System boot completed. Friday Accessibility service will auto-start if enabled in Settings.")
+            Log.i(TAG, "System boot completed. Friday VoiceInteractionService will auto-start if set as default assistant.")
         }
     }
 }

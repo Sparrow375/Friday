@@ -1,6 +1,6 @@
 package com.friday.assistant.ui
 
-import android.accessibilityservice.AccessibilityService
+import android.service.voice.VoiceInteractionService
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -8,7 +8,6 @@ import android.os.Build
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
-import android.view.accessibility.AccessibilityEvent
 import com.friday.assistant.audio.PipelineState
 import com.friday.assistant.audio.SpeechToTextHelper
 import com.friday.assistant.core.FridayApplication
@@ -30,11 +29,6 @@ import com.friday.assistant.tools.notifications.NotificationTool
 import com.friday.assistant.tools.location.LocationTool
 import com.friday.assistant.tools.camera.CameraTool
 import com.friday.assistant.tools.files.FileManagerTool
-import com.friday.assistant.tools.accessibility.ScreenReaderTool
-import com.friday.assistant.tools.accessibility.ClickElementTool
-import com.friday.assistant.tools.accessibility.TypeTextTool
-import com.friday.assistant.tools.accessibility.ScrollScreenTool
-import com.friday.assistant.tools.accessibility.GlobalActionTool
 import com.friday.assistant.tools.whatsapp.WhatsAppTool
 import com.friday.assistant.tools.email.EmailTool
 import com.friday.assistant.ui.overlay.OverlayManager
@@ -47,7 +41,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Locale
 
-class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
+class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
     companion object {
         private const val TAG = "FridayService"
@@ -111,13 +105,8 @@ class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
         ToolRegistry.register(FileManagerTool(this))
         ToolRegistry.register(RememberPreferenceTool(memoryManager))
         ToolRegistry.register(RecallPreferenceTool(memoryManager))
-        ToolRegistry.register(ScreenReaderTool())
         ToolRegistry.register(WhatsAppTool(this, memoryManager))
         ToolRegistry.register(EmailTool(this, memoryManager))
-        ToolRegistry.register(ClickElementTool())
-        ToolRegistry.register(TypeTextTool())
-        ToolRegistry.register(ScrollScreenTool())
-        ToolRegistry.register(GlobalActionTool())
 
         // 3. Setup TTS
         tts = TextToSpeech(this, this)
@@ -185,7 +174,7 @@ class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
         }.launchIn(serviceScope)
 
         // 7. Setup Wake Word Detector
-        wakeWordDetector = com.friday.assistant.audio.WakeWordDetector(this, FridayApplication.whisperEngine) {
+        wakeWordDetector = com.friday.assistant.audio.WakeWordDetector(this, modelManager) {
             com.friday.assistant.core.FridayLogger.i(TAG, "Wake word 'friday' detected!")
             serviceScope.launch {
                 onWakeWordTriggered()
@@ -193,9 +182,9 @@ class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
         }
     }
 
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        com.friday.assistant.core.FridayLogger.i(TAG, "Accessibility Service Connected successfully")
+    override fun onReady() {
+        super.onReady()
+        com.friday.assistant.core.FridayLogger.i(TAG, "VoiceInteractionService is ready")
         instance = this
 
         serviceScope.launch(Dispatchers.IO) {
@@ -339,13 +328,7 @@ class FridayService : AccessibilityService(), TextToSpeech.OnInitListener {
         }
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Accessibility events will be processed here for active window readers
-    }
 
-    override fun onInterrupt() {
-        Log.w(TAG, "Accessibility Service Interrupted")
-    }
 
     override fun onDestroy() {
         super.onDestroy()

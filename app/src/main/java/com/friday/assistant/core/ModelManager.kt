@@ -9,6 +9,7 @@ class ModelManager(private val context: Context) {
     companion object {
         private const val TAG = "ModelManager"
         const val SPEAKER_MODEL_NAME = "speaker_verification.onnx"
+        const val WAKEWORD_MODEL_NAME = "wakeword.onnx"
         const val PREFS_NAME = "friday_model_prefs"
         const val KEY_LLM_PATH = "llm_model_path"
         const val KEY_WHISPER_PATH = "whisper_model_path"
@@ -49,6 +50,15 @@ class ModelManager(private val context: Context) {
         return file.absolutePath
     }
 
+    fun getWakeWordModelPath(): String {
+        val file = File(context.filesDir, WAKEWORD_MODEL_NAME)
+        if (!file.exists() || file.length() < 1024 * 10) { // Wake-word model should be >10KB
+            file.delete()
+            copyModelFromAssets(WAKEWORD_MODEL_NAME, file)
+        }
+        return file.absolutePath
+    }
+
     fun isLlmLoaded(): Boolean {
         val path = getLlmModelPath()
         val file = File(path)
@@ -65,6 +75,12 @@ class ModelManager(private val context: Context) {
         val path = getSpeakerModelPath()
         val file = File(path)
         return file.exists() && file.length() > 1024 * 1024 * 2
+    }
+
+    fun isWakeWordLoaded(): Boolean {
+        val path = getWakeWordModelPath()
+        val file = File(path)
+        return file.exists() && file.length() > 1024 * 10
     }
 
     private fun copyModelFromAssets(assetName: String, destFile: File) {
