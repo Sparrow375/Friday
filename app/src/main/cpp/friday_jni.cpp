@@ -232,6 +232,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
         }
 
         llama_batch batch = llama_batch_init(n_eval, 0, 1);
+        batch.n_tokens = n_eval;
         for (size_t i = 0; i < n_eval; ++i) {
             batch.token[i] = state->history_tokens[current_pos + i];
             batch.pos[i] = current_pos + i;

@@ -25,7 +25,7 @@ class WakeWordDetector(
         const val KEY_WAKEWORD = "custom_wakeword"
         const val DEFAULT_WAKEWORD = "friday"
         
-        private const val MIN_SPEECH_DURATION_MS = 300L
+        private const val MIN_SPEECH_DURATION_MS = 200L
         private const val MAX_SPEECH_DURATION_MS = 2500L
         private const val SILENCE_TIMEOUT_MS = 500L
     }
@@ -84,7 +84,7 @@ class WakeWordDetector(
         }
 
         // Voice Activity Detection Threshold
-        val vadThreshold = backgroundRms + 150f // Noise-adaptive threshold offset
+        val vadThreshold = backgroundRms + 80f // Noise-adaptive threshold offset
         val now = System.currentTimeMillis()
 
         if (rms > vadThreshold) {

@@ -174,6 +174,11 @@ class OverlayManager(
                     view.isFocusable = true
                     view.isFocusableInTouchMode = true
                     view.requestFocus()
+                    
+                    // Force restart input to bind IME to the newly focusable overlay window
+                    val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+                    imm?.restartInput(view)
+                    imm?.showSoftInput(view, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
                 }
                 com.friday.assistant.core.FridayLogger.d(TAG, "Overlay focusable updated: $focusable")
             } catch (e: Throwable) {
