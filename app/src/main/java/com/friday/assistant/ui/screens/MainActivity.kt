@@ -1,7 +1,7 @@
 package com.friday.assistant.ui.screens
 
 import android.Manifest
-import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.role.RoleManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -11,7 +11,6 @@ import android.os.Bundle
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Log
-import android.view.accessibility.AccessibilityManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -99,8 +98,15 @@ class MainActivity : ComponentActivity() {
             )
         }
         var hasOverlayPermission by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
-        var hasAccessibilityPermission by remember { mutableStateOf(isAccessibilityServiceEnabled()) }
+        var hasAssistantRole by remember { mutableStateOf(isDefaultAssistant()) }
         var hasWriteSettingsPermission by remember { mutableStateOf(Settings.System.canWrite(context)) }
+
+        var useLlm by remember { 
+            mutableStateOf(context.getSharedPreferences("friday_model_prefs", Context.MODE_PRIVATE).getBoolean("use_llm", true)) 
+        }
+        var llmDownloading by remember { mutableStateOf(false) }
+        var llmDownloadProgress by remember { mutableStateOf(0f) }
+        var llmDownloadError by remember { mutableStateOf<String?>(null) }
 
         // Optional Permissions statuses
         var hasLocationPermission by remember { mutableStateOf(checkPermission(Manifest.permission.ACCESS_FINE_LOCATION)) }
@@ -144,7 +150,7 @@ class MainActivity : ComponentActivity() {
                     true
                 }
                 hasOverlayPermission = Settings.canDrawOverlays(context)
-                hasAccessibilityPermission = isAccessibilityServiceEnabled()
+                hasAssistantRole = isDefaultAssistant()
                 hasWriteSettingsPermission = Settings.System.canWrite(context)
                 hasLocationPermission = checkPermission(Manifest.permission.ACCESS_FINE_LOCATION)
                 hasContactsPermission = checkPermission(Manifest.permission.READ_CONTACTS)
@@ -240,7 +246,7 @@ class MainActivity : ComponentActivity() {
                                     if (FridayService.instance != null) {
                                         FridayService.reloadModels()
                                     } else {
-                                        Toast.makeText(context, "Model GGUF copied. Enable accessibility to load it.", Toast.LENGTH_LONG).show()
+                                        Toast.makeText(context, "Model GGUF copied. Set Friday as default assistant to load it.", Toast.LENGTH_LONG).show()
                                     }
                                 }
                             } else {
@@ -293,8 +299,8 @@ class MainActivity : ComponentActivity() {
             )
 
             // System Active Banner
-            val allCorePermissionsGranted = hasMicPermission && hasOverlayPermission
-            val systemReady = allCorePermissionsGranted && llmLoaded && whisperLoaded
+            val allCorePermissionsGranted = hasMicPermission && hasOverlayPermission && hasAssistantRole
+            val systemReady = allCorePermissionsGranted && (!useLlm || llmLoaded) && whisperLoaded
 
             Card(
                 modifier = Modifier
@@ -333,20 +339,20 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // Open Overlay button — visible when core microphone and overlay permissions are granted
-            if (hasMicPermission && hasOverlayPermission) {
+            // Open Overlay button — visible when core microphone, overlay, and assistant permissions are granted
+            if (hasMicPermission && hasOverlayPermission && hasAssistantRole) {
                 Button(
                     onClick = {
                         val activeService = FridayService.instance
                         if (activeService != null) {
                             activeService.showOverlay()
                         } else {
-                            Toast.makeText(context, "Please enable Friday Accessibility Service in Settings first", Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, "Please set Friday as your Default Assistant App in Settings first", Toast.LENGTH_LONG).show()
                             try {
-                                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                                val intent = Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)
                                 context.startActivity(intent)
                             } catch (e: Exception) {
-                                Log.e(TAG, "Failed to launch accessibility settings", e)
+                                Log.e(TAG, "Failed to launch voice assistant settings", e)
                             }
                         }
                     },
@@ -440,12 +446,26 @@ class MainActivity : ComponentActivity() {
                 Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
                 
                 ChecklistItem(
-                    title = "Accessibility Automation",
-                    description = "Powers click, type, and screen automation features",
-                    status = hasAccessibilityPermission,
+                    title = "Default Digital Assistant",
+                    description = "Allows Friday to run in the background and capture wake words",
+                    status = hasAssistantRole,
                     onAction = {
-                        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                        startActivity(intent)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            val roleManager = context.getSystemService(Context.ROLE_SERVICE) as? android.app.role.RoleManager
+                            if (roleManager != null) {
+                                val intent = roleManager.createRequestRoleIntent(android.app.role.RoleManager.ROLE_ASSISTANT)
+                                try {
+                                    context.startActivity(intent)
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Failed to request role directly", e)
+                                    val fallback = Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)
+                                    context.startActivity(fallback)
+                                }
+                            }
+                        } else {
+                            val intent = Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)
+                            context.startActivity(intent)
+                        }
                     }
                 )
                 Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
@@ -489,31 +509,143 @@ class MainActivity : ComponentActivity() {
                 )
                 Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Reasoning Engine (Qwen 1.5B GGUF)",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = Color.White
+                            )
+                            Text(
+                                text = if (llmLoaded) "Loaded: ${llmPathInput.substringAfterLast("/")}" else "File missing, download Qwen 1.5B or select manually",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (llmLoaded) GlowGreen else AlertRed
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    if (llmLoaded) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Reasoning Brain (LLM)",
+                                color = Color.White,
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Switch(
+                                checked = useLlm,
+                                onCheckedChange = { checked ->
+                                    useLlm = checked
+                                    context.getSharedPreferences("friday_model_prefs", Context.MODE_PRIVATE)
+                                        .edit().putBoolean("use_llm", checked).apply()
+                                    Toast.makeText(context, if (checked) "LLM Reasoning Enabled" else "LLM Reasoning Disabled (Command Mode)", Toast.LENGTH_SHORT).show()
+                                },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = NeonCyan,
+                                    checkedTrackColor = NeonBlue.copy(alpha = 0.5f)
+                                )
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+
+                    if (!llmLoaded && !llmDownloading) {
+                        Button(
+                            onClick = {
+                                llmDownloading = true
+                                llmDownloadError = null
+                                lifecycleScope.launch(Dispatchers.IO) {
+                                    modelManager.downloadLlmModel(
+                                        onProgress = { progress ->
+                                            lifecycleScope.launch(Dispatchers.Main) {
+                                                llmDownloadProgress = progress
+                                            }
+                                        },
+                                        onFinished = { success, errorOrPath ->
+                                            lifecycleScope.launch(Dispatchers.Main) {
+                                                llmDownloading = false
+                                                if (success && errorOrPath != null) {
+                                                    llmLoaded = true
+                                                    llmPathInput = errorOrPath
+                                                    Toast.makeText(context, "Qwen GGUF downloaded successfully!", Toast.LENGTH_LONG).show()
+                                                    if (FridayService.instance != null) {
+                                                        FridayService.reloadModels()
+                                                    }
+                                                } else {
+                                                    llmDownloadError = errorOrPath ?: "Unknown download error"
+                                                    Toast.makeText(context, "Download failed: $llmDownloadError", Toast.LENGTH_LONG).show()
+                                                }
+                                            }
+                                        }
+                                    )
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonBlue),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = "Download")
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Download Qwen 1.5B (~1.0 GB)", color = Color.White)
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
+                    if (llmDownloading) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                            Text(
+                                text = "Downloading Qwen-2.5-1.5B GGUF...",
+                                color = NeonCyan,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            LinearProgressIndicator(
+                                progress = llmDownloadProgress,
+                                color = NeonBlue,
+                                trackColor = Color.DarkGray,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(4.dp))
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "${(llmDownloadProgress * 100).toInt()}%",
+                                color = NeonCyan,
+                                fontWeight = FontWeight.Medium,
+                                style = MaterialTheme.typography.labelMedium,
+                                modifier = Modifier.align(Alignment.End)
+                            )
+                        }
+                    }
+
+                    if (llmDownloadError != null) {
                         Text(
-                            text = "Reasoning Engine (Qwen GGUF)",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Medium,
-                            color = Color.White
-                        )
-                        Text(
-                            text = if (llmLoaded) "Loaded: ${llmPathInput.substringAfterLast("/")}" else "File missing, select GGUF file to initialize",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (llmLoaded) GlowGreen else AlertRed
+                            text = "Error: $llmDownloadError",
+                            color = AlertRed,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(vertical = 4.dp)
                         )
                     }
+
                     Button(
                         onClick = { filePickerLauncher.launch(arrayOf("*/*")) },
-                        colors = ButtonDefaults.buttonColors(containerColor = NeonBlue)
+                        colors = ButtonDefaults.buttonColors(containerColor = SlateGray),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(Icons.Default.FolderOpen, contentDescription = "Select GGUF")
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text(if (llmLoaded) "Change" else "Choose File", color = Color.White)
+                        Text(if (llmLoaded) "Change Custom GGUF File" else "Choose Local GGUF File", color = Color.White)
                     }
                 }
             }
@@ -903,17 +1035,14 @@ class MainActivity : ComponentActivity() {
         return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun isAccessibilityServiceEnabled(): Boolean {
-        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
-        val enabledServices = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_GENERIC)
-        for (service in enabledServices) {
-            if (service.resolveInfo.serviceInfo.packageName == packageName &&
-                service.resolveInfo.serviceInfo.name == FridayService::class.java.name
-            ) {
-                return true
-            }
+    private fun isDefaultAssistant(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val roleManager = getSystemService(Context.ROLE_SERVICE) as? RoleManager
+            roleManager?.isRoleHeld(RoleManager.ROLE_ASSISTANT) == true
+        } else {
+            val setting = Settings.Secure.getString(contentResolver, "assistant")
+            setting != null && setting.contains(packageName)
         }
-        return false
     }
 
     private fun startVoiceEnrollment(onProgress: (Float, String) -> Unit, onFinished: (Boolean) -> Unit) {

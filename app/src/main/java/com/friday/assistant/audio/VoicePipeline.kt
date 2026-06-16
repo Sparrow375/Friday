@@ -49,7 +49,7 @@ class VoicePipeline(
     private var commandStartTimestamp = 0L
 
     init {
-        wakeWordDetector = WakeWordDetector(context, whisperEngine) {
+        wakeWordDetector = WakeWordDetector(context, com.friday.assistant.core.ModelManager(context)) {
             onWakeWordMatched()
         }
     }

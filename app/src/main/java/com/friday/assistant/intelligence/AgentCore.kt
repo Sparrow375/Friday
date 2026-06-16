@@ -1,6 +1,5 @@
 package com.friday.assistant.intelligence
 
-import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -351,22 +350,7 @@ class AgentCore(
 
         // K. Lock screen
         if (isLockPhone) {
-            _agentStatusFlow.emit("Locking screen...")
-            val service = FridayService.instance
-            if (service != null) {
-                val success = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN)
-                } else {
-                    false
-                }
-                return if (success) {
-                    "I've locked your phone."
-                } else {
-                    "I was unable to lock the screen. Ensure the Friday accessibility service is enabled."
-                }
-            } else {
-                return "The Accessibility service is not running. Please enable it in Settings to allow screen locking."
-            }
+            return "Locking the screen is not supported in Default Assistant mode without Accessibility privileges."
         }
 
         // L. Reddit search
@@ -408,7 +392,10 @@ class AgentCore(
         }
 
         // 3. Fallback: LLM Reasoner or Search Fallback
-        if (modelManager.isLlmLoaded()) {
+        val sharedPrefs = context.getSharedPreferences("friday_model_prefs", Context.MODE_PRIVATE)
+        val useLlm = sharedPrefs.getBoolean("use_llm", true)
+
+        if (useLlm && modelManager.isLlmLoaded()) {
             if (!llamaEngine.isModelLoaded()) {
                 _agentStatusFlow.emit("Loading reasoning brain...")
                 val path = modelManager.getLlmModelPath()
@@ -482,7 +469,7 @@ class AgentCore(
                 }
             }
 
-            return "I'm running in offline assistant mode, but the local reasoning brain (Qwen GGUF) is not loaded. You can load it in the Friday app dashboard, or give me commands like 'increase volume' or 'search [x] on reddit'."
+            return "I'm running in offline assistant mode, but the local reasoning brain (Qwen GGUF) is not loaded or has been offloaded. You can download or enable it in the Friday app dashboard."
         }
     }
 

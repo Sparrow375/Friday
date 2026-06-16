@@ -88,7 +88,7 @@ class OverlayManager(
             val layoutParams = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
                 PixelFormat.TRANSLUCENT
             ).apply {
@@ -173,13 +173,7 @@ class OverlayManager(
                 if (focusable) {
                     view.isFocusable = true
                     view.isFocusableInTouchMode = true
-                    view.postDelayed({
-                        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
-                        view.requestFocus()
-                        imm?.restartInput(view)
-                        imm?.showSoftInput(view, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
-                        com.friday.assistant.core.FridayLogger.d(TAG, "Overlay soft input restarted and shown via postDelayed")
-                    }, 200)
+                    view.requestFocus()
                 }
                 com.friday.assistant.core.FridayLogger.d(TAG, "Overlay focusable updated: $focusable")
             } catch (e: Throwable) {

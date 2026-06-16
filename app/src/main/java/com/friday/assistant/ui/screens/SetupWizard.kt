@@ -179,13 +179,13 @@ fun StepPermissions(context: Context) {
 
     Button(
         onClick = {
-            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            val intent = Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)
             context.startActivity(intent)
         },
         colors = ButtonDefaults.buttonColors(containerColor = NeonCyan),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp)
     ) {
-        Text("Enable Accessibility Service", color = Color.Black, fontWeight = FontWeight.Bold)
+        Text("Set Default Digital Assistant", color = Color.Black, fontWeight = FontWeight.Bold)
     }
 }
 

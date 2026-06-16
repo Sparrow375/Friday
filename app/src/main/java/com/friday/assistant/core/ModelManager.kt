@@ -24,12 +24,79 @@ class ModelManager(private val context: Context) {
         }
         // Fallback default path
         val defaultDir = context.getExternalFilesDir("models")
-        val defaultFile = File(defaultDir, "qwen2.5-3b-instruct-q4_k_m.gguf")
+        val defaultFile = File(defaultDir, "qwen2.5-1.5b-instruct-q4_k_m.gguf")
         return defaultFile.absolutePath
     }
 
     fun setLlmModelPath(path: String) {
         sharedPrefs.edit().putString(KEY_LLM_PATH, path).apply()
+    }
+
+    fun downloadLlmModel(
+        onProgress: (Float) -> Unit,
+        onFinished: (Boolean, String?) -> Unit
+    ) {
+        val defaultDir = context.getExternalFilesDir("models") ?: context.filesDir
+        if (!defaultDir.exists()) {
+            defaultDir.mkdirs()
+        }
+        val targetFile = File(defaultDir, "qwen2.5-1.5b-instruct-q4_k_m.gguf")
+        val tempFile = File(defaultDir, "qwen2.5-1.5b-instruct-q4_k_m.gguf.tmp")
+        
+        try {
+            val url = java.net.URL("https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf")
+            val connection = url.openConnection() as java.net.HttpURLConnection
+            connection.connectTimeout = 15000
+            connection.readTimeout = 15000
+            connection.connect()
+            
+            if (connection.responseCode != java.net.HttpURLConnection.HTTP_OK) {
+                onFinished(false, "HTTP error: ${connection.responseCode} ${connection.responseMessage}")
+                return
+            }
+            
+            val totalLength = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                connection.contentLengthLong
+            } else {
+                connection.contentLength.toLong()
+            }
+            
+            connection.inputStream.use { input ->
+                tempFile.outputStream().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    var bytesRead: Int
+                    var bytesCopied = 0L
+                    
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                        output.write(buffer, 0, bytesRead)
+                        bytesCopied += bytesRead
+                        if (totalLength > 0) {
+                            onProgress(bytesCopied.toFloat() / totalLength)
+                        }
+                    }
+                }
+            }
+            
+            if (tempFile.exists()) {
+                if (targetFile.exists()) {
+                    targetFile.delete()
+                }
+                if (tempFile.renameTo(targetFile)) {
+                    setLlmModelPath(targetFile.absolutePath)
+                    onFinished(true, targetFile.absolutePath)
+                } else {
+                    onFinished(false, "Failed to rename temporary download file.")
+                }
+            } else {
+                onFinished(false, "Temp file was not created.")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error downloading LLM model", e)
+            if (tempFile.exists()) {
+                tempFile.delete()
+            }
+            onFinished(false, e.localizedMessage)
+        }
     }
 
     fun getWhisperModelPath(): String {
