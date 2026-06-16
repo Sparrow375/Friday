@@ -251,7 +251,7 @@ def train_wakeword():
         onnx_path,
         input_names=["input_audio"],
         output_names=["probabilities"],
-        opset_version=18
+        opset_version=15
     )
     print("ONNX model exported.", flush=True)
 
@@ -263,6 +263,8 @@ def train_wakeword():
         import onnx
         from onnx.external_data_helper import convert_model_from_external_data
         model_proto = onnx.load(onnx_path)
+        # Downgrade IR version to 8 (supported by max supported IR version 9 on phone)
+        model_proto.ir_version = 8
         convert_model_from_external_data(model_proto)
         
         # Save self-contained model directly to assets destination
@@ -270,13 +272,21 @@ def train_wakeword():
         if os.path.exists(assets_dest):
             os.remove(assets_dest)
         onnx.save_model(model_proto, assets_dest)
-        print(f"Saved self-contained wake-word model to assets: {assets_dest}", flush=True)
+        print(f"Saved self-contained wake-word model with IR=8 to assets: {assets_dest}", flush=True)
     except Exception as ex:
         print(f"Failed to embed weights in ONNX: {ex}", flush=True)
-        # Fallback to copy
-        assets_dest = os.path.abspath("app/src/main/assets/wakeword.onnx")
-        shutil.copy2(final_model_path, assets_dest)
-        print(f"Copied finalized wake-word model metadata to assets: {assets_dest}", flush=True)
+        # Fallback to loading, overriding IR version to 8, and saving
+        try:
+            import onnx
+            model_proto = onnx.load(final_model_path)
+            model_proto.ir_version = 8
+            assets_dest = os.path.abspath("app/src/main/assets/wakeword.onnx")
+            if os.path.exists(assets_dest):
+                os.remove(assets_dest)
+            onnx.save_model(model_proto, assets_dest)
+            print(f"Saved downgraded fallback wake-word model to assets: {assets_dest}", flush=True)
+        except Exception as ex2:
+            print(f"Failed to write downgraded fallback: {ex2}", flush=True)
 
     # Clean up temporary dataset folder
     print("Cleaning up temporary dataset files...", flush=True)

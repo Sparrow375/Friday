@@ -47,6 +47,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         private const val TAG = "FridayService"
         const val ACTION_RELOAD_MODELS = "com.friday.assistant.ACTION_RELOAD_MODELS"
         const val ACTION_SHOW_OVERLAY = "com.friday.assistant.ACTION_SHOW_OVERLAY"
+        const val ACTION_PAUSE_WAKEWORD = "com.friday.assistant.ACTION_PAUSE_WAKEWORD"
+        const val ACTION_RESUME_WAKEWORD = "com.friday.assistant.ACTION_RESUME_WAKEWORD"
 
         @Volatile
         var instance: FridayService? = null
@@ -159,12 +161,6 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 pipelineState.value = PipelineState.IDLE
                 overlayManager?.dismiss()
                 startWakeWordListening()
-            },
-            onTextSubmit = { text ->
-                serviceScope.launch {
-                    stopWakeWordListening()
-                    executeAgentQuery(text)
-                }
             }
         )
 
@@ -203,6 +199,10 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             }
         } else if (action == ACTION_SHOW_OVERLAY) {
             showOverlay()
+        } else if (action == ACTION_PAUSE_WAKEWORD) {
+            stopWakeWordListening()
+        } else if (action == ACTION_RESUME_WAKEWORD) {
+            startWakeWordListening()
         }
 
         return START_STICKY

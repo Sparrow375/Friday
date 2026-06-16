@@ -50,19 +50,8 @@ fun FridayOverlayContent(
     audioAmplitude: Float,
     onClose: () -> Unit,
     onMicClick: () -> Unit,
-    onTextSubmit: (String) -> Unit,
-    onDrag: (Int, Int) -> Unit,
-    onKeyboardActive: (Boolean) -> Unit
+    onDrag: (Int, Int) -> Unit
 ) {
-    var textInput by remember { mutableStateOf("") }
-    var showTextInput by remember { mutableStateOf(false) }
-    val focusRequester = remember { FocusRequester() }
-
-    LaunchedEffect(showTextInput) {
-        // Toggle window focusability states
-        onKeyboardActive(showTextInput)
-    }
-
     FridayTheme {
         Box(
             modifier = Modifier
@@ -195,91 +184,11 @@ fun FridayOverlayContent(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
                         )
                     }
-
-                    // Text input fallback toggle
-                    Spacer(modifier = Modifier.height(16.dp))
-                    AnimatedVisibility(
-                        visible = showTextInput,
-                        enter = fadeIn(),
-                        exit = fadeOut()
-                    ) {
-                        val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
-                        val view = androidx.compose.ui.platform.LocalView.current
-                        val context = androidx.compose.ui.platform.LocalContext.current
-                        
-                        OutlinedTextField(
-                            value = textInput,
-                            onValueChange = { textInput = it },
-                            placeholder = { Text("Ask Friday...", color = SilverText.copy(alpha = 0.5f)) },
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = NeonBlue,
-                                unfocusedBorderColor = CyberBorder,
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White
-                            ),
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                            keyboardActions = KeyboardActions(
-                                onSend = {
-                                    if (textInput.isNotBlank()) {
-                                        onTextSubmit(textInput)
-                                        textInput = ""
-                                        showTextInput = false
-                                    }
-                                }
-                            ),
-                            trailingIcon = {
-                                IconButton(
-                                    onClick = {
-                                        if (textInput.isNotBlank()) {
-                                            onTextSubmit(textInput)
-                                            textInput = ""
-                                            showTextInput = false
-                                        }
-                                    }
-                                ) {
-                                    Icon(Icons.Default.Send, contentDescription = "Send", tint = NeonBlue)
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp)
-                                .focusRequester(focusRequester)
-                        )
-
-                        LaunchedEffect(Unit) {
-                            // Delay slightly for window manager updates and keyboard layout animations to sync
-                            delay(350)
-                            try {
-                                focusRequester.requestFocus()
-                                keyboardController?.show()
-                                
-                                // Force restart input to bind IME to the newly focused text field
-                                val imm = context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
-                                imm?.restartInput(view)
-                                imm?.showSoftInput(view, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
-                            } catch (e: Exception) {
-                                Log.e("FridayOverlayContent", "Failed to focus OutlinedTextField", e)
-                            }
-                        }
-                    }
-
-                    if (!showTextInput && pipelineState == PipelineState.IDLE) {
-                        Text(
-                            text = "Keyboard input",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = SilverText.copy(alpha = 0.6f),
-                            modifier = Modifier
-                                .clickable { showTextInput = true }
-                                .padding(vertical = 4.dp)
-                        )
-                    }
                 }
             }
         }
     }
 }
-
 @Composable
 fun GlowingOrb(pipelineState: PipelineState) {
     val infiniteTransition = rememberInfiniteTransition()

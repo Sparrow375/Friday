@@ -47,13 +47,38 @@ class AgentCore(
         }
 
         // Apply rules directly if intent matched with high confidence (>0.7), OR if we fallback to rule matching
-        val isVolumeUp = matchedIntent == "volume_up" && confidence > 0.7f || cleanQuery.contains("increase volume") || cleanQuery.contains("volume up") || cleanQuery.contains("make it louder") || cleanQuery.contains("turn it up")
-        val isVolumeDown = matchedIntent == "volume_down" && confidence > 0.7f || cleanQuery.contains("decrease volume") || cleanQuery.contains("volume down") || cleanQuery.contains("lower volume") || cleanQuery.contains("make it quieter") || cleanQuery.contains("turn it down")
-        val isMute = cleanQuery.contains("mute") && !cleanQuery.contains("unmute")
-        val isUnmute = cleanQuery.contains("unmute")
-        val isLockPhone = matchedIntent == "lock_phone" && confidence > 0.7f || cleanQuery.contains("lock the phone") || cleanQuery.contains("lock screen") || cleanQuery.contains("lock phone") || cleanQuery.contains("turn off screen")
-        val isSearchReddit = matchedIntent == "search_reddit" && confidence > 0.7f || cleanQuery.contains("on reddit")
-        val isLaunchApp = matchedIntent == "open_app" && confidence > 0.7f || cleanQuery.startsWith("open ") || cleanQuery.startsWith("launch ") || cleanQuery.startsWith("start ")
+        val isVolumeUp = matchedIntent == "volume_up" && confidence > 0.7f ||
+                Regex("volume\\s+up").containsMatchIn(cleanQuery) ||
+                Regex("increase\\s+(?:the\\s+)?volume").containsMatchIn(cleanQuery) ||
+                Regex("make\\s+(?:it|the\\s+volume)\\s+louder").containsMatchIn(cleanQuery) ||
+                Regex("turn\\s+(?:it|the\\s+volume)\\s+up").containsMatchIn(cleanQuery)
+
+        val isVolumeDown = matchedIntent == "volume_down" && confidence > 0.7f ||
+                Regex("volume\\s+down").containsMatchIn(cleanQuery) ||
+                Regex("decrease\\s+(?:the\\s+)?volume").containsMatchIn(cleanQuery) ||
+                Regex("lower\\s+(?:the\\s+)?volume").containsMatchIn(cleanQuery) ||
+                Regex("make\\s+(?:it|the\\s+volume)\\s+quieter").containsMatchIn(cleanQuery) ||
+                Regex("turn\\s+(?:it|the\\s+volume)\\s+down").containsMatchIn(cleanQuery)
+
+        val isMute = Regex("mute\\s+(?:the\\s+)?volume").containsMatchIn(cleanQuery) ||
+                Regex("mute\\s+(?:the\\s+)?audio").containsMatchIn(cleanQuery) ||
+                (cleanQuery.contains("mute") && !cleanQuery.contains("unmute"))
+
+        val isUnmute = Regex("unmute\\s+(?:the\\s+)?volume").containsMatchIn(cleanQuery) ||
+                Regex("unmute\\s+(?:the\\s+)?audio").containsMatchIn(cleanQuery) ||
+                cleanQuery.contains("unmute")
+
+        val isLockPhone = matchedIntent == "lock_phone" && confidence > 0.7f ||
+                Regex("lock\\s+(?:the\\s+)?(?:phone|screen)").containsMatchIn(cleanQuery) ||
+                cleanQuery.contains("lock screen") ||
+                Regex("turn\\s+off\\s+(?:the\\s+)?screen").containsMatchIn(cleanQuery)
+
+        val isSearchReddit = matchedIntent == "search_reddit" && confidence > 0.7f ||
+                cleanQuery.contains("on reddit") ||
+                cleanQuery.contains("reddit search")
+
+        val isLaunchApp = matchedIntent == "open_app" && confidence > 0.7f ||
+                Regex("^(?:open|launch|start)\\s+(.+)").containsMatchIn(cleanQuery)
 
         com.friday.assistant.core.FridayLogger.d(TAG, "Routing checks: volUp=$isVolumeUp, volDown=$isVolumeDown, mute=$isMute, unmute=$isUnmute, lock=$isLockPhone, reddit=$isSearchReddit, app=$isLaunchApp")
 
@@ -105,9 +130,20 @@ class AgentCore(
         }
 
         // B. Brightness Controls
-        val isBrightnessUp = cleanQuery.contains("increase brightness") || cleanQuery.contains("brightness up") || cleanQuery.contains("make it brighter") || cleanQuery.contains("brighter screen")
-        val isBrightnessDown = cleanQuery.contains("decrease brightness") || cleanQuery.contains("brightness down") || cleanQuery.contains("dim screen") || cleanQuery.contains("dimmer screen") || cleanQuery.contains("lower brightness")
-        val brightnessPctMatch = "brightness(?: to)?\\s*(\\d+)%".toRegex().find(cleanQuery)
+        val isBrightnessUp = Regex("increase\\s+(?:the\\s+)?brightness").containsMatchIn(cleanQuery) ||
+                Regex("brightness\\s+up").containsMatchIn(cleanQuery) ||
+                Regex("make\\s+(?:it|the\\s+screen)\\s+brighter").containsMatchIn(cleanQuery) ||
+                Regex("brighter\\s+screen").containsMatchIn(cleanQuery) ||
+                Regex("turn\\s+(?:the\\s+)?brightness\\s+up").containsMatchIn(cleanQuery)
+
+        val isBrightnessDown = Regex("decrease\\s+(?:the\\s+)?brightness").containsMatchIn(cleanQuery) ||
+                Regex("brightness\\s+down").containsMatchIn(cleanQuery) ||
+                Regex("dim\\s+(?:the\\s+)?screen").containsMatchIn(cleanQuery) ||
+                Regex("dimmer\\s+screen").containsMatchIn(cleanQuery) ||
+                Regex("lower\\s+(?:the\\s+)?brightness").containsMatchIn(cleanQuery) ||
+                Regex("turn\\s+(?:the\\s+)?brightness\\s+down").containsMatchIn(cleanQuery)
+
+        val brightnessPctMatch = Regex("brightness\\s+(?:to\\s+)?(\\d+)(?:\\s*%|\\s*percent)?").find(cleanQuery)
         
         if (isBrightnessUp) {
             _agentStatusFlow.emit("Increasing brightness...")
@@ -145,8 +181,12 @@ class AgentCore(
         }
 
         // C. Flashlight (Torch)
-        val isFlashlightOn = cleanQuery.contains("flashlight on") || cleanQuery.contains("turn on flashlight") || cleanQuery.contains("torch on") || cleanQuery.contains("turn on torch")
-        val isFlashlightOff = cleanQuery.contains("flashlight off") || cleanQuery.contains("turn off flashlight") || cleanQuery.contains("torch off") || cleanQuery.contains("turn off torch")
+        val isFlashlightOn = Regex("(?:turn\\s+)?on\\s+(?:the\\s+)?(?:flashlight|torch)").containsMatchIn(cleanQuery) ||
+                Regex("(?:flashlight|torch)\\s+on").containsMatchIn(cleanQuery)
+
+        val isFlashlightOff = Regex("(?:turn\\s+)?off\\s+(?:the\\s+)?(?:flashlight|torch)").containsMatchIn(cleanQuery) ||
+                Regex("(?:flashlight|torch)\\s+off").containsMatchIn(cleanQuery)
+
         if (isFlashlightOn) {
             _agentStatusFlow.emit("Turning flashlight on...")
             val tool = ToolRegistry.get("system_control")
@@ -171,8 +211,14 @@ class AgentCore(
         }
 
         // D. WiFi Controls
-        val isWifiOn = cleanQuery.contains("turn on wifi") || cleanQuery.contains("wifi on") || cleanQuery.contains("enable wifi")
-        val isWifiOff = cleanQuery.contains("turn off wifi") || cleanQuery.contains("wifi off") || cleanQuery.contains("disable wifi")
+        val isWifiOn = Regex("(?:turn\\s+)?on\\s+(?:the\\s+)?wifi").containsMatchIn(cleanQuery) ||
+                Regex("wifi\\s+on").containsMatchIn(cleanQuery) ||
+                Regex("enable\\s+(?:the\\s+)?wifi").containsMatchIn(cleanQuery)
+
+        val isWifiOff = Regex("(?:turn\\s+)?off\\s+(?:the\\s+)?wifi").containsMatchIn(cleanQuery) ||
+                Regex("wifi\\s+off").containsMatchIn(cleanQuery) ||
+                Regex("disable\\s+(?:the\\s+)?wifi").containsMatchIn(cleanQuery)
+
         if (isWifiOn) {
             _agentStatusFlow.emit("Turning WiFi on...")
             val tool = ToolRegistry.get("system_control")
@@ -197,8 +243,14 @@ class AgentCore(
         }
 
         // E. Bluetooth Controls
-        val isBluetoothOn = cleanQuery.contains("turn on bluetooth") || cleanQuery.contains("bluetooth on") || cleanQuery.contains("enable bluetooth")
-        val isBluetoothOff = cleanQuery.contains("turn off bluetooth") || cleanQuery.contains("bluetooth off") || cleanQuery.contains("disable bluetooth")
+        val isBluetoothOn = Regex("(?:turn\\s+)?on\\s+(?:the\\s+)?bluetooth").containsMatchIn(cleanQuery) ||
+                Regex("bluetooth\\s+on").containsMatchIn(cleanQuery) ||
+                Regex("enable\\s+(?:the\\s+)?bluetooth").containsMatchIn(cleanQuery)
+
+        val isBluetoothOff = Regex("(?:turn\\s+)?off\\s+(?:the\\s+)?bluetooth").containsMatchIn(cleanQuery) ||
+                Regex("bluetooth\\s+off").containsMatchIn(cleanQuery) ||
+                Regex("disable\\s+(?:the\\s+)?bluetooth").containsMatchIn(cleanQuery)
+
         if (isBluetoothOn) {
             _agentStatusFlow.emit("Turning Bluetooth on...")
             val tool = ToolRegistry.get("system_control")
@@ -223,8 +275,14 @@ class AgentCore(
         }
 
         // F. Do Not Disturb (DND)
-        val isDndOn = cleanQuery.contains("turn on do not disturb") || cleanQuery.contains("dnd on") || cleanQuery.contains("enable dnd") || cleanQuery.contains("activate do not disturb")
-        val isDndOff = cleanQuery.contains("turn off do not disturb") || cleanQuery.contains("dnd off") || cleanQuery.contains("disable dnd") || cleanQuery.contains("deactivate do not disturb")
+        val isDndOn = Regex("(?:turn\\s+)?on\\s+(?:do\\s+not\\s+disturb|dnd)").containsMatchIn(cleanQuery) ||
+                Regex("(?:do\\s+not\\s+disturb|dnd)\\s+on").containsMatchIn(cleanQuery) ||
+                Regex("(?:enable|activate)\\s+(?:do\\s+not\\s+disturb|dnd)").containsMatchIn(cleanQuery)
+
+        val isDndOff = Regex("(?:turn\\s+)?off\\s+(?:do\\s+not\\s+disturb|dnd)").containsMatchIn(cleanQuery) ||
+                Regex("(?:do\\s+not\\s+disturb|dnd)\\s+off").containsMatchIn(cleanQuery) ||
+                Regex("(?:disable|deactivate)\\s+(?:do\\s+not\\s+disturb|dnd)").containsMatchIn(cleanQuery)
+
         if (isDndOn) {
             _agentStatusFlow.emit("Activating DND...")
             val tool = ToolRegistry.get("system_control")
@@ -316,7 +374,8 @@ class AgentCore(
         }
 
         // I. Checking Notifications
-        val isListNotifications = cleanQuery.contains("notifications") || cleanQuery.contains("notification") || cleanQuery.contains("check messages") || cleanQuery.contains("any messages") || cleanQuery.contains("any mail")
+        val isListNotifications = Regex("(?:check|list|show|any|get)\\s+(?:my\\s+)?(?:messages|notifications|mail)").containsMatchIn(cleanQuery) ||
+                cleanQuery.contains("notification") || cleanQuery.contains("notifications")
         if (isListNotifications) {
             _agentStatusFlow.emit("Checking notifications...")
             val tool = ToolRegistry.get("notification_control")
@@ -378,7 +437,10 @@ class AgentCore(
 
         // M. Open App
         if (isLaunchApp) {
-            val appName = cleanQuery.removePrefix("open ").removePrefix("launch ").removePrefix("start ").trim()
+            var appName = cleanQuery.removePrefix("open ").removePrefix("launch ").removePrefix("start ").trim()
+            if (appName.startsWith("the ")) {
+                appName = appName.substring(4).trim()
+            }
             if (appName.isNotEmpty()) {
                 _agentStatusFlow.emit("Opening $appName...")
                 val tool = ToolRegistry.get("app_launcher")
@@ -391,69 +453,27 @@ class AgentCore(
             }
         }
 
-        // 3. Fallback: LLM Reasoner or Search Fallback
+        // 3. Fallback: LLM Chat Brain (Free of Tool Calling Loop)
         val sharedPrefs = context.getSharedPreferences("friday_model_prefs", Context.MODE_PRIVATE)
         val useLlm = sharedPrefs.getBoolean("use_llm", true)
 
         if (useLlm && modelManager.isLlmLoaded()) {
             if (!llamaEngine.isModelLoaded()) {
-                _agentStatusFlow.emit("Loading reasoning brain...")
+                _agentStatusFlow.emit("Loading brain...")
                 val path = modelManager.getLlmModelPath()
                 com.friday.assistant.core.FridayLogger.i(TAG, "Lazy loading LLM GGUF model from: $path")
                 val success = llamaEngine.loadModel(path)
                 com.friday.assistant.core.FridayLogger.i(TAG, "LLM GGUF model load success: $success")
                 if (!success) {
-                    return "Failed to load the local reasoning brain. Please check if your device has enough free memory."
+                    return "Failed to load the local brain. Please check if your device has enough free memory."
                 }
             }
             _agentStatusFlow.emit("Thinking...")
             llamaEngine.clearHistory()
-            var currentPrompt = promptBuilder.buildPrompt(userInput)
-            var loopCount = 0
-            var finalResponse = ""
-
-            while (loopCount < MAX_TOOL_LOOPS) {
-                val response = llamaEngine.generate(currentPrompt, maxTokens = 256, temp = 0.5f).trim()
-                com.friday.assistant.core.FridayLogger.d(TAG, "Llama response iteration $loopCount: '$response'")
-                
-                // Parse tool call JSON dynamically
-                val toolCall = parseToolCall(response)
-                
-                if (toolCall != null) {
-                    val toolName = toolCall.first
-                    val arguments = toolCall.second
-                    
-                    val executedTool = ToolRegistry.get(toolName)
-                    if (executedTool != null) {
-                        loopCount++
-                        _agentStatusFlow.emit("Using tool: ${executedTool.name}...")
-                        com.friday.assistant.core.FridayLogger.i(TAG, "Executing tool '${executedTool.name}' with arguments: $arguments")
-                        
-                        val result = executedTool.execute(arguments)
-                        com.friday.assistant.core.FridayLogger.i(TAG, "Tool result success: ${result.success}, data: ${result.data}")
-                        
-                        // Append model's response and tool result to currentPrompt
-                        val responseWithEnd = if (response.endsWith("<|im_end|>")) response else "$response<|im_end|>\n"
-                        val updatedHistory = currentPrompt.removeSuffix("<|im_start|>assistant\n") + 
-                                             "<|im_start|>assistant\n" + responseWithEnd + 
-                                             "<|im_start|>user\n[Tool Result: ${result.data}]<|im_end|>\n" +
-                                             "<|im_start|>assistant\n"
-                        currentPrompt = updatedHistory
-                    } else {
-                        com.friday.assistant.core.FridayLogger.w(TAG, "Tool '$toolName' matched but not found in ToolRegistry")
-                        finalResponse = sanitizeResponse(response)
-                        break
-                    }
-                } else {
-                    finalResponse = sanitizeResponse(response)
-                    break
-                }
-            }
-
-            if (finalResponse.isEmpty()) {
-                finalResponse = "I couldn't finish executing that query."
-            }
-
+            val currentPrompt = promptBuilder.buildPrompt(userInput)
+            val response = llamaEngine.generate(currentPrompt, maxTokens = 128, temp = 0.7f).trim()
+            val finalResponse = sanitizeResponse(response)
+            
             memoryManager.saveConversationTurn(userInput, finalResponse)
             return finalResponse
         } else {
@@ -469,7 +489,7 @@ class AgentCore(
                 }
             }
 
-            return "I'm running in offline assistant mode, but the local reasoning brain (Qwen GGUF) is not loaded or has been offloaded. You can download or enable it in the Friday app dashboard."
+            return "I'm running in offline assistant mode, but the local brain (Qwen GGUF) is not loaded or has been offloaded. You can download or enable it in the Friday app dashboard."
         }
     }
 

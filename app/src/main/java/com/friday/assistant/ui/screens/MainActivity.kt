@@ -52,6 +52,15 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
+// Added imports for Chat Screen and speech helper
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.friday.assistant.intelligence.AgentCore
+import com.friday.assistant.intelligence.MemoryManager
+import com.friday.assistant.audio.SpeechToTextHelper
+import com.friday.assistant.audio.PipelineState
+
 class MainActivity : ComponentActivity() {
 
     companion object {
@@ -60,6 +69,9 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var modelManager: ModelManager
     private var speakerVerifier: SpeakerVerifier? = null
+    private lateinit var agentCore: AgentCore
+    private lateinit var memoryManager: MemoryManager
+    private var activitySpeechToTextHelper: SpeechToTextHelper? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,6 +79,8 @@ class MainActivity : ComponentActivity() {
 
         modelManager = ModelManager(this)
         speakerVerifier = SpeakerVerifier(this, modelManager)
+        memoryManager = MemoryManager(this)
+        agentCore = AgentCore(this, memoryManager)
 
         setContent {
             FridayTheme {
@@ -74,7 +88,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = ObsidianDark
                 ) {
-                    DashboardScreen()
+                    MainScreenContainer()
                 }
             }
         }
@@ -1209,6 +1223,427 @@ class MainActivity : ComponentActivity() {
                 record.release()
             } catch (e: Exception) {
                 Log.e(TAG, "Error releasing enrollment AudioRecord", e)
+            }
+        }
+    }
+
+    // ==========================================
+    // Added for Chat Screen and Navigation Tab
+    // ==========================================
+
+    enum class AppScreen {
+        DASHBOARD,
+        CHAT
+    }
+
+    data class ChatMessage(
+        val text: String,
+        val isUser: Boolean,
+        val timestamp: Long = System.currentTimeMillis()
+    )
+
+    private fun getActivitySpeechHelper(
+        onTranscript: (String) -> Unit,
+        onFinal: (String) -> Unit,
+        onState: (PipelineState) -> Unit
+    ): SpeechToTextHelper {
+        var helper = activitySpeechToTextHelper
+        if (helper == null) {
+            helper = SpeechToTextHelper(
+                context = this,
+                onTranscriptUpdate = onTranscript,
+                onFinalResult = onFinal,
+                onRmsUpdate = { },
+                onStateChanged = onState
+            )
+            activitySpeechToTextHelper = helper
+        }
+        return helper
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    fun MainScreenContainer() {
+        var currentScreen by remember { mutableStateOf(AppScreen.DASHBOARD) }
+
+        Scaffold(
+            bottomBar = {
+                NavigationBar(
+                    containerColor = GlassObsidian,
+                    modifier = Modifier.border(
+                        width = 1.dp,
+                        brush = Brush.linearGradient(
+                            colors = listOf(CyberBorder, Color.Transparent, CyberBorder)
+                        ),
+                        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+                    )
+                ) {
+                    NavigationBarItem(
+                        selected = currentScreen == AppScreen.DASHBOARD,
+                        onClick = { currentScreen = AppScreen.DASHBOARD },
+                        icon = { Icon(Icons.Default.Dashboard, contentDescription = "Dashboard") },
+                        label = { Text("Dashboard") },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = NeonCyan,
+                            selectedTextColor = NeonCyan,
+                            unselectedIconColor = SilverText,
+                            unselectedTextColor = SilverText,
+                            indicatorColor = Color.Transparent
+                        )
+                    )
+                    NavigationBarItem(
+                        selected = currentScreen == AppScreen.CHAT,
+                        onClick = { currentScreen = AppScreen.CHAT },
+                        icon = { Icon(Icons.Default.Chat, contentDescription = "Assistant") },
+                        label = { Text("Assistant") },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = NeonCyan,
+                            selectedTextColor = NeonCyan,
+                            unselectedIconColor = SilverText,
+                            unselectedTextColor = SilverText,
+                            indicatorColor = Color.Transparent
+                        )
+                    )
+                }
+            },
+            containerColor = ObsidianDark
+        ) { innerPadding ->
+            Box(modifier = Modifier.padding(innerPadding)) {
+                when (currentScreen) {
+                    AppScreen.DASHBOARD -> DashboardScreen()
+                    AppScreen.CHAT -> ChatScreen()
+                }
+            }
+        }
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    fun ChatScreen() {
+        val context = LocalContext.current
+        val coroutineScope = rememberCoroutineScope()
+        var textInput by remember { mutableStateOf("") }
+        var isThinking by remember { mutableStateOf(false) }
+        var thinkingStatus by remember { mutableStateOf("") }
+        
+        val chatMessages = remember { mutableStateListOf<ChatMessage>().apply {
+            if (isEmpty()) {
+                add(ChatMessage("Hello, I am Friday. How can I help you today?", isUser = false))
+            }
+        }}
+        
+        var isRecording by remember { mutableStateOf(false) }
+        var partialTranscript by remember { mutableStateOf("") }
+        
+        val listState = rememberLazyListState()
+        
+        // Pause/resume background wake-word listening on lifecycle
+        DisposableEffect(Unit) {
+            val intent = Intent(context, FridayService::class.java).apply {
+                action = FridayService.ACTION_PAUSE_WAKEWORD
+            }
+            try { context.startService(intent) } catch (e: Exception) { Log.e(TAG, "Failed to pause wake word", e) }
+            
+            onDispose {
+                val intent = Intent(context, FridayService::class.java).apply {
+                    action = FridayService.ACTION_RESUME_WAKEWORD
+                }
+                try { context.startService(intent) } catch (e: Exception) { Log.e(TAG, "Failed to resume wake word", e) }
+            }
+        }
+        
+        LaunchedEffect(chatMessages.size) {
+            if (chatMessages.isNotEmpty()) {
+                listState.animateScrollToItem(chatMessages.size - 1)
+            }
+        }
+        
+        val speechHelper = remember {
+            getActivitySpeechHelper(
+                onTranscript = { text ->
+                    partialTranscript = text
+                },
+                onFinal = { finalResult ->
+                    if (finalResult.isNotBlank()) {
+                        chatMessages.add(ChatMessage(finalResult, isUser = true))
+                        
+                        coroutineScope.launch {
+                            isThinking = true
+                            thinkingStatus = "Thinking..."
+                            
+                            val statusJob = coroutineScope.launch {
+                                agentCore.agentStatusFlow.collect { status ->
+                                    thinkingStatus = status
+                                }
+                            }
+                            
+                            try {
+                                val reply = agentCore.processQuery(finalResult)
+                                chatMessages.add(ChatMessage(reply, isUser = false))
+                            } catch (e: Exception) {
+                                chatMessages.add(ChatMessage("Error: ${e.localizedMessage}", isUser = false))
+                            } finally {
+                                statusJob.cancel()
+                                isThinking = false
+                            }
+                        }
+                    }
+                    isRecording = false
+                    partialTranscript = ""
+                },
+                onState = { state ->
+                    isRecording = (state == PipelineState.LISTENING)
+                }
+            )
+        }
+        
+        val handleSend = {
+            val query = textInput.trim()
+            if (query.isNotEmpty() && !isThinking) {
+                chatMessages.add(ChatMessage(query, isUser = true))
+                textInput = ""
+                coroutineScope.launch {
+                    isThinking = true
+                    thinkingStatus = "Thinking..."
+                    
+                    val statusJob = coroutineScope.launch {
+                        agentCore.agentStatusFlow.collect { status ->
+                            thinkingStatus = status
+                        }
+                    }
+                    
+                    try {
+                        val reply = agentCore.processQuery(query)
+                        chatMessages.add(ChatMessage(reply, isUser = false))
+                    } catch (e: Exception) {
+                        chatMessages.add(ChatMessage("Error: ${e.localizedMessage}", isUser = false))
+                    } finally {
+                        statusJob.cancel()
+                        isThinking = false
+                    }
+                }
+            }
+        }
+        
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(ObsidianDark)
+                .padding(16.dp)
+        ) {
+            // Header bar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Chat,
+                    contentDescription = null,
+                    tint = NeonBlue,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = "Friday Chat Assistant",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
+            
+            // Message log
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp)
+            ) {
+                items(chatMessages) { message ->
+                    val isUser = message.isUser
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        contentAlignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
+                    ) {
+                        Surface(
+                            shape = if (isUser) {
+                                RoundedCornerShape(16.dp, 16.dp, 0.dp, 16.dp)
+                            } else {
+                                RoundedCornerShape(16.dp, 16.dp, 16.dp, 0.dp)
+                            },
+                            color = Color.Transparent,
+                            modifier = Modifier
+                                .widthIn(max = 280.dp)
+                                .border(
+                                    width = 1.dp,
+                                    brush = Brush.linearGradient(
+                                        colors = if (isUser) {
+                                            listOf(CyberBorder, CyberBorder)
+                                        } else {
+                                            listOf(Color.Transparent, CyberBorder)
+                                        }
+                                    ),
+                                    shape = if (isUser) {
+                                        RoundedCornerShape(16.dp, 16.dp, 0.dp, 16.dp)
+                                    } else {
+                                        RoundedCornerShape(16.dp, 16.dp, 16.dp, 0.dp)
+                                    }
+                                )
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .background(
+                                        brush = if (isUser) {
+                                            Brush.linearGradient(colors = listOf(NeonBlue, NeonCyan))
+                                        } else {
+                                            Brush.linearGradient(colors = listOf(SlateGray, GlassObsidian))
+                                        }
+                                    )
+                                    .padding(14.dp)
+                            ) {
+                                Text(
+                                    text = message.text,
+                                    color = Color.White,
+                                    fontSize = 15.sp,
+                                    lineHeight = 20.sp
+                                )
+                            }
+                        }
+                    }
+                }
+                
+                if (isThinking) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = NeonCyan,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = thinkingStatus,
+                                color = SilverText,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+                }
+            }
+            
+            // Live partial voice transcript view
+            if (isRecording) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                        .border(1.dp, AlertRed.copy(alpha = 0.5f), RoundedCornerShape(14.dp)),
+                    colors = CardDefaults.cardColors(containerColor = GlassObsidian)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(AlertRed, CircleShape)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = if (partialTranscript.isEmpty()) "Listening..." else "\"$partialTranscript\"",
+                            color = Color.White,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = {
+                                speechHelper.stopListening()
+                                isRecording = false
+                            },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Cancel", tint = SilverText, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
+            
+            // Text input box / Microphone controls
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .wrapContentHeight(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = textInput,
+                    onValueChange = { textInput = it },
+                    placeholder = { Text("Ask Friday...", color = SilverText.copy(alpha = 0.5f)) },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = NeonBlue,
+                        unfocusedBorderColor = CyberBorder,
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Send
+                    ),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                        onSend = { handleSend() }
+                    )
+                )
+                
+                // Mic Button
+                IconButton(
+                    onClick = {
+                        if (isRecording) {
+                            speechHelper.stopListening()
+                        } else {
+                            speechHelper.startListening()
+                        }
+                    },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(if (isRecording) AlertRed else NeonBlue, RoundedCornerShape(12.dp))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Mic,
+                        contentDescription = "Voice Input",
+                        tint = Color.White
+                    )
+                }
+                
+                if (textInput.isNotBlank()) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    IconButton(
+                        onClick = { handleSend() },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(NeonCyan, RoundedCornerShape(12.dp))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Send,
+                            contentDescription = "Send Message",
+                            tint = Color.White
+                        )
+                    }
+                }
             }
         }
     }

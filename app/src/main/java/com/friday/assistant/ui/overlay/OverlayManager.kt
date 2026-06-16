@@ -27,8 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 class OverlayManager(
     private val context: Context,
     private val onMicClick: () -> Unit,
-    private val onClose: () -> Unit,
-    private val onTextSubmit: (String) -> Unit
+    private val onClose: () -> Unit
 ) : LifecycleOwner, SavedStateRegistryOwner, ViewModelStoreOwner {
 
     companion object {
@@ -96,13 +95,10 @@ class OverlayManager(
                 windowAnimations = android.R.style.Animation_Toast
                 x = 0
                 y = 0
-                softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
             }
             this.params = layoutParams
 
             composeView = ComposeView(context).apply {
-                isFocusable = true
-                isFocusableInTouchMode = true
                 setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
                 
                 // Attach lifecycle owners so Compose works inside a Service overlay
@@ -127,7 +123,6 @@ class OverlayManager(
                             onClose()
                         },
                         onMicClick = onMicClick,
-                        onTextSubmit = onTextSubmit,
                         onDrag = { dx, dy ->
                             val view = composeView
                             val p = params
@@ -136,9 +131,6 @@ class OverlayManager(
                                 p.y += dy
                                 windowManager.updateViewLayout(view, p)
                             }
-                        },
-                        onKeyboardActive = { active ->
-                            setFocusable(active)
                         }
                     )
                 }
@@ -150,34 +142,6 @@ class OverlayManager(
             isVisible = true
         } catch (e: Throwable) {
             com.friday.assistant.core.FridayLogger.e(TAG, "Failed to add overlay view to WindowManager", e)
-        }
-    }
-
-    fun setFocusable(focusable: Boolean) {
-        val view = composeView
-        val p = params
-        if (view != null && p != null) {
-            if (focusable) {
-                p.flags = p.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
-                p.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE or WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
-            } else {
-                p.flags = p.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                p.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
-                
-                // Force hide the soft keyboard
-                val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
-                imm?.hideSoftInputFromWindow(view.windowToken, 0)
-            }
-            try {
-                windowManager.updateViewLayout(view, p)
-                if (focusable) {
-                    view.isFocusable = true
-                    view.isFocusableInTouchMode = true
-                }
-                com.friday.assistant.core.FridayLogger.d(TAG, "Overlay focusable updated: $focusable")
-            } catch (e: Throwable) {
-                com.friday.assistant.core.FridayLogger.e(TAG, "Failed to update focusability layout params", e)
-            }
         }
     }
 
