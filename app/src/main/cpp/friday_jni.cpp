@@ -135,7 +135,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_initLlama(JNIEnv *env, jobject
     mparams.n_gpu_layers = 0;     // Vulkan is OFF in CMakeLists.txt; setting 99 caused silent CPU fallback overhead
     mparams.use_mlock = true;     // Lock model in RAM to prevent OS eviction
     mparams.use_mmap = false;     // Disable mmap: force full RAM load, eliminate page faults during generation
-    llama_model *model = llama_load_model_from_file(path, mparams);
+    llama_model *model = llama_model_load_from_file(path, mparams);
     env->ReleaseStringUTFChars(model_path, path);
     
     if (model == nullptr) {
@@ -153,12 +153,12 @@ Java_com_friday_assistant_core_native_LlamaEngine_initLlama(JNIEnv *env, jobject
     cparams.n_batch = 512;
     cparams.n_threads = 4; // S24 has exactly 4 performance cores (4-7)
     cparams.n_threads_batch = 4;
-    cparams.flash_attn = true; // Flash Attention: major CPU attention speedup
+    // Note: flash_attn was removed from llama_context_params in upstream llama.cpp master
     
-    llama_context *ctx = llama_new_context_with_model(model, cparams);
+    llama_context *ctx = llama_init_from_model(model, cparams);
     if (ctx == nullptr) {
         LOGE("Failed to create Llama context");
-        llama_free_model(model);
+        llama_model_free(model);
         return 0;
     }
     
@@ -179,7 +179,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_freeLlama(JNIEnv *env, jobject
             llama_free(state->ctx);
         }
         if (state->model) {
-            llama_free_model(state->model);
+            llama_model_free(state->model);
         }
         delete state;
         llama_backend_free();
