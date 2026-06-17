@@ -13,6 +13,7 @@ class NluIntentClassifier(private val context: Context) {
         private const val TAG = "NluIntentClassifier"
         private const val MODEL_NAME = "nlu_model.onnx"
         private const val VOCAB_NAME = "vocab.txt"
+        private const val LABELS_NAME = "labels.txt"
     }
 
     private var ortEnv: OrtEnvironment? = null
@@ -21,11 +22,12 @@ class NluIntentClassifier(private val context: Context) {
     private var isLoaded = false
 
     // Mapped labels expected from the fine-tuned ONNX classifier
-    private val intentLabels = listOf(
+    private var intentLabels = listOf(
         "volume_up", "volume_down", "brightness_up", "brightness_down", 
         "torch_toggle", "torch_strength", "lock_phone", "open_app", 
         "navigate_to", "set_alarm", "set_timer", "send_whatsapp", 
-        "play_media", "power_saver_toggle", "screencast_toggle", "unknown"
+        "play_media", "power_saver_toggle", "screencast_toggle",
+        "wifi_toggle", "bluetooth_toggle", "hotspot_toggle", "unknown"
     )
 
     init {
@@ -40,9 +42,37 @@ class NluIntentClassifier(private val context: Context) {
             val destDir = context.getExternalFilesDir("models") ?: context.filesDir
             val modelFile = File(destDir, MODEL_NAME)
             val vocabFile = File(destDir, VOCAB_NAME)
+            val labelsFile = File(destDir, LABELS_NAME)
 
             var modelBytes: ByteArray? = null
             var tokenizerLoaded = false
+
+            // Try loading dynamic labels
+            val loadedLabels = mutableListOf<String>()
+            if (labelsFile.exists()) {
+                labelsFile.forEachLine { line ->
+                    val lbl = line.trim()
+                    if (lbl.isNotEmpty()) {
+                        loadedLabels.add(lbl)
+                    }
+                }
+            } else {
+                val assetsList = context.assets.list("") ?: emptyArray()
+                if (assetsList.contains(LABELS_NAME)) {
+                    context.assets.open(LABELS_NAME).bufferedReader().useLines { lines ->
+                        lines.forEach { line ->
+                            val lbl = line.trim()
+                            if (lbl.isNotEmpty()) {
+                                loadedLabels.add(lbl)
+                            }
+                        }
+                    }
+                }
+            }
+            if (loadedLabels.isNotEmpty()) {
+                intentLabels = loadedLabels
+                Log.i(TAG, "Loaded ${loadedLabels.size} intent labels dynamically")
+            }
 
             if (modelFile.exists() && vocabFile.exists()) {
                 Log.i(TAG, "Loading custom NLU model from: ${modelFile.absolutePath}")

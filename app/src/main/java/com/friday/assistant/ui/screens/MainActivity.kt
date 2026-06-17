@@ -101,6 +101,10 @@ class MainActivity : ComponentActivity() {
         val context = LocalContext.current
         val scrollState = rememberScrollState()
 
+        val permissionLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestMultiplePermissions()
+        ) { _ -> }
+
         // Core Permission statuses
         var hasMicPermission by remember { mutableStateOf(checkPermission(Manifest.permission.RECORD_AUDIO)) }
         var hasNotificationPermission by remember { 
@@ -146,6 +150,7 @@ class MainActivity : ComponentActivity() {
         var speakerLoaded by remember { mutableStateOf(modelManager.isSpeakerLoaded()) }
         var wakeWordLoaded by remember { mutableStateOf(modelManager.isWakeWordLoaded()) }
         var nluLoaded by remember { mutableStateOf(modelManager.isNluLoaded()) }
+        var semanticLoaded by remember { mutableStateOf(modelManager.isSemanticModelLoaded()) }
 
         // Enrollment states
         var isEnrolled by remember { mutableStateOf(speakerVerifier?.isEnrolled() == true) }
@@ -169,6 +174,7 @@ class MainActivity : ComponentActivity() {
             // Request normal permissions at startup
             val list = mutableListOf(
                 Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.CAMERA,
                 Manifest.permission.READ_CONTACTS,
                 Manifest.permission.CALL_PHONE,
                 Manifest.permission.ACCESS_FINE_LOCATION,
@@ -212,6 +218,7 @@ class MainActivity : ComponentActivity() {
                 speakerLoaded = modelManager.isSpeakerLoaded()
                 wakeWordLoaded = modelManager.isWakeWordLoaded()
                 nluLoaded = modelManager.isNluLoaded()
+                semanticLoaded = modelManager.isSemanticModelLoaded()
                 
                 delay(1500)
             }
@@ -638,6 +645,13 @@ class MainActivity : ComponentActivity() {
                     name = "NLU Intent Classifier (ONNX)",
                     status = nluLoaded,
                     details = "Custom sequence classifier model"
+                )
+                Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
+
+                ModelRow(
+                    name = "Semantic Router (ONNX)",
+                    status = semanticLoaded,
+                    details = "Optional all-MiniLM-L6-v2 similarity model"
                 )
                 Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
 

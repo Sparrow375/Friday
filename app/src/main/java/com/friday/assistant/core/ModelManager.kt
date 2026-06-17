@@ -12,6 +12,7 @@ class ModelManager(private val context: Context) {
         const val WAKEWORD_MODEL_NAME = "wakeword.onnx"
         const val NLU_MODEL_NAME = "nlu_model.onnx"
         const val NLU_VOCAB_NAME = "vocab.txt"
+        const val SEMANTIC_MODEL_NAME = "all-MiniLM-L6-v2.onnx"
         const val PREFS_NAME = "friday_model_prefs"
         const val KEY_LLM_PATH = "llm_model_path"
         const val KEY_WHISPER_PATH = "whisper_model_path"
@@ -187,6 +188,38 @@ class ModelManager(private val context: Context) {
         } catch (e: Exception) {
             return false
         }
+    }
+
+    fun isSemanticModelLoaded(): Boolean {
+        try {
+            val destDir = context.getExternalFilesDir("models") ?: context.filesDir
+            val modelFile = File(destDir, SEMANTIC_MODEL_NAME)
+            if (modelFile.exists()) {
+                return true
+            }
+            val assetsList = context.assets.list("") ?: emptyArray()
+            return assetsList.contains(SEMANTIC_MODEL_NAME)
+        } catch (e: Exception) {
+            return false
+        }
+    }
+
+    fun getSemanticModelPath(): String? {
+        val file = File(context.filesDir, SEMANTIC_MODEL_NAME)
+        val assetSize = getAssetSize(SEMANTIC_MODEL_NAME)
+        if (assetSize > 0) {
+            if (!file.exists() || file.length() != assetSize) {
+                file.delete()
+                copyModelFromAssets(SEMANTIC_MODEL_NAME, file)
+            }
+            return file.absolutePath
+        }
+        val destDir = context.getExternalFilesDir("models") ?: context.filesDir
+        val extFile = File(destDir, SEMANTIC_MODEL_NAME)
+        if (extFile.exists()) {
+            return extFile.absolutePath
+        }
+        return null
     }
 
     private fun copyModelFromAssets(assetName: String, destFile: File) {

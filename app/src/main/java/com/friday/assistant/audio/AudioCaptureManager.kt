@@ -23,6 +23,7 @@ class AudioCaptureManager(private val context: Context) {
 
     private val listeners = CopyOnWriteArrayList<AudioFrameListener>()
     private var audioRecord: AudioRecord? = null
+    private var acousticEchoCanceler: android.media.audiofx.AcousticEchoCanceler? = null
     private var captureThread: Thread? = null
     @Volatile
     private var isRecording = false
@@ -51,7 +52,7 @@ class AudioCaptureManager(private val context: Context) {
 
         try {
             audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 SAMPLE_RATE,
                 CHANNEL_CONFIG,
                 AUDIO_FORMAT,
@@ -63,6 +64,19 @@ class AudioCaptureManager(private val context: Context) {
                 audioRecord?.release()
                 audioRecord = null
                 return false
+            }
+
+            // Enable AcousticEchoCanceler if available
+            val sessionId = audioRecord?.audioSessionId
+            if (sessionId != null && android.media.audiofx.AcousticEchoCanceler.isAvailable()) {
+                try {
+                    acousticEchoCanceler = android.media.audiofx.AcousticEchoCanceler.create(sessionId).apply {
+                        enabled = true
+                    }
+                    Log.i(TAG, "AcousticEchoCanceler enabled on session ID: $sessionId")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to initialize AcousticEchoCanceler", e)
+                }
             }
 
             audioRecord?.startRecording()
@@ -109,6 +123,8 @@ class AudioCaptureManager(private val context: Context) {
 
         try {
             audioRecord?.stop()
+            acousticEchoCanceler?.release()
+            acousticEchoCanceler = null
             audioRecord?.release()
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing AudioRecord", e)

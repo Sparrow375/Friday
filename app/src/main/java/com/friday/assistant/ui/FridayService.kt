@@ -309,9 +309,9 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 
                 // Update overlay UI text in real-time
                 overlayManager?.updateState(
-                    pipelineState.value, 
-                    statusMessage = if (isFirstChunk) "Thinking..." else "Speaking...", 
-                    responseText = responseAccumulator, 
+                    state = pipelineState.value, 
+                    text = if (isFirstChunk) "Thinking..." else "Speaking...", 
+                    resp = responseAccumulator, 
                     trans = query
                 )
                 
@@ -365,7 +365,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             transitionToState(PipelineState.SPEAKING, responseText = fullResponseText)
             tts?.speak(cleanedChunk, TextToSpeech.QUEUE_FLUSH, null, "${UTTERANCE_ID}_0")
         } else {
-            overlayManager?.updateState(PipelineState.SPEAKING, "Speaking...", responseText = fullResponseText)
+            overlayManager?.updateState(PipelineState.SPEAKING, "Speaking...", resp = fullResponseText)
             tts?.speak(cleanedChunk, TextToSpeech.QUEUE_ADD, null, "${UTTERANCE_ID}_${System.currentTimeMillis()}")
         }
     }

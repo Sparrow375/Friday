@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.util.Log
 import com.friday.assistant.core.FridayApplication
+import com.friday.assistant.core.native.LlamaEngine
 import com.friday.assistant.intelligence.nlu.NluIntentClassifier
 import com.friday.assistant.tools.ToolRegistry
 import com.friday.assistant.ui.FridayService
@@ -26,6 +27,7 @@ class AgentCore(
     private val llamaEngine = FridayApplication.llamaEngine
     private val promptBuilder = PromptBuilder(memoryManager)
     private val nluClassifier = NluIntentClassifier(context)
+    private val semanticRouter = com.friday.assistant.intelligence.nlu.SemanticIntentRouter(context)
     private val modelManager = com.friday.assistant.core.ModelManager(context)
 
     // Flow to emit streaming output/status events for the UI overlay to show in real time
@@ -35,12 +37,18 @@ class AgentCore(
     suspend fun processQuery(userInput: String, onToken: (String) -> Unit = {}): String {
         com.friday.assistant.core.FridayLogger.i(TAG, "AgentCore processing query: '$userInput'")
         
-        // 1. Core Intent Classification (NLU Classifier or Rule-Based Fallback)
+        // 1. Core Intent Classification (Semantic Router, NLU Classifier, or Rule-Based Fallback)
         val cleanQuery = userInput.trim().lowercase()
         var matchedIntent = "unknown"
         var confidence = 0f
 
-        if (nluClassifier.isModelLoaded()) {
+        if (semanticRouter.isModelLoaded()) {
+            val res = semanticRouter.routeIntent(userInput)
+            matchedIntent = res.first
+            confidence = res.second
+        }
+        
+        if (matchedIntent == "unknown" && nluClassifier.isModelLoaded()) {
             val res = nluClassifier.classifyIntent(userInput)
             matchedIntent = res.first
             confidence = res.second
@@ -197,7 +205,7 @@ class AgentCore(
         }
 
         // D. WiFi Controls
-        val isWifiQuery = cleanQuery.contains("wifi") || cleanQuery.contains("wi-fi")
+        val isWifiQuery = cleanQuery.contains("wifi") || cleanQuery.contains("wi-fi") || matchedIntent == "wifi_toggle"
         if (isWifiQuery) {
             val isOff = cleanQuery.contains("off") || cleanQuery.contains("disable") || cleanQuery.contains("stop") || cleanQuery.contains("deactivate") || cleanQuery.contains("turnoff")
             val isOn = cleanQuery.contains("on") || cleanQuery.contains("enable") || cleanQuery.contains("start") || cleanQuery.contains("activate") || cleanQuery.contains("turnon")
@@ -215,7 +223,7 @@ class AgentCore(
         }
 
         // E. Bluetooth Controls
-        val isBluetoothQuery = cleanQuery.contains("bluetooth") || cleanQuery.contains("blue tooth")
+        val isBluetoothQuery = cleanQuery.contains("bluetooth") || cleanQuery.contains("blue tooth") || matchedIntent == "bluetooth_toggle"
         if (isBluetoothQuery) {
             val isOff = cleanQuery.contains("off") || cleanQuery.contains("disable") || cleanQuery.contains("stop") || cleanQuery.contains("deactivate") || cleanQuery.contains("turnoff")
             val isOn = cleanQuery.contains("on") || cleanQuery.contains("enable") || cleanQuery.contains("start") || cleanQuery.contains("activate") || cleanQuery.contains("turnon")
@@ -233,7 +241,7 @@ class AgentCore(
         }
 
         // F. Hotspot Controls
-        val isHotspotQuery = cleanQuery.contains("hotspot") || cleanQuery.contains("hot spot") || cleanQuery.contains("tethering") || cleanQuery.contains("tether")
+        val isHotspotQuery = cleanQuery.contains("hotspot") || cleanQuery.contains("hot spot") || cleanQuery.contains("tethering") || cleanQuery.contains("tether") || matchedIntent == "hotspot_toggle"
         if (isHotspotQuery) {
             _agentStatusFlow.emit("Toggling Hotspot...")
             val tool = ToolRegistry.get("system_control")
@@ -378,7 +386,7 @@ class AgentCore(
                 val result = tool.execute(JsonObject().apply {
                     addProperty("action", "lock_phone")
                 })
-                return if (result.success) result.data else result.error ?: "Failed to lock the screen."
+                return if (result.success) result.data else "Failed to lock the screen: ${result.data}"
             }
         }
 

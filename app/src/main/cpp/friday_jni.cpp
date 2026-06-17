@@ -133,6 +133,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_initLlama(JNIEnv *env, jobject
     // Load model
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = 99; // Offload all layers to Vulkan GPU if available
+    mparams.use_mlock = true;  // Lock model in RAM to prevent swapping/paging out
     llama_model *model = llama_load_model_from_file(path, mparams);
     env->ReleaseStringUTFChars(model_path, path);
     
@@ -149,8 +150,8 @@ Java_com_friday_assistant_core_native_LlamaEngine_initLlama(JNIEnv *env, jobject
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = 2048; // Context size
     cparams.n_batch = 512;
-    cparams.n_threads = 4;
-    cparams.n_threads_batch = 4;
+    cparams.n_threads = 5;
+    cparams.n_threads_batch = 5;
     
     llama_context *ctx = llama_new_context_with_model(model, cparams);
     if (ctx == nullptr) {
@@ -334,6 +335,55 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
     return env->NewStringUTF(response.c_str());
 }
 
+// Helper to extract the complete UTF-8 prefix and keep any incomplete trailing bytes
+static std::string extract_complete_utf8(std::string &buffer) {
+    if (buffer.empty()) return "";
+    
+    size_t len = buffer.length();
+    size_t last_start = len;
+    
+    // Find the last byte that is not a continuation byte (i.e. not starting with 10xxxxxx)
+    for (size_t i = len; i > 0; --i) {
+        unsigned char b = static_cast<unsigned char>(buffer[i - 1]);
+        if ((b & 0xC0) != 0x80) {
+            last_start = i - 1;
+            break;
+        }
+    }
+    
+    if (last_start == len) {
+        // All bytes in the buffer are continuation bytes
+        std::string res = buffer;
+        buffer.clear();
+        return res;
+    }
+    
+    unsigned char first_byte = static_cast<unsigned char>(buffer[last_start]);
+    size_t expected_len = 1;
+    if ((first_byte & 0x80) == 0) {
+        expected_len = 1;
+    } else if ((first_byte & 0xE0) == 0xC0) {
+        expected_len = 2;
+    } else if ((first_byte & 0xF0) == 0xE0) {
+        expected_len = 3;
+    } else if ((first_byte & 0xF8) == 0xF0) {
+        expected_len = 4;
+    }
+    
+    size_t actual_len = len - last_start;
+    if (actual_len < expected_len) {
+        // Incomplete character at the end
+        std::string complete_prefix = buffer.substr(0, last_start);
+        buffer = buffer.substr(last_start);
+        return complete_prefix;
+    } else {
+        // Complete character at the end
+        std::string complete_prefix = buffer;
+        buffer.clear();
+        return complete_prefix;
+    }
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
         JNIEnv *env, jobject thiz, jlong state_ptr, jstring prompt_str, jint max_tokens, jfloat temp, jobject callback) {
@@ -403,6 +453,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
     std::string response = "";
+    std::string utf8_buffer = "";
     int n_generated = 0;
     size_t current_pos = n_keep;
     size_t total_tokens = state->history_tokens.size();
@@ -450,15 +501,25 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
         char buf[128];
         int n_chars = llama_token_to_piece(vocab, id, buf, sizeof(buf), 0, true);
         if (n_chars > 0) {
-            std::string piece(buf, n_chars);
-            response.append(piece);
+            utf8_buffer.append(buf, n_chars);
+            response.append(buf, n_chars);
             
-            jstring jpiece = env->NewStringUTF(piece.c_str());
-            env->CallVoidMethod(callback, onTokenMethod, jpiece);
-            env->DeleteLocalRef(jpiece);
+            std::string complete_piece = extract_complete_utf8(utf8_buffer);
+            if (!complete_piece.empty()) {
+                jstring jpiece = env->NewStringUTF(complete_piece.c_str());
+                env->CallVoidMethod(callback, onTokenMethod, jpiece);
+                env->DeleteLocalRef(jpiece);
+            }
         }
 
         n_generated++;
+    }
+
+    // Flush any remaining trailing bytes
+    if (!utf8_buffer.empty()) {
+        jstring jpiece = env->NewStringUTF(utf8_buffer.c_str());
+        env->CallVoidMethod(callback, onTokenMethod, jpiece);
+        env->DeleteLocalRef(jpiece);
     }
 
     llama_sampler_free(smpl);

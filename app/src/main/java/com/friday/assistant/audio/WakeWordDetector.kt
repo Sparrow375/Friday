@@ -29,6 +29,7 @@ class WakeWordDetector(
     private val mainHandler = Handler(Looper.getMainLooper())
     private var speechRecognizer: SpeechRecognizer? = null
     private var isListeningEnabled = false
+    private var maxRmsSeen = -100f
 
     fun getWakeWord(): String {
         return sharedPrefs.getString(KEY_WAKEWORD, DEFAULT_WAKEWORD) ?: DEFAULT_WAKEWORD
@@ -61,6 +62,7 @@ class WakeWordDetector(
     private fun startRecognizerInternal() {
         if (!isListeningEnabled) return
         destroyRecognizer()
+        maxRmsSeen = -100f // Reset for the new session
 
         try {
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
@@ -71,9 +73,14 @@ class WakeWordDetector(
 
                     override fun onBeginningOfSpeech() {
                         Log.d(TAG, "Wake-word beginning of speech")
+                        maxRmsSeen = -100f
                     }
 
-                    override fun onRmsChanged(rmsdB: Float) {}
+                    override fun onRmsChanged(rmsdB: Float) {
+                        if (rmsdB > maxRmsSeen) {
+                            maxRmsSeen = rmsdB
+                        }
+                    }
 
                     override fun onBufferReceived(buffer: ByteArray?) {}
 
@@ -139,23 +146,62 @@ class WakeWordDetector(
 
     private fun checkMatchesForWakeWord(matches: ArrayList<String>?): Boolean {
         if (matches == null) return false
+        
+        // Gate: If the max RMS during the capture window was too low, it's silence or low static, so ignore
+        if (maxRmsSeen < 2.5f) {
+            Log.v(TAG, "Ignoring check: max RMS level too low ($maxRmsSeen)")
+            return false
+        }
+
         val targetWakeWord = getWakeWord().lowercase().trim()
         
-        // Phonetic variants
-        val variants = mutableSetOf(targetWakeWord, "friday", "fri day", "frida", "freeday", "free day")
+        // Target phonetics
+        val targetVariants = mutableSetOf(targetWakeWord, "friday", "frida", "freeday", "friyay")
         if (targetWakeWord != "friday") {
-            variants.add(targetWakeWord.replace(" ", ""))
+            targetVariants.add(targetWakeWord.replace(" ", ""))
         }
 
         for (match in matches) {
             val cleanMatch = match.lowercase().trim()
-            for (variant in variants) {
+            
+            // Check direct inclusion of target variants
+            for (variant in targetVariants) {
                 if (cleanMatch.contains(variant)) {
                     return true
                 }
             }
+
+            // Split into words and perform fuzzy levenshtein comparison
+            val words = cleanMatch.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            for (word in words) {
+                for (variant in targetVariants) {
+                    // Match if edit distance is small enough
+                    val maxDistance = if (variant.length <= 4) 1 else 2
+                    if (levenshteinDistance(word, variant) <= maxDistance) {
+                        Log.i(TAG, "Fuzzy match success: '$word' matched variant '$variant' (max RMS: $maxRmsSeen)")
+                        return true
+                    }
+                }
+            }
         }
         return false
+    }
+
+    private fun levenshteinDistance(s1: String, s2: String): Int {
+        val dp = IntArray(s2.length + 1) { it }
+        for (i in 1..s1.length) {
+            var prev = i
+            for (j in 1..s2.length) {
+                val temp = dp[j]
+                dp[j] = if (s1[i - 1] == s2[j - 1]) {
+                    dp[j - 1]
+                } else {
+                    1 + minOf(dp[j - 1], dp[j], prev)
+                }
+                prev = temp
+            }
+        }
+        return dp[s2.length]
     }
 
     private fun triggerWakeWord() {

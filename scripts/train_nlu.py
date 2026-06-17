@@ -14,8 +14,14 @@ from torch.utils.data import Dataset, DataLoader
 # Note: In a full environment, you would install HuggingFace transformers, optimum, and onnxruntime:
 # pip install transformers onnx onnxruntime optuna
 
-# 1. Custom Dataset & Intent Schema definition
-INTENT_LABELS = ["volume_up", "volume_down", "lock_phone", "search_reddit", "open_app", "unknown"]
+# 1. Custom Intent Schema definition
+INTENT_LABELS = [
+    "volume_up", "volume_down", "brightness_up", "brightness_down", 
+    "torch_toggle", "torch_strength", "lock_phone", "open_app", 
+    "navigate_to", "set_alarm", "set_timer", "send_whatsapp", 
+    "play_media", "power_saver_toggle", "screencast_toggle",
+    "wifi_toggle", "bluetooth_toggle", "hotspot_toggle", "unknown"
+]
 INTENT_TO_ID = {intent: i for i, intent in enumerate(INTENT_LABELS)}
 
 # Pre-packaged training samples
@@ -34,6 +40,30 @@ TRAINING_DATA = [
     ("make it quieter", "volume_down"),
     ("turn down the sound", "volume_down"),
     ("mute volume", "volume_down"),
+    # brightness_up
+    ("increase brightness", "brightness_up"),
+    ("make screen brighter", "brightness_up"),
+    ("raise brightness", "brightness_up"),
+    ("screen is too dim", "brightness_up"),
+    ("set brightness to maximum", "brightness_up"),
+    # brightness_down
+    ("decrease brightness", "brightness_down"),
+    ("make screen dimmer", "brightness_down"),
+    ("lower screen brightness", "brightness_down"),
+    ("dim the screen", "brightness_down"),
+    ("brightness to low", "brightness_down"),
+    # torch_toggle
+    ("turn on flashlight", "torch_toggle"),
+    ("flashlight off", "torch_toggle"),
+    ("torch on", "torch_toggle"),
+    ("disable flashlight", "torch_toggle"),
+    ("toggle torch", "torch_toggle"),
+    # torch_strength
+    ("set flashlight strength to maximum", "torch_strength"),
+    ("dim torch to fifty percent", "torch_strength"),
+    ("torch brightness low", "torch_strength"),
+    ("maximum flashlight brightness", "torch_strength"),
+    ("change torch strength", "torch_strength"),
     # lock_phone
     ("lock the phone", "lock_phone"),
     ("lock my screen", "lock_phone"),
@@ -41,18 +71,67 @@ TRAINING_DATA = [
     ("lock screen", "lock_phone"),
     ("please lock my phone", "lock_phone"),
     ("turn off screen", "lock_phone"),
-    # search_reddit
-    ("search space x on reddit", "search_reddit"),
-    ("search movies on reddit", "search_reddit"),
-    ("look up cooking tips on reddit", "search_reddit"),
-    ("find dynamic animations on reddit", "search_reddit"),
-    ("reddit search for kotlin programming", "search_reddit"),
     # open_app
     ("open brave", "open_app"),
     ("open spotify", "open_app"),
     ("launch whatsapp", "open_app"),
     ("start gmail app", "open_app"),
     ("open the settings dashboard", "open_app"),
+    ("launch settings", "open_app"),
+    # navigate_to
+    ("navigate to new york", "navigate_to"),
+    ("directions to san francisco", "navigate_to"),
+    ("drive to starbucks", "navigate_to"),
+    ("show route to the airport", "navigate_to"),
+    ("go to central park", "navigate_to"),
+    # set_alarm
+    ("set alarm for seven am", "set_alarm"),
+    ("wake me up at six thirty", "set_alarm"),
+    ("create alarm for noon", "set_alarm"),
+    ("alarm for tomorrow at eight", "set_alarm"),
+    # set_timer
+    ("set timer for five minutes", "set_timer"),
+    ("countdown for ten seconds", "set_timer"),
+    ("timer for two hours", "set_timer"),
+    ("start a timer", "set_timer"),
+    # send_whatsapp
+    ("send message to dad on whatsapp", "send_whatsapp"),
+    ("whatsapp mom saying i am running late", "send_whatsapp"),
+    ("text brother via whatsapp", "send_whatsapp"),
+    ("send whatsapp message to friend", "send_whatsapp"),
+    # play_media
+    ("play some music on spotify", "play_media"),
+    ("listen to beatles", "play_media"),
+    ("start playing pop songs", "play_media"),
+    ("play song", "play_media"),
+    # power_saver_toggle
+    ("enable battery saver", "power_saver_toggle"),
+    ("turn off power saver", "power_saver_toggle"),
+    ("battery saver on", "power_saver_toggle"),
+    ("power saving mode", "power_saver_toggle"),
+    # screencast_toggle
+    ("start screen cast", "screencast_toggle"),
+    ("stop screen mirroring", "screencast_toggle"),
+    ("smart view on", "screencast_toggle"),
+    ("enable screen mirroring", "screencast_toggle"),
+    # wifi_toggle
+    ("turn on wifi", "wifi_toggle"),
+    ("disable wifi", "wifi_toggle"),
+    ("enable wireless internet", "wifi_toggle"),
+    ("switch off the wifi", "wifi_toggle"),
+    ("wifi on", "wifi_toggle"),
+    # bluetooth_toggle
+    ("turn on bluetooth", "bluetooth_toggle"),
+    ("disable bluetooth", "bluetooth_toggle"),
+    ("enable bluetooth connection", "bluetooth_toggle"),
+    ("switch off bluetooth receiver", "bluetooth_toggle"),
+    ("bluetooth on", "bluetooth_toggle"),
+    # hotspot_toggle
+    ("turn on mobile hotspot", "hotspot_toggle"),
+    ("disable internet sharing", "hotspot_toggle"),
+    ("enable personal hotspot", "hotspot_toggle"),
+    ("switch off portable hotspot", "hotspot_toggle"),
+    ("hotspot on", "hotspot_toggle"),
     # unknown
     ("what is the weather today", "unknown"),
     ("who is the president of france", "unknown"),
@@ -116,6 +195,13 @@ def train_model():
         for word, _ in sorted_vocab:
             f.write(word + "\n")
     print(f"Saved vocabulary to: {vocab_path}")
+
+    # Save labels.txt directly for dynamic label mapping in Android
+    labels_path = os.path.join("output", "labels.txt")
+    with open(labels_path, "w", encoding="utf-8") as f:
+        for label in INTENT_LABELS:
+            f.write(label + "\n")
+    print(f"Saved labels mapping to: {labels_path}")
 
     # Build datasets
     dataset = IntentDataset(TRAINING_DATA, tokenizer)
