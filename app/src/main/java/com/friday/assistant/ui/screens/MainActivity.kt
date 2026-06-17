@@ -101,10 +101,6 @@ class MainActivity : ComponentActivity() {
         val context = LocalContext.current
         val scrollState = rememberScrollState()
 
-        val permissionLauncher = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.RequestMultiplePermissions()
-        ) { _ -> }
-
         // Core Permission statuses
         var hasMicPermission by remember { mutableStateOf(checkPermission(Manifest.permission.RECORD_AUDIO)) }
         var hasNotificationPermission by remember { 
@@ -166,6 +162,20 @@ class MainActivity : ComponentActivity() {
         var copyingProgress by remember { mutableStateOf(-1f) }
         var copyingFileName by remember { mutableStateOf("") }
 
+        // Permission request launcher
+        val permissionLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+            val micGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: hasMicPermission
+            hasMicPermission = micGranted
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                hasNotificationPermission = permissions[Manifest.permission.POST_NOTIFICATIONS] ?: hasNotificationPermission
+            }
+            hasLocationPermission = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: hasLocationPermission
+            hasContactsPermission = permissions[Manifest.permission.READ_CONTACTS] ?: hasContactsPermission
+            hasPhonePermission = permissions[Manifest.permission.CALL_PHONE] ?: hasPhonePermission
+        }
+
         // Refresh wake word default text on start
         LaunchedEffect(Unit) {
             val prefs = context.getSharedPreferences("friday_wakeword_prefs", Context.MODE_PRIVATE)
@@ -224,19 +234,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Permission request launcher
-        val permissionLauncher = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.RequestMultiplePermissions()
-        ) { permissions ->
-            val micGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: hasMicPermission
-            hasMicPermission = micGranted
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                hasNotificationPermission = permissions[Manifest.permission.POST_NOTIFICATIONS] ?: hasNotificationPermission
-            }
-            hasLocationPermission = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: hasLocationPermission
-            hasContactsPermission = permissions[Manifest.permission.READ_CONTACTS] ?: hasContactsPermission
-            hasPhonePermission = permissions[Manifest.permission.CALL_PHONE] ?: hasPhonePermission
-        }
+
 
         // LLF GGUF File Picker launcher
         val filePickerLauncher = rememberLauncherForActivityResult(
