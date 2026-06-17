@@ -230,6 +230,16 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
     }
     LOGI("Tokenization complete. Prompt tokens count: %d", (int)prompt_tokens.size());
 
+    // Context overflow guard: if prompt already fills n_ctx, clear cache and start fresh
+    const int n_ctx_max = llama_n_ctx(state->ctx);
+    if ((int)prompt_tokens.size() >= n_ctx_max - 32) {
+        LOGI("Prompt (%d tokens) fills context (%d). Clearing KV cache and resetting history.",
+             (int)prompt_tokens.size(), n_ctx_max);
+        llama_memory_t kv = llama_get_memory(state->ctx);
+        llama_memory_clear(kv, true);
+        state->history_tokens.clear();
+    }
+
     // Find longest common prefix between incoming prompt and existing cache
     size_t n_keep = 0;
     while (n_keep < state->history_tokens.size() &&
@@ -274,6 +284,9 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
     llama_sampler_chain_add(smpl, llama_sampler_init_temp(temp));
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
+    // Track where the prompt ends so we can trim generated tokens after inference
+    size_t prompt_end_pos = state->history_tokens.size();
+
     std::string response = "";
     int n_generated = 0;
     size_t current_pos = n_keep;
@@ -302,9 +315,13 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
 
         int decode_res = llama_decode(state->ctx, batch);
         if (decode_res != 0) {
-            LOGE("Llama decode failed with status %d", decode_res);
+            LOGE("Llama decode failed with status %d — resetting KV cache and history for clean next call", decode_res);
             llama_batch_free(batch);
             llama_sampler_free(smpl);
+            // Reset state so the next call doesn't inherit a corrupted position
+            state->history_tokens.clear();
+            llama_memory_t kv = llama_get_memory(state->ctx);
+            llama_memory_clear(kv, true);
             return env->NewStringUTF("Error: Decode failed");
         }
 
@@ -332,6 +349,12 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
 
         n_generated++;
     }
+
+    // Trim history back to prompt-only boundary — generated tokens should NOT be kept
+    // in history_tokens because they were never re-evaluated by the KV cache on the next call.
+    // The KV cache itself retains the positional state; history_tokens is only used for
+    // prefix matching on the NEXT call's prompt, not for tracking generated output.
+    state->history_tokens.resize(prompt_end_pos);
 
     llama_sampler_free(smpl);
     return env->NewStringUTF(response.c_str());
@@ -454,6 +477,9 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
     llama_sampler_chain_add(smpl, llama_sampler_init_temp(temp));
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
+    // Track where the prompt ends so we can trim generated tokens after inference
+    size_t prompt_end_pos = state->history_tokens.size();
+
     std::string response = "";
     std::string utf8_buffer = "";
     int n_generated = 0;
@@ -482,9 +508,13 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
 
         int decode_res = llama_decode(state->ctx, batch);
         if (decode_res != 0) {
-            LOGE("Llama decode failed with status %d", decode_res);
+            LOGE("Llama decode failed with status %d — resetting KV cache and history for clean next call", decode_res);
             llama_batch_free(batch);
             llama_sampler_free(smpl);
+            // Reset state so the next call doesn't inherit a corrupted position
+            state->history_tokens.clear();
+            llama_memory_t kv = llama_get_memory(state->ctx);
+            llama_memory_clear(kv, true);
             return env->NewStringUTF("Error: Decode failed");
         }
 
@@ -523,6 +553,12 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
         env->CallVoidMethod(callback, onTokenMethod, jpiece);
         env->DeleteLocalRef(jpiece);
     }
+
+    // Trim history back to prompt-only boundary — generated tokens should NOT be kept
+    // in history_tokens because they were never re-evaluated by the KV cache on the next call.
+    // The KV cache itself retains the positional state; history_tokens is only used for
+    // prefix matching on the NEXT call's prompt, not for tracking generated output.
+    state->history_tokens.resize(prompt_end_pos);
 
     llama_sampler_free(smpl);
     return env->NewStringUTF(response.c_str());

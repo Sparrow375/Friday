@@ -273,7 +273,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         if (pipelineState.value == PipelineState.IDLE) {
             com.friday.assistant.core.FridayLogger.d(TAG, "Starting background wake-word listening")
-            requestAudioFocus(exclusive = false)  // MAY_DUCK: media lowers volume slightly but doesn't stop
+            // Note: do NOT request audio focus here — SpeechRecognizer manages its own audio session.
+            // Requesting focus during passive listening causes media apps (YouTube, Spotify) to pause.
             wakeWordDetector?.startListening()
         }
     }
@@ -281,7 +282,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     private fun stopWakeWordListening() {
         com.friday.assistant.core.FridayLogger.d(TAG, "Stopping background wake-word listening")
         wakeWordDetector?.stopListening()
-        abandonAudioFocus()
+        // Note: no audio focus to abandon — we never requested it for wake-word listening
     }
 
     private suspend fun onWakeWordTriggered() {
@@ -410,9 +411,16 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 )
                 .setAcceptsDelayedFocusGain(false)
                 .setOnAudioFocusChangeListener { focusChange ->
-                    if (focusChange == AudioManager.AUDIOFOCUS_LOSS) {
-                        com.friday.assistant.core.FridayLogger.d(TAG, "Audio focus lost permanently — transitioning to IDLE")
-                        serviceScope.launch { transitionToState(PipelineState.IDLE) }
+                    // Only stop TTS if we lose focus while actively speaking.
+                    // Do NOT transition to IDLE on general focus loss — that creates a loop with media apps.
+                    if (focusChange == AudioManager.AUDIOFOCUS_LOSS && pipelineState.value == PipelineState.SPEAKING) {
+                        com.friday.assistant.core.FridayLogger.d(TAG, "Audio focus lost during TTS — stopping speech")
+                        serviceScope.launch {
+                            tts?.stop()
+                            transitionToState(PipelineState.IDLE)
+                        }
+                    } else {
+                        com.friday.assistant.core.FridayLogger.d(TAG, "Audio focus change: $focusChange (state=${pipelineState.value}) — ignoring")
                     }
                 }
                 .build()
