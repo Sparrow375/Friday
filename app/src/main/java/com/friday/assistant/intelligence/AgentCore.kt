@@ -677,7 +677,8 @@ class AgentCore(
                 }
             }
             _agentStatusFlow.emit("Thinking...")
-            val currentPrompt = promptBuilder.buildPrompt(userInput)
+            // Use minimal prompt for conversational fallback — NLU has already ruled out all tool intents
+            val currentPrompt = promptBuilder.buildMinimalPrompt(userInput)
             val response = llamaEngine.generateStream(currentPrompt, maxTokens = 128, temp = 0.7f, callback = object : LlamaEngine.TokenCallback {
                 override fun onToken(token: String) {
                     onToken(token)

@@ -43,67 +43,11 @@ class SpeechToTextHelper(
             Log.i(TAG, "Starting native speech recognizer")
 
             try {
-                destroyRecognizer() // Always recreate to prevent stale client side state crashes
-
-                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-                    setRecognitionListener(object : RecognitionListener {
-                        override fun onReadyForSpeech(params: Bundle?) {
-                            Log.d(TAG, "Speech recognizer ready")
-                            isListening = true
-                            onStateChanged(PipelineState.LISTENING)
-                        }
-
-                        override fun onBeginningOfSpeech() {
-                            Log.d(TAG, "Beginning of speech")
-                        }
-
-                        override fun onRmsChanged(rmsdB: Float) {
-                            val normalized = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
-                            onRmsUpdate(normalized)
-                        }
-
-                        override fun onBufferReceived(buffer: ByteArray?) {}
-
-                        override fun onEndOfSpeech() {
-                            Log.d(TAG, "End of speech detected")
-                            onStateChanged(PipelineState.PROCESSING)
-                        }
-
-                        override fun onError(error: Int) {
-                            val message = getErrorMessage(error)
-                            Log.e(TAG, "Speech recognition error: $message")
-                            mainHandler.post {
-                                destroyRecognizer()
-                                onStateChanged(PipelineState.IDLE)
-                                onTranscriptUpdate("")
-                            }
-                        }
-
-                        override fun onResults(results: Bundle?) {
-                            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            val finalResultText = matches?.firstOrNull() ?: ""
-                            mainHandler.post {
-                                destroyRecognizer()
-                                if (finalResultText.isNotBlank()) {
-                                    Log.i(TAG, "Speech recognition final result: '$finalResultText'")
-                                    onFinalResult(finalResultText)
-                                } else {
-                                    onStateChanged(PipelineState.IDLE)
-                                }
-                            }
-                        }
-
-                        override fun onPartialResults(partialResults: Bundle?) {
-                            val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            if (!matches.isNullOrEmpty()) {
-                                val text = matches[0]
-                                Log.d(TAG, "Speech recognition partial result: '$text'")
-                                onTranscriptUpdate(text)
-                            }
-                        }
-
-                        override fun onEvent(eventType: Int, params: Bundle?) {}
-                    })
+                // Only create a new recognizer if one doesn't exist — avoid expensive IPC rebind
+                if (speechRecognizer == null) {
+                    speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                        setRecognitionListener(buildRecognitionListener())
+                    }
                 }
 
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -124,6 +68,74 @@ class SpeechToTextHelper(
                 onStateChanged(PipelineState.IDLE)
             }
         }
+    }
+
+    private fun buildRecognitionListener() = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) {
+            Log.d(TAG, "Speech recognizer ready")
+            isListening = true
+            onStateChanged(PipelineState.LISTENING)
+        }
+
+        override fun onBeginningOfSpeech() {
+            Log.d(TAG, "Beginning of speech")
+        }
+
+        override fun onRmsChanged(rmsdB: Float) {
+            val normalized = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
+            onRmsUpdate(normalized)
+        }
+
+        override fun onBufferReceived(buffer: ByteArray?) {}
+
+        override fun onEndOfSpeech() {
+            Log.d(TAG, "End of speech detected")
+            onStateChanged(PipelineState.PROCESSING)
+        }
+
+        override fun onError(error: Int) {
+            val message = getErrorMessage(error)
+            Log.e(TAG, "Speech recognition error: $message ($error)")
+            mainHandler.post {
+                isListening = false
+                // Hard errors require full recognizer reset; soft errors just reset state
+                val isHardError = error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
+                                  error == SpeechRecognizer.ERROR_CLIENT ||
+                                  error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS
+                if (isHardError) {
+                    destroyRecognizer() // Full IPC rebind only when truly needed
+                } else {
+                    isListening = false
+                }
+                onStateChanged(PipelineState.IDLE)
+                onTranscriptUpdate("")
+            }
+        }
+
+        override fun onResults(results: Bundle?) {
+            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+            val finalResultText = matches?.firstOrNull() ?: ""
+            mainHandler.post {
+                isListening = false
+                if (finalResultText.isNotBlank()) {
+                    Log.i(TAG, "Speech recognition final result: '$finalResultText'")
+                    onFinalResult(finalResultText)
+                } else {
+                    onStateChanged(PipelineState.IDLE)
+                }
+            }
+        }
+
+        override fun onPartialResults(partialResults: Bundle?) {
+            val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+            if (!matches.isNullOrEmpty()) {
+                val text = matches[0]
+                Log.d(TAG, "Speech recognition partial result: '$text'")
+                onTranscriptUpdate(text)
+            }
+        }
+
+        override fun onEvent(eventType: Int, params: Bundle?) {}
     }
 
     fun stopListening() {

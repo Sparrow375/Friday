@@ -132,8 +132,9 @@ Java_com_friday_assistant_core_native_LlamaEngine_initLlama(JNIEnv *env, jobject
     
     // Load model
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 99; // Offload all layers to Vulkan GPU if available
-    mparams.use_mlock = true;  // Lock model in RAM to prevent swapping/paging out
+    mparams.n_gpu_layers = 0;     // Vulkan is OFF in CMakeLists.txt; setting 99 caused silent CPU fallback overhead
+    mparams.use_mlock = true;     // Lock model in RAM to prevent OS eviction
+    mparams.use_mmap = false;     // Disable mmap: force full RAM load, eliminate page faults during generation
     llama_model *model = llama_load_model_from_file(path, mparams);
     env->ReleaseStringUTFChars(model_path, path);
     
@@ -148,10 +149,11 @@ Java_com_friday_assistant_core_native_LlamaEngine_initLlama(JNIEnv *env, jobject
 
     // Create context
     llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx = 2048; // Context size
+    cparams.n_ctx = 512;   // Voice assistant never needs more than 512 tokens of context
     cparams.n_batch = 512;
-    cparams.n_threads = 5;
-    cparams.n_threads_batch = 5;
+    cparams.n_threads = 4; // S24 has exactly 4 performance cores (4-7)
+    cparams.n_threads_batch = 4;
+    cparams.flash_attn = true; // Flash Attention: major CPU attention speedup
     
     llama_context *ctx = llama_new_context_with_model(model, cparams);
     if (ctx == nullptr) {

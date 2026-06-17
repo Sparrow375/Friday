@@ -39,13 +39,37 @@ $memorySummary
         prompt.append("<|im_start|>system\n").append(fullSystemInstruction).append("<|im_end|>\n")
 
         // 4. Append Working Memory Chat History
-        val history = memoryManager.getWorkingMemory()
+        val history = memoryManager.getWorkingMemory().takeLast(8)
         history.forEach { msg ->
             prompt.append("<|im_start|>").append(msg.role).append("\n")
                 .append(msg.content).append("<|im_end|>\n")
         }
 
         // 5. Append current User Input
+        prompt.append("<|im_start|>user\n").append(userInput).append("<|im_end|>\n")
+        prompt.append("<|im_start|>assistant\n")
+
+        return prompt.toString()
+    }
+
+    /**
+     * Minimal prompt for conversational fallback — no device context, last 4 turns only.
+     * Used when NLU has already ruled out all tool intents and we just need a chat response.
+     * Reduces average prompt from ~350 tokens to under 150 tokens.
+     */
+    suspend fun buildMinimalPrompt(userInput: String): String {
+        val prompt = StringBuilder()
+        prompt.append("<|im_start|>system\n")
+        prompt.append(SYSTEM_INSTRUCTION.trim())
+        prompt.append("<|im_end|>\n")
+
+        // Only include last 4 turns of history (8 messages: 4 user + 4 assistant)
+        val history = memoryManager.getWorkingMemory().takeLast(8)
+        history.forEach { msg ->
+            prompt.append("<|im_start|>").append(msg.role).append("\n")
+                .append(msg.content).append("<|im_end|>\n")
+        }
+
         prompt.append("<|im_start|>user\n").append(userInput).append("<|im_end|>\n")
         prompt.append("<|im_start|>assistant\n")
 

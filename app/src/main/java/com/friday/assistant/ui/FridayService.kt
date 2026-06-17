@@ -4,6 +4,9 @@ import android.service.voice.VoiceInteractionService
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.os.Build
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -80,12 +83,18 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = null
     private var isTtsInitialized = false
 
+    // Audio focus management
+    private lateinit var audioManager: AudioManager
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var hasAudioFocus = false
+
     val pipelineState = MutableStateFlow(PipelineState.IDLE)
 
     override fun onCreate() {
         super.onCreate()
         com.friday.assistant.core.FridayLogger.i(TAG, "FridayService onCreate")
         instance = this
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
         // 1. Initialize core logic components
         modelManager = ModelManager(this)
@@ -219,6 +228,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             overlayManager?.updateState(newState, status, trans = transcriptText, resp = responseText)
             
             if (newState == PipelineState.IDLE) {
+                abandonAudioFocus()
                 overlayManager?.updateAmplitude(0f)
                 speechToTextHelper.destroy()
                 
@@ -263,6 +273,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         if (pipelineState.value == PipelineState.IDLE) {
             com.friday.assistant.core.FridayLogger.d(TAG, "Starting background wake-word listening")
+            requestAudioFocus(exclusive = false)  // MAY_DUCK: media lowers volume slightly but doesn't stop
             wakeWordDetector?.startListening()
         }
     }
@@ -270,6 +281,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     private fun stopWakeWordListening() {
         com.friday.assistant.core.FridayLogger.d(TAG, "Stopping background wake-word listening")
         wakeWordDetector?.stopListening()
+        abandonAudioFocus()
     }
 
     private suspend fun onWakeWordTriggered() {
@@ -363,6 +375,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         if (isFirst) {
             transitionToState(PipelineState.SPEAKING, responseText = fullResponseText)
+            requestAudioFocus(exclusive = true)  // Full exclusive focus while TTS is speaking
             tts?.speak(cleanedChunk, TextToSpeech.QUEUE_FLUSH, null, "${UTTERANCE_ID}_0")
         } else {
             overlayManager?.updateState(PipelineState.SPEAKING, "Speaking...", resp = fullResponseText)
@@ -378,10 +391,48 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         }
 
         transitionToState(PipelineState.SPEAKING, responseText = response)
+        requestAudioFocus(exclusive = true)
         tts?.speak(response, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID)
     }
 
     private val UTTERANCE_ID = "friday_tts_utterance"
+
+    private fun requestAudioFocus(exclusive: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val focusType = if (exclusive) AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
+                            else AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+            val req = AudioFocusRequest.Builder(focusType)
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setAcceptsDelayedFocusGain(false)
+                .setOnAudioFocusChangeListener { focusChange ->
+                    if (focusChange == AudioManager.AUDIOFOCUS_LOSS) {
+                        com.friday.assistant.core.FridayLogger.d(TAG, "Audio focus lost permanently — transitioning to IDLE")
+                        serviceScope.launch { transitionToState(PipelineState.IDLE) }
+                    }
+                }
+                .build()
+            val result = audioManager.requestAudioFocus(req)
+            hasAudioFocus = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
+            audioFocusRequest = req
+            com.friday.assistant.core.FridayLogger.d(TAG, "Audio focus requested (exclusive=$exclusive), granted=$hasAudioFocus")
+        }
+    }
+
+    private fun abandonAudioFocus() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let {
+                audioManager.abandonAudioFocusRequest(it)
+                audioFocusRequest = null
+            }
+            hasAudioFocus = false
+            com.friday.assistant.core.FridayLogger.d(TAG, "Audio focus abandoned")
+        }
+    }
 
     // ==========================================
     // TTS Callbacks
@@ -424,7 +475,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         com.friday.assistant.core.FridayLogger.i(TAG, "FridayService destroyed")
         instance = null
 
-        stopWakeWordListening()
+        wakeWordDetector?.shutdown()
         speechToTextHelper.destroy()
         overlayManager?.dismiss()
         tts?.shutdown()

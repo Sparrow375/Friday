@@ -55,93 +55,107 @@ class WakeWordDetector(
             if (!isListeningEnabled) return@post
             Log.i(TAG, "Stopping wake-word continuous listening")
             isListeningEnabled = false
-            destroyRecognizer()
+            try {
+                speechRecognizer?.cancel()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error cancelling wake-word recognizer", e)
+                destroyRecognizer()
+            }
         }
+    }
+
+    fun shutdown() {
+        isListeningEnabled = false
+        mainHandler.post { destroyRecognizer() }
     }
 
     private fun startRecognizerInternal() {
         if (!isListeningEnabled) return
-        destroyRecognizer()
-        maxRmsSeen = -100f // Reset for the new session
+        maxRmsSeen = -100f
+
+        // Reuse existing recognizer if healthy; only create new one if null
+        if (speechRecognizer == null) {
+            try {
+                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                    setRecognitionListener(buildWakeWordListener())
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to create wake-word speech recognizer", e)
+                mainHandler.postDelayed({ if (isListeningEnabled) startRecognizerInternal() }, 500)
+                return
+            }
+        }
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+        }
 
         try {
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-                setRecognitionListener(object : RecognitionListener {
-                    override fun onReadyForSpeech(params: Bundle?) {
-                        Log.d(TAG, "Wake-word recognizer ready")
-                    }
-
-                    override fun onBeginningOfSpeech() {
-                        Log.d(TAG, "Wake-word beginning of speech")
-                        maxRmsSeen = -100f
-                    }
-
-                    override fun onRmsChanged(rmsdB: Float) {
-                        if (rmsdB > maxRmsSeen) {
-                            maxRmsSeen = rmsdB
-                        }
-                    }
-
-                    override fun onBufferReceived(buffer: ByteArray?) {}
-
-                    override fun onEndOfSpeech() {
-                        Log.d(TAG, "Wake-word end of speech")
-                    }
-
-                    override fun onError(error: Int) {
-                        val msg = getErrorMessage(error)
-                        Log.d(TAG, "Wake-word recognizer error: $msg ($error)")
-                        
-                        // Restart listening after a short delay if enabled
-                        mainHandler.postDelayed({
-                            if (isListeningEnabled) {
-                                startRecognizerInternal()
-                            }
-                        }, 250)
-                    }
-
-                    override fun onResults(results: Bundle?) {
-                        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        if (checkMatchesForWakeWord(matches)) {
-                            Log.i(TAG, "Wake word detected in onResults!")
-                            triggerWakeWord()
-                        } else {
-                            // Restart listening
-                            mainHandler.postDelayed({
-                                if (isListeningEnabled) {
-                                    startRecognizerInternal()
-                                }
-                            }, 150)
-                        }
-                    }
-
-                    override fun onPartialResults(partialResults: Bundle?) {
-                        val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        if (checkMatchesForWakeWord(matches)) {
-                            Log.i(TAG, "Wake word detected in onPartialResults!")
-                            triggerWakeWord()
-                        }
-                    }
-
-                    override fun onEvent(eventType: Int, params: Bundle?) {}
-                })
-            }
-
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-            }
-
             speechRecognizer?.startListening(intent)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start wake-word speech recognizer", e)
-            mainHandler.postDelayed({
-                if (isListeningEnabled) {
-                    startRecognizerInternal()
-                }
-            }, 500)
+            Log.e(TAG, "Failed to start wake-word listening", e)
+            destroyRecognizer()
+            mainHandler.postDelayed({ if (isListeningEnabled) startRecognizerInternal() }, 500)
         }
+    }
+
+    private fun buildWakeWordListener() = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) {
+            Log.d(TAG, "Wake-word recognizer ready")
+        }
+
+        override fun onBeginningOfSpeech() {
+            Log.d(TAG, "Wake-word beginning of speech")
+            maxRmsSeen = -100f
+        }
+
+        override fun onRmsChanged(rmsdB: Float) {
+            if (rmsdB > maxRmsSeen) maxRmsSeen = rmsdB
+        }
+
+        override fun onBufferReceived(buffer: ByteArray?) {}
+
+        override fun onEndOfSpeech() {
+            Log.d(TAG, "Wake-word end of speech")
+        }
+
+        override fun onError(error: Int) {
+            val msg = getErrorMessage(error)
+            Log.d(TAG, "Wake-word recognizer error: $msg ($error)")
+            val isHardError = error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
+                              error == SpeechRecognizer.ERROR_CLIENT ||
+                              error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS
+            if (isHardError) {
+                destroyRecognizer() // Force full rebind only on hard errors
+            }
+            mainHandler.postDelayed({
+                if (isListeningEnabled) startRecognizerInternal()
+            }, if (isHardError) 500L else 250L)
+        }
+
+        override fun onResults(results: Bundle?) {
+            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+            if (checkMatchesForWakeWord(matches)) {
+                Log.i(TAG, "Wake word detected in onResults!")
+                triggerWakeWord()
+            } else {
+                mainHandler.postDelayed({
+                    if (isListeningEnabled) startRecognizerInternal()
+                }, 150)
+            }
+        }
+
+        override fun onPartialResults(partialResults: Bundle?) {
+            val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+            if (checkMatchesForWakeWord(matches)) {
+                Log.i(TAG, "Wake word detected in onPartialResults!")
+                triggerWakeWord()
+            }
+        }
+
+        override fun onEvent(eventType: Int, params: Bundle?) {}
     }
 
     private fun checkMatchesForWakeWord(matches: ArrayList<String>?): Boolean {
