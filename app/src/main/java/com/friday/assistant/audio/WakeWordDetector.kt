@@ -2,6 +2,7 @@ package com.friday.assistant.audio
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -76,7 +77,19 @@ class WakeWordDetector(
         // Reuse existing recognizer if healthy; only create new one if null
         if (speechRecognizer == null) {
             try {
-                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                // Use on-device recognizer to avoid requesting foreground audio focus.
+                // Standard SpeechRecognizer internally claims AUDIOFOCUS_GAIN which causes
+                // media apps to pause every time the recognizer restarts (~5s cycle).
+                // On-device recognizer uses a background audio path with no focus impact.
+                val useOnDevice = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                  SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+                speechRecognizer = if (useOnDevice) {
+                    Log.i(TAG, "Using on-device speech recognizer for wake-word (no audio focus impact)")
+                    SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+                } else {
+                    Log.i(TAG, "On-device recognizer unavailable, falling back to standard recognizer")
+                    SpeechRecognizer.createSpeechRecognizer(context)
+                }.apply {
                     setRecognitionListener(buildWakeWordListener())
                 }
             } catch (e: Exception) {
@@ -90,6 +103,8 @@ class WakeWordDetector(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+            // Prefer offline/on-device recognition to avoid network calls and audio focus conflicts
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         }
 
         try {
