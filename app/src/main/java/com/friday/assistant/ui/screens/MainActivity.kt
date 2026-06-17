@@ -115,6 +115,9 @@ class MainActivity : ComponentActivity() {
         var hasOverlayPermission by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
         var hasAssistantRole by remember { mutableStateOf(isDefaultAssistant()) }
         var hasWriteSettingsPermission by remember { mutableStateOf(Settings.System.canWrite(context)) }
+        var assistantEnabled by remember {
+            mutableStateOf(context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("assistant_enabled", true))
+        }
 
         var useLlm by remember { 
             mutableStateOf(context.getSharedPreferences("friday_model_prefs", Context.MODE_PRIVATE).getBoolean("use_llm", true)) 
@@ -127,6 +130,15 @@ class MainActivity : ComponentActivity() {
         var hasLocationPermission by remember { mutableStateOf(checkPermission(Manifest.permission.ACCESS_FINE_LOCATION)) }
         var hasContactsPermission by remember { mutableStateOf(checkPermission(Manifest.permission.READ_CONTACTS)) }
         var hasPhonePermission by remember { mutableStateOf(checkPermission(Manifest.permission.CALL_PHONE)) }
+        var hasDeviceAdmin by remember {
+            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
+            val adminComp = android.content.ComponentName(context, com.friday.assistant.core.FridayDeviceAdminReceiver::class.java)
+            mutableStateOf(dpm.isAdminActive(adminComp))
+        }
+        var hasDndPermission by remember {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            mutableStateOf(nm.isNotificationPolicyAccessGranted)
+        }
 
         // Model statuses
         var whisperLoaded by remember { mutableStateOf(modelManager.isWhisperLoaded()) }
@@ -153,6 +165,19 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(Unit) {
             val prefs = context.getSharedPreferences("friday_wakeword_prefs", Context.MODE_PRIVATE)
             customWakeWord = prefs.getString("custom_wakeword", "friday") ?: "friday"
+
+            // Request normal permissions at startup
+            val list = mutableListOf(
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.READ_CONTACTS,
+                Manifest.permission.CALL_PHONE,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                list.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            permissionLauncher.launch(list.toTypedArray())
         }
 
         // Periodically refresh permission states
@@ -171,7 +196,16 @@ class MainActivity : ComponentActivity() {
                 hasLocationPermission = checkPermission(Manifest.permission.ACCESS_FINE_LOCATION)
                 hasContactsPermission = checkPermission(Manifest.permission.READ_CONTACTS)
                 hasPhonePermission = checkPermission(Manifest.permission.CALL_PHONE)
+
+                val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
+                val adminComp = android.content.ComponentName(context, com.friday.assistant.core.FridayDeviceAdminReceiver::class.java)
+                hasDeviceAdmin = dpm.isAdminActive(adminComp)
+
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                hasDndPermission = nm.isNotificationPolicyAccessGranted
                 
+                assistantEnabled = context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("assistant_enabled", true)
+
                 // Also update model loading status
                 whisperLoaded = modelManager.isWhisperLoaded()
                 llmLoaded = modelManager.isLlmLoaded()
@@ -356,6 +390,54 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = SlateGray)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Enable Assistant",
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Toggle background wake-word listening and overlays",
+                            color = SilverText,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                    Switch(
+                        checked = assistantEnabled,
+                        onCheckedChange = { checked ->
+                            assistantEnabled = checked
+                            context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                                .edit().putBoolean("assistant_enabled", checked).apply()
+                            
+                            val action = if (checked) FridayService.ACTION_RESUME_WAKEWORD else FridayService.ACTION_PAUSE_WAKEWORD
+                            context.startService(Intent(context, FridayService::class.java).apply {
+                                this.action = action
+                            })
+                            
+                            Toast.makeText(context, if (checked) "Assistant Enabled" else "Assistant Disabled", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = NeonCyan,
+                            checkedTrackColor = NeonBlue.copy(alpha = 0.5f)
+                        )
+                    )
+                }
+            }
+
             // Open Overlay button — visible when core microphone, overlay, and assistant permissions are granted
             if (hasMicPermission && hasOverlayPermission && hasAssistantRole) {
                 Button(
@@ -496,6 +578,32 @@ class MainActivity : ComponentActivity() {
                             Settings.ACTION_MANAGE_WRITE_SETTINGS,
                             Uri.parse("package:$packageName")
                         )
+                        startActivity(intent)
+                    }
+                )
+                Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
+
+                ChecklistItem(
+                    title = "Device Administrator",
+                    description = "Enables programmatic screen locking functionality",
+                    status = hasDeviceAdmin,
+                    onAction = {
+                        val adminComp = android.content.ComponentName(context, com.friday.assistant.core.FridayDeviceAdminReceiver::class.java)
+                        val intent = Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                            putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComp)
+                            putExtra(android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Friday requires Admin access to lock your screen when requested.")
+                        }
+                        startActivity(intent)
+                    }
+                )
+                Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
+
+                ChecklistItem(
+                    title = "Do Not Disturb (DND) Access",
+                    description = "Allows Friday to toggle Do Not Disturb mode",
+                    status = hasDndPermission,
+                    onAction = {
+                        val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
                         startActivity(intent)
                     }
                 )

@@ -333,3 +333,134 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
     llama_sampler_free(smpl);
     return env->NewStringUTF(response.c_str());
 }
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
+        JNIEnv *env, jobject thiz, jlong state_ptr, jstring prompt_str, jint max_tokens, jfloat temp, jobject callback) {
+    
+    LlamaState *state = reinterpret_cast<LlamaState *>(state_ptr);
+    if (state == nullptr || state->ctx == nullptr || state->model == nullptr) {
+        LOGE("Llama state is null");
+        return env->NewStringUTF("Error: Model state is null");
+    }
+
+    set_thread_affinity();
+
+    const char *prompt_raw = env->GetStringUTFChars(prompt_str, nullptr);
+    std::string prompt(prompt_raw);
+    env->ReleaseStringUTFChars(prompt_str, prompt_raw);
+
+    LOGI("generateLlamaStream started. Prompt length: %d", (int)prompt.length());
+
+    jclass callbackClass = env->GetObjectClass(callback);
+    jmethodID onTokenMethod = env->GetMethodID(callbackClass, "onToken", "(Ljava/lang/String;)V");
+    if (onTokenMethod == nullptr) {
+        LOGE("Could not find onToken method on callback object");
+        return env->NewStringUTF("Error: Callback lookup failed");
+    }
+
+    const struct llama_vocab * vocab = llama_model_get_vocab(state->model);
+
+    int n_tokens_prompt = -llama_tokenize(vocab, prompt.c_str(), prompt.length(), nullptr, 0, true, true);
+    std::vector<llama_token> prompt_tokens(n_tokens_prompt);
+    if (llama_tokenize(vocab, prompt.c_str(), prompt.length(), prompt_tokens.data(), prompt_tokens.size(), true, true) < 0) {
+        LOGE("Failed to tokenize prompt");
+        return env->NewStringUTF("Error: Tokenization failed");
+    }
+
+    size_t n_keep = 0;
+    while (n_keep < state->history_tokens.size() &&
+           n_keep < prompt_tokens.size() &&
+           state->history_tokens[n_keep] == prompt_tokens[n_keep]) {
+        n_keep++;
+    }
+
+    if (n_keep < state->history_tokens.size()) {
+        llama_memory_t kv = llama_get_memory(state->ctx);
+        llama_memory_seq_rm(kv, 0, n_keep, -1);
+        state->history_tokens.resize(n_keep);
+    }
+
+    size_t n_new = prompt_tokens.size() - n_keep;
+    if (n_new == 0 && n_keep > 0) {
+        n_keep--;
+        llama_memory_t kv = llama_get_memory(state->ctx);
+        llama_memory_seq_rm(kv, 0, n_keep, -1);
+        state->history_tokens.resize(n_keep);
+        n_new = prompt_tokens.size() - n_keep;
+    }
+
+    if (n_new > 0) {
+        state->history_tokens.insert(state->history_tokens.end(),
+                                     prompt_tokens.begin() + n_keep,
+                                     prompt_tokens.end());
+    }
+
+    struct llama_sampler * smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.95f, 1));
+    llama_sampler_chain_add(smpl, llama_sampler_init_temp(temp));
+    llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+
+    std::string response = "";
+    int n_generated = 0;
+    size_t current_pos = n_keep;
+    size_t total_tokens = state->history_tokens.size();
+
+    while (n_generated < max_tokens) {
+        size_t n_eval = total_tokens - current_pos;
+        if (n_eval == 0) {
+            break;
+        }
+
+        if (n_eval > 512) {
+            n_eval = 512;
+        }
+
+        llama_batch batch = llama_batch_init(n_eval, 0, 1);
+        batch.n_tokens = n_eval;
+        for (size_t i = 0; i < n_eval; ++i) {
+            batch.token[i] = state->history_tokens[current_pos + i];
+            batch.pos[i] = current_pos + i;
+            batch.n_seq_id[i] = 1;
+            batch.seq_id[i][0] = 0;
+            batch.logits[i] = (i == n_eval - 1);
+        }
+
+        int decode_res = llama_decode(state->ctx, batch);
+        if (decode_res != 0) {
+            LOGE("Llama decode failed with status %d", decode_res);
+            llama_batch_free(batch);
+            llama_sampler_free(smpl);
+            return env->NewStringUTF("Error: Decode failed");
+        }
+
+        current_pos += n_eval;
+        llama_batch_free(batch);
+
+        llama_token id = llama_sampler_sample(smpl, state->ctx, -1);
+        
+        state->history_tokens.push_back(id);
+        total_tokens++;
+
+        if (llama_vocab_is_eog(vocab, id)) {
+            break;
+        }
+
+        char buf[128];
+        int n_chars = llama_token_to_piece(vocab, id, buf, sizeof(buf), 0, true);
+        if (n_chars > 0) {
+            std::string piece(buf, n_chars);
+            response.append(piece);
+            
+            jstring jpiece = env->NewStringUTF(piece.c_str());
+            env->CallVoidMethod(callback, onTokenMethod, jpiece);
+            env->DeleteLocalRef(jpiece);
+        }
+
+        n_generated++;
+    }
+
+    llama_sampler_free(smpl);
+    return env->NewStringUTF(response.c_str());
+}

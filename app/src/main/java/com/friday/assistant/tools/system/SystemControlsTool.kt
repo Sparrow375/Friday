@@ -34,7 +34,7 @@ class SystemControlsTool(private val context: Context) : Tool {
           "properties": {
             "action": {
               "type": "string",
-              "enum": ["toggle_torch", "set_volume", "set_brightness", "toggle_wifi", "toggle_bluetooth", "toggle_dnd", "set_torch_strength", "toggle_screencast", "toggle_power_saver"],
+              "enum": ["toggle_torch", "set_volume", "set_brightness", "toggle_wifi", "toggle_bluetooth", "toggle_dnd", "set_torch_strength", "toggle_screencast", "toggle_power_saver", "lock_phone", "toggle_hotspot"],
               "description": "The system setting control action to execute"
             },
             "value": {
@@ -61,11 +61,28 @@ class SystemControlsTool(private val context: Context) : Tool {
                 "set_torch_strength" -> setTorchStrength(value)
                 "toggle_screencast" -> toggleScreencast()
                 "toggle_power_saver" -> togglePowerSaver()
+                "lock_phone" -> lockPhone()
+                "toggle_hotspot" -> toggleHotspot()
                 else -> ToolResult(false, "Unknown system action: $action")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error executing system control action: $action", e)
             ToolResult(false, "System control execution failed: ${e.message}")
+        }
+    }
+
+    private fun lockPhone(): ToolResult {
+        val devicePolicyManager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
+        val adminComponent = android.content.ComponentName(context, com.friday.assistant.core.FridayDeviceAdminReceiver::class.java)
+        return if (devicePolicyManager.isAdminActive(adminComponent)) {
+            try {
+                devicePolicyManager.lockNow()
+                ToolResult(true, "Locked the phone screen")
+            } catch (e: SecurityException) {
+                ToolResult(false, "Failed to lock screen: ${e.message}")
+            }
+        } else {
+            ToolResult(false, "Device Admin permission is not active. Please grant it in Friday settings.")
         }
     }
 
@@ -146,6 +163,17 @@ class SystemControlsTool(private val context: Context) : Tool {
 
     private fun toggleWifi(enable: Boolean): ToolResult {
         val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            return try {
+                val intent = Intent(Settings.Panel.ACTION_WIFI).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(intent)
+                ToolResult(true, "Opening Wi-Fi settings panel...")
+            } catch (e: Exception) {
+                ToolResult(false, "Failed to open Wi-Fi settings panel: ${e.message}")
+            }
+        }
         return try {
             @Suppress("DEPRECATION")
             wifiManager.isWifiEnabled = enable
@@ -160,6 +188,18 @@ class SystemControlsTool(private val context: Context) : Tool {
         val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
             ?: return ToolResult(false, "Bluetooth is not supported on this device")
         
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            return try {
+                val intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(intent)
+                ToolResult(true, "Opening Bluetooth settings...")
+            } catch (e: Exception) {
+                ToolResult(false, "Failed to open Bluetooth settings: ${e.message}")
+            }
+        }
+        
         return try {
             @Suppress("DEPRECATION")
             if (enable) bluetoothAdapter.enable() else bluetoothAdapter.disable()
@@ -167,6 +207,27 @@ class SystemControlsTool(private val context: Context) : Tool {
             ToolResult(true, "Bluetooth has been $status")
         } catch (e: Exception) {
             ToolResult(false, "Failed to toggle Bluetooth: ${e.message}. System restrictions may apply.")
+        }
+    }
+
+    private fun toggleHotspot(): ToolResult {
+        return try {
+            val intent = Intent().apply {
+                action = "android.settings.TETHER_SETTINGS"
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(intent)
+            ToolResult(true, "Opening Hotspot / Tethering settings...")
+        } catch (e: Exception) {
+            try {
+                val intent = Intent(Settings.ACTION_WIRELESS_SETTINGS).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(intent)
+                ToolResult(true, "Opening Wireless settings...")
+            } catch (ex: Exception) {
+                ToolResult(false, "Failed to open Hotspot settings: ${ex.message}")
+            }
         }
     }
 

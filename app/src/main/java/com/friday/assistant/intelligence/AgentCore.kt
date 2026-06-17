@@ -32,7 +32,7 @@ class AgentCore(
     private val _agentStatusFlow = MutableSharedFlow<String>(extraBufferCapacity = 10)
     val agentStatusFlow: SharedFlow<String> = _agentStatusFlow.asSharedFlow()
 
-    suspend fun processQuery(userInput: String): String {
+    suspend fun processQuery(userInput: String, onToken: (String) -> Unit = {}): String {
         com.friday.assistant.core.FridayLogger.i(TAG, "AgentCore processing query: '$userInput'")
         
         // 1. Core Intent Classification (NLU Classifier or Rule-Based Fallback)
@@ -46,261 +46,218 @@ class AgentCore(
             confidence = res.second
         }
 
-        // Apply rules directly if intent matched with high confidence (>0.7), OR if we fallback to rule matching
-        val isVolumeUp = matchedIntent == "volume_up" && confidence > 0.7f ||
-                Regex("volume\\s+up").containsMatchIn(cleanQuery) ||
-                Regex("increase\\s+(?:the\\s+)?volume").containsMatchIn(cleanQuery) ||
-                Regex("make\\s+(?:it|the\\s+volume)\\s+louder").containsMatchIn(cleanQuery) ||
-                Regex("turn\\s+(?:it|the\\s+volume)\\s+up").containsMatchIn(cleanQuery)
-
-        val isVolumeDown = matchedIntent == "volume_down" && confidence > 0.7f ||
-                Regex("volume\\s+down").containsMatchIn(cleanQuery) ||
-                Regex("decrease\\s+(?:the\\s+)?volume").containsMatchIn(cleanQuery) ||
-                Regex("lower\\s+(?:the\\s+)?volume").containsMatchIn(cleanQuery) ||
-                Regex("make\\s+(?:it|the\\s+volume)\\s+quieter").containsMatchIn(cleanQuery) ||
-                Regex("turn\\s+(?:it|the\\s+volume)\\s+down").containsMatchIn(cleanQuery)
-
-        val isMute = Regex("mute\\s+(?:the\\s+)?volume").containsMatchIn(cleanQuery) ||
-                Regex("mute\\s+(?:the\\s+)?audio").containsMatchIn(cleanQuery) ||
-                (cleanQuery.contains("mute") && !cleanQuery.contains("unmute"))
-
-        val isUnmute = Regex("unmute\\s+(?:the\\s+)?volume").containsMatchIn(cleanQuery) ||
-                Regex("unmute\\s+(?:the\\s+)?audio").containsMatchIn(cleanQuery) ||
-                cleanQuery.contains("unmute")
-
-        val isLockPhone = matchedIntent == "lock_phone" && confidence > 0.7f ||
-                Regex("lock\\s+(?:the\\s+)?(?:phone|screen)").containsMatchIn(cleanQuery) ||
-                cleanQuery.contains("lock screen") ||
-                Regex("turn\\s+off\\s+(?:the\\s+)?screen").containsMatchIn(cleanQuery)
-
-        val isSearchReddit = matchedIntent == "search_reddit" && confidence > 0.7f ||
-                cleanQuery.contains("on reddit") ||
-                cleanQuery.contains("reddit search")
-
-        val isLaunchApp = matchedIntent == "open_app" && confidence > 0.7f ||
-                Regex("^(?:open|launch|start)\\s+(.+)").containsMatchIn(cleanQuery)
-
-        com.friday.assistant.core.FridayLogger.d(TAG, "Routing checks: volUp=$isVolumeUp, volDown=$isVolumeDown, mute=$isMute, unmute=$isUnmute, lock=$isLockPhone, reddit=$isSearchReddit, app=$isLaunchApp")
-
         // 2. Direct Command Execution for system controls
         // A. Volume Controls
-        if (isVolumeUp) {
-            _agentStatusFlow.emit("Increasing volume...")
+        val isVolumeQuery = cleanQuery.contains("volume") || cleanQuery.contains("sound") || cleanQuery.contains("audio") || cleanQuery.contains("mute") || cleanQuery.contains("unmute") || cleanQuery.contains("louder") || cleanQuery.contains("quieter") || matchedIntent == "volume_up" || matchedIntent == "volume_down"
+        if (isVolumeQuery) {
+            val actionVal: String
+            val actionText: String
+            if (cleanQuery.contains("unmute")) {
+                actionVal = "50%"
+                actionText = "Unmuting volume to 50%..."
+            } else if (cleanQuery.contains("mute") || cleanQuery.contains("silent") || cleanQuery.contains("silence")) {
+                actionVal = "mute"
+                actionText = "Muting volume..."
+            } else if (cleanQuery.contains("max") || cleanQuery.contains("full") || cleanQuery.contains("maximum") || cleanQuery.contains("100%")) {
+                actionVal = "100%"
+                actionText = "Setting volume to maximum..."
+            } else if (cleanQuery.contains("low") || cleanQuery.contains("minimum") || cleanQuery.contains("10%")) {
+                actionVal = "10%"
+                actionText = "Setting volume to low..."
+            } else if (cleanQuery.contains("medium") || cleanQuery.contains("half") || cleanQuery.contains("50%")) {
+                actionVal = "50%"
+                actionText = "Setting volume to 50%..."
+            } else {
+                val pctMatch = Regex("(\\d+)\\s*(?:%|percent)").find(cleanQuery) ?: Regex("volume\\s+(?:to\\s+)?(\\d+)").find(cleanQuery)
+                if (pctMatch != null) {
+                    val pct = pctMatch.groupValues[1]
+                    actionVal = "$pct%"
+                    actionText = "Setting volume to $pct%..."
+                } else if (cleanQuery.contains("up") || cleanQuery.contains("increase") || cleanQuery.contains("raise") || cleanQuery.contains("louder") || cleanQuery.contains("higher") || matchedIntent == "volume_up") {
+                    actionVal = "up"
+                    actionText = "Increasing volume..."
+                } else if (cleanQuery.contains("down") || cleanQuery.contains("decrease") || cleanQuery.contains("lower") || cleanQuery.contains("quieter") || cleanQuery.contains("diminish") || matchedIntent == "volume_down") {
+                    actionVal = "down"
+                    actionText = "Decreasing volume..."
+                } else {
+                    actionVal = "up"
+                    actionText = "Increasing volume..."
+                }
+            }
+            
+            _agentStatusFlow.emit(actionText)
             val tool = ToolRegistry.get("system_control")
             if (tool != null) {
                 val result = tool.execute(JsonObject().apply {
                     addProperty("action", "set_volume")
-                    addProperty("value", "up")
+                    addProperty("value", actionVal)
                 })
                 return if (result.success) result.data else "Failed to adjust volume."
-            }
-        }
-        if (isVolumeDown) {
-            _agentStatusFlow.emit("Decreasing volume...")
-            val tool = ToolRegistry.get("system_control")
-            if (tool != null) {
-                val result = tool.execute(JsonObject().apply {
-                    addProperty("action", "set_volume")
-                    addProperty("value", "down")
-                })
-                return if (result.success) result.data else "Failed to adjust volume."
-            }
-        }
-        if (isMute) {
-            _agentStatusFlow.emit("Muting volume...")
-            val tool = ToolRegistry.get("system_control")
-            if (tool != null) {
-                val result = tool.execute(JsonObject().apply {
-                    addProperty("action", "set_volume")
-                    addProperty("value", "mute")
-                })
-                return if (result.success) result.data else "Failed to mute volume."
-            }
-        }
-        if (isUnmute) {
-            _agentStatusFlow.emit("Unmuting volume...")
-            val tool = ToolRegistry.get("system_control")
-            if (tool != null) {
-                val result = tool.execute(JsonObject().apply {
-                    addProperty("action", "set_volume")
-                    addProperty("value", "50%")
-                })
-                return if (result.success) result.data else "Failed to unmute volume."
             }
         }
 
         // B. Brightness Controls
-        val isBrightnessUp = Regex("increase\\s+(?:the\\s+)?brightness").containsMatchIn(cleanQuery) ||
-                Regex("brightness\\s+up").containsMatchIn(cleanQuery) ||
-                Regex("make\\s+(?:it|the\\s+screen)\\s+brighter").containsMatchIn(cleanQuery) ||
-                Regex("brighter\\s+screen").containsMatchIn(cleanQuery) ||
-                Regex("turn\\s+(?:the\\s+)?brightness\\s+up").containsMatchIn(cleanQuery)
-
-        val isBrightnessDown = Regex("decrease\\s+(?:the\\s+)?brightness").containsMatchIn(cleanQuery) ||
-                Regex("brightness\\s+down").containsMatchIn(cleanQuery) ||
-                Regex("dim\\s+(?:the\\s+)?screen").containsMatchIn(cleanQuery) ||
-                Regex("dimmer\\s+screen").containsMatchIn(cleanQuery) ||
-                Regex("lower\\s+(?:the\\s+)?brightness").containsMatchIn(cleanQuery) ||
-                Regex("turn\\s+(?:the\\s+)?brightness\\s+down").containsMatchIn(cleanQuery)
-
-        val brightnessPctMatch = Regex("brightness\\s+(?:to\\s+)?(\\d+)(?:\\s*%|\\s*percent)?").find(cleanQuery)
-        
-        if (isBrightnessUp) {
-            _agentStatusFlow.emit("Increasing brightness...")
+        val isBrightnessQuery = (cleanQuery.contains("brightness") || cleanQuery.contains("dim") || (cleanQuery.contains("screen") && !cleanQuery.contains("lock") && !cleanQuery.contains("off"))) || matchedIntent == "brightness_up" || matchedIntent == "brightness_down"
+        if (isBrightnessQuery) {
+            val actionVal: String
+            val actionText: String
+            if (cleanQuery.contains("max") || cleanQuery.contains("full") || cleanQuery.contains("maximum") || cleanQuery.contains("100%") || cleanQuery.contains("brightest") || cleanQuery.contains("highest")) {
+                actionVal = "100%"
+                actionText = "Setting brightness to maximum..."
+            } else if (cleanQuery.contains("low") || cleanQuery.contains("minimum") || cleanQuery.contains("lowest") || cleanQuery.contains("darkest") || cleanQuery.contains("0%") || cleanQuery.contains("10%")) {
+                actionVal = "10%"
+                actionText = "Setting brightness to minimum..."
+            } else if (cleanQuery.contains("medium") || cleanQuery.contains("half") || cleanQuery.contains("50%")) {
+                actionVal = "50%"
+                actionText = "Setting brightness to 50%..."
+            } else {
+                val pctMatch = Regex("(\\d+)\\s*(?:%|percent)").find(cleanQuery) ?: Regex("brightness\\s+(?:to\\s+)?(\\d+)").find(cleanQuery)
+                if (pctMatch != null) {
+                    val pct = pctMatch.groupValues[1]
+                    actionVal = "$pct%"
+                    actionText = "Setting brightness to $pct%..."
+                } else if (cleanQuery.contains("up") || cleanQuery.contains("increase") || cleanQuery.contains("raise") || cleanQuery.contains("brighter") || cleanQuery.contains("higher") || matchedIntent == "brightness_up") {
+                    actionVal = "up"
+                    actionText = "Increasing brightness..."
+                } else if (cleanQuery.contains("down") || cleanQuery.contains("decrease") || cleanQuery.contains("lower") || cleanQuery.contains("dimmer") || cleanQuery.contains("less") || matchedIntent == "brightness_down") {
+                    actionVal = "down"
+                    actionText = "Decreasing brightness..."
+                } else {
+                    actionVal = "up"
+                    actionText = "Increasing brightness..."
+                }
+            }
+            
+            _agentStatusFlow.emit(actionText)
             val tool = ToolRegistry.get("system_control")
             if (tool != null) {
                 val result = tool.execute(JsonObject().apply {
                     addProperty("action", "set_brightness")
-                    addProperty("value", "up")
+                    addProperty("value", actionVal)
                 })
                 return if (result.success) result.data else "Failed to adjust brightness."
             }
         }
-        if (isBrightnessDown) {
-            _agentStatusFlow.emit("Decreasing brightness...")
-            val tool = ToolRegistry.get("system_control")
-            if (tool != null) {
-                val result = tool.execute(JsonObject().apply {
-                    addProperty("action", "set_brightness")
-                    addProperty("value", "down")
-                })
-                return if (result.success) result.data else "Failed to adjust brightness."
-            }
-        }
-        if (brightnessPctMatch != null) {
-            val pct = brightnessPctMatch.groupValues[1]
-            _agentStatusFlow.emit("Setting brightness to $pct%...")
-            val tool = ToolRegistry.get("system_control")
-            if (tool != null) {
-                val result = tool.execute(JsonObject().apply {
-                    addProperty("action", "set_brightness")
-                    addProperty("value", "$pct%")
-                })
-                return if (result.success) result.data else "Failed to set brightness."
-            }
-        }
 
-        // C. Flashlight (Torch)
-        val isFlashlightOn = Regex("(?:turn\\s+)?on\\s+(?:the\\s+)?(?:flashlight|torch)").containsMatchIn(cleanQuery) ||
-                Regex("(?:flashlight|torch)\\s+on").containsMatchIn(cleanQuery)
-
-        val isFlashlightOff = Regex("(?:turn\\s+)?off\\s+(?:the\\s+)?(?:flashlight|torch)").containsMatchIn(cleanQuery) ||
-                Regex("(?:flashlight|torch)\\s+off").containsMatchIn(cleanQuery)
-
-        if (isFlashlightOn) {
-            _agentStatusFlow.emit("Turning flashlight on...")
-            val tool = ToolRegistry.get("system_control")
-            if (tool != null) {
-                val result = tool.execute(JsonObject().apply {
-                    addProperty("action", "toggle_torch")
-                    addProperty("value", "on")
-                })
-                return if (result.success) result.data else "Failed to toggle flashlight."
-            }
-        }
-        if (isFlashlightOff) {
-            _agentStatusFlow.emit("Turning flashlight off...")
-            val tool = ToolRegistry.get("system_control")
-            if (tool != null) {
-                val result = tool.execute(JsonObject().apply {
-                    addProperty("action", "toggle_torch")
-                    addProperty("value", "off")
-                })
-                return if (result.success) result.data else "Failed to toggle flashlight."
+        // C. Flashlight (Torch) Controls (including strength)
+        val isTorchQuery = cleanQuery.contains("flashlight") || cleanQuery.contains("torch") || matchedIntent == "torch_toggle" || matchedIntent == "torch_strength"
+        if (isTorchQuery) {
+            val isOff = cleanQuery.contains("off") || cleanQuery.contains("disable") || cleanQuery.contains("stop") || cleanQuery.contains("deactivate")
+            val isOn = cleanQuery.contains("on") || cleanQuery.contains("enable") || cleanQuery.contains("start") || cleanQuery.contains("activate")
+            
+            val hasStrengthWord = cleanQuery.contains("strength") || cleanQuery.contains("level") || cleanQuery.contains("intensity") || cleanQuery.contains("brightness") || cleanQuery.contains("max") || cleanQuery.contains("full") || cleanQuery.contains("medium") || cleanQuery.contains("half") || cleanQuery.contains("low") || Regex("\\d+").containsMatchIn(cleanQuery)
+            
+            if (isOff && !isOn) {
+                _agentStatusFlow.emit("Turning flashlight off...")
+                val tool = ToolRegistry.get("system_control")
+                if (tool != null) {
+                    val result = tool.execute(JsonObject().apply {
+                        addProperty("action", "toggle_torch")
+                        addProperty("value", "off")
+                    })
+                    return if (result.success) result.data else "Failed to toggle flashlight."
+                }
+            } else if (hasStrengthWord) {
+                val pctVal: String
+                if (cleanQuery.contains("max") || cleanQuery.contains("full") || cleanQuery.contains("maximum") || cleanQuery.contains("100%") || cleanQuery.contains("high")) {
+                    pctVal = "100%"
+                } else if (cleanQuery.contains("low") || cleanQuery.contains("minimum") || cleanQuery.contains("lowest") || cleanQuery.contains("darkest") || cleanQuery.contains("20%")) {
+                    pctVal = "20%"
+                } else if (cleanQuery.contains("medium") || cleanQuery.contains("half") || cleanQuery.contains("50%")) {
+                    pctVal = "50%"
+                } else {
+                    val numMatch = Regex("(\\d+)").find(cleanQuery)
+                    pctVal = if (numMatch != null) {
+                        val num = numMatch.groupValues[1].toInt()
+                        if (num <= 5) (num * 20).toString() + "%" else num.toString() + "%"
+                    } else {
+                        "50%"
+                    }
+                }
+                _agentStatusFlow.emit("Setting torch strength to $pctVal...")
+                val tool = ToolRegistry.get("system_control")
+                if (tool != null) {
+                    val result = tool.execute(JsonObject().apply {
+                        addProperty("action", "set_torch_strength")
+                        addProperty("value", pctVal)
+                    })
+                    return if (result.success) result.data else "Failed to adjust torch strength."
+                }
+            } else {
+                _agentStatusFlow.emit("Turning flashlight on...")
+                val tool = ToolRegistry.get("system_control")
+                if (tool != null) {
+                    val result = tool.execute(JsonObject().apply {
+                        addProperty("action", "toggle_torch")
+                        addProperty("value", "on")
+                    })
+                    return if (result.success) result.data else "Failed to toggle flashlight."
+                }
             }
         }
 
         // D. WiFi Controls
-        val isWifiOn = Regex("(?:turn\\s+)?on\\s+(?:the\\s+)?wifi").containsMatchIn(cleanQuery) ||
-                Regex("wifi\\s+on").containsMatchIn(cleanQuery) ||
-                Regex("enable\\s+(?:the\\s+)?wifi").containsMatchIn(cleanQuery)
-
-        val isWifiOff = Regex("(?:turn\\s+)?off\\s+(?:the\\s+)?wifi").containsMatchIn(cleanQuery) ||
-                Regex("wifi\\s+off").containsMatchIn(cleanQuery) ||
-                Regex("disable\\s+(?:the\\s+)?wifi").containsMatchIn(cleanQuery)
-
-        if (isWifiOn) {
-            _agentStatusFlow.emit("Turning WiFi on...")
+        val isWifiQuery = cleanQuery.contains("wifi") || cleanQuery.contains("wi-fi")
+        if (isWifiQuery) {
+            val isOff = cleanQuery.contains("off") || cleanQuery.contains("disable") || cleanQuery.contains("stop") || cleanQuery.contains("deactivate") || cleanQuery.contains("turnoff")
+            val isOn = cleanQuery.contains("on") || cleanQuery.contains("enable") || cleanQuery.contains("start") || cleanQuery.contains("activate") || cleanQuery.contains("turnon")
+            val state = if (isOff && !isOn) "off" else "on"
+            
+            _agentStatusFlow.emit(if (state == "on") "Turning WiFi on..." else "Turning WiFi off...")
             val tool = ToolRegistry.get("system_control")
             if (tool != null) {
                 val result = tool.execute(JsonObject().apply {
                     addProperty("action", "toggle_wifi")
-                    addProperty("value", "on")
-                })
-                return if (result.success) result.data else "Failed to toggle WiFi."
-            }
-        }
-        if (isWifiOff) {
-            _agentStatusFlow.emit("Turning WiFi off...")
-            val tool = ToolRegistry.get("system_control")
-            if (tool != null) {
-                val result = tool.execute(JsonObject().apply {
-                    addProperty("action", "toggle_wifi")
-                    addProperty("value", "off")
+                    addProperty("value", state)
                 })
                 return if (result.success) result.data else "Failed to toggle WiFi."
             }
         }
 
         // E. Bluetooth Controls
-        val isBluetoothOn = Regex("(?:turn\\s+)?on\\s+(?:the\\s+)?bluetooth").containsMatchIn(cleanQuery) ||
-                Regex("bluetooth\\s+on").containsMatchIn(cleanQuery) ||
-                Regex("enable\\s+(?:the\\s+)?bluetooth").containsMatchIn(cleanQuery)
-
-        val isBluetoothOff = Regex("(?:turn\\s+)?off\\s+(?:the\\s+)?bluetooth").containsMatchIn(cleanQuery) ||
-                Regex("bluetooth\\s+off").containsMatchIn(cleanQuery) ||
-                Regex("disable\\s+(?:the\\s+)?bluetooth").containsMatchIn(cleanQuery)
-
-        if (isBluetoothOn) {
-            _agentStatusFlow.emit("Turning Bluetooth on...")
+        val isBluetoothQuery = cleanQuery.contains("bluetooth") || cleanQuery.contains("blue tooth")
+        if (isBluetoothQuery) {
+            val isOff = cleanQuery.contains("off") || cleanQuery.contains("disable") || cleanQuery.contains("stop") || cleanQuery.contains("deactivate") || cleanQuery.contains("turnoff")
+            val isOn = cleanQuery.contains("on") || cleanQuery.contains("enable") || cleanQuery.contains("start") || cleanQuery.contains("activate") || cleanQuery.contains("turnon")
+            val state = if (isOff && !isOn) "off" else "on"
+            
+            _agentStatusFlow.emit(if (state == "on") "Turning Bluetooth on..." else "Turning Bluetooth off...")
             val tool = ToolRegistry.get("system_control")
             if (tool != null) {
                 val result = tool.execute(JsonObject().apply {
                     addProperty("action", "toggle_bluetooth")
-                    addProperty("value", "on")
-                })
-                return if (result.success) result.data else "Failed to toggle Bluetooth."
-            }
-        }
-        if (isBluetoothOff) {
-            _agentStatusFlow.emit("Turning Bluetooth off...")
-            val tool = ToolRegistry.get("system_control")
-            if (tool != null) {
-                val result = tool.execute(JsonObject().apply {
-                    addProperty("action", "toggle_bluetooth")
-                    addProperty("value", "off")
+                    addProperty("value", state)
                 })
                 return if (result.success) result.data else "Failed to toggle Bluetooth."
             }
         }
 
-        // F. Do Not Disturb (DND)
-        val isDndOn = Regex("(?:turn\\s+)?on\\s+(?:do\\s+not\\s+disturb|dnd)").containsMatchIn(cleanQuery) ||
-                Regex("(?:do\\s+not\\s+disturb|dnd)\\s+on").containsMatchIn(cleanQuery) ||
-                Regex("(?:enable|activate)\\s+(?:do\\s+not\\s+disturb|dnd)").containsMatchIn(cleanQuery)
-
-        val isDndOff = Regex("(?:turn\\s+)?off\\s+(?:do\\s+not\\s+disturb|dnd)").containsMatchIn(cleanQuery) ||
-                Regex("(?:do\\s+not\\s+disturb|dnd)\\s+off").containsMatchIn(cleanQuery) ||
-                Regex("(?:disable|deactivate)\\s+(?:do\\s+not\\s+disturb|dnd)").containsMatchIn(cleanQuery)
-
-        if (isDndOn) {
-            _agentStatusFlow.emit("Activating DND...")
+        // F. Hotspot Controls
+        val isHotspotQuery = cleanQuery.contains("hotspot") || cleanQuery.contains("hot spot") || cleanQuery.contains("tethering") || cleanQuery.contains("tether")
+        if (isHotspotQuery) {
+            _agentStatusFlow.emit("Toggling Hotspot...")
             val tool = ToolRegistry.get("system_control")
             if (tool != null) {
                 val result = tool.execute(JsonObject().apply {
-                    addProperty("action", "toggle_dnd")
-                    addProperty("value", "on")
+                    addProperty("action", "toggle_hotspot")
                 })
-                return if (result.success) result.data else "Failed to toggle DND."
+                return if (result.success) result.data else "Failed to toggle Hotspot."
             }
         }
-        if (isDndOff) {
-            _agentStatusFlow.emit("Deactivating DND...")
+
+        // G. Do Not Disturb (DND)
+        val isDndQuery = cleanQuery.contains("do not disturb") || cleanQuery.contains("dnd")
+        if (isDndQuery) {
+            val isOff = cleanQuery.contains("off") || cleanQuery.contains("disable") || cleanQuery.contains("stop") || cleanQuery.contains("deactivate")
+            val isOn = cleanQuery.contains("on") || cleanQuery.contains("enable") || cleanQuery.contains("start") || cleanQuery.contains("activate")
+            val state = if (isOff && !isOn) "off" else "on"
+            
+            _agentStatusFlow.emit(if (state == "on") "Activating DND..." else "Deactivating DND...")
             val tool = ToolRegistry.get("system_control")
             if (tool != null) {
                 val result = tool.execute(JsonObject().apply {
                     addProperty("action", "toggle_dnd")
-                    addProperty("value", "off")
+                    addProperty("value", state)
                 })
                 return if (result.success) result.data else "Failed to toggle DND."
             }
@@ -408,11 +365,27 @@ class AgentCore(
         }
 
         // K. Lock screen
-        if (isLockPhone) {
-            return "Locking the screen is not supported in Default Assistant mode without Accessibility privileges."
+        val isLockQuery = matchedIntent == "lock_phone" ||
+                cleanQuery.contains("lock screen") ||
+                cleanQuery.contains("lock phone") ||
+                (cleanQuery.contains("lock") && (cleanQuery.contains("phone") || cleanQuery.contains("screen") || cleanQuery.contains("device"))) ||
+                cleanQuery.contains("turn off screen") ||
+                cleanQuery.contains("turn off the screen")
+        if (isLockQuery) {
+            _agentStatusFlow.emit("Locking screen...")
+            val tool = ToolRegistry.get("system_control")
+            if (tool != null) {
+                val result = tool.execute(JsonObject().apply {
+                    addProperty("action", "lock_phone")
+                })
+                return if (result.success) result.data else result.error ?: "Failed to lock the screen."
+            }
         }
 
         // L. Reddit search
+        val isSearchReddit = matchedIntent == "search_reddit" && confidence > 0.7f ||
+                cleanQuery.contains("on reddit") ||
+                cleanQuery.contains("reddit search")
         if (isSearchReddit) {
             var searchPhrase = userInput
             val redditRegex = "(?i)(?:search|look up)?(.+?)(?: on reddit| reddit)?".toRegex()
@@ -436,8 +409,22 @@ class AgentCore(
         }
 
         // M. Open App
+        val isLaunchApp = matchedIntent == "open_app" && confidence > 0.7f ||
+                cleanQuery.contains("open ") || cleanQuery.contains("launch ") || cleanQuery.contains("start ") || cleanQuery.contains("go to ") || cleanQuery.contains("open up ") || cleanQuery.contains("show ")
         if (isLaunchApp) {
-            var appName = cleanQuery.removePrefix("open ").removePrefix("launch ").removePrefix("start ").trim()
+            var appName = ""
+            val launchKeywords = listOf("open up ", "go to ", "open ", "launch ", "start ", "show ")
+            for (kw in launchKeywords) {
+                val idx = cleanQuery.indexOf(kw)
+                if (idx != -1) {
+                    appName = cleanQuery.substring(idx + kw.length).trim()
+                    break
+                }
+            }
+            if (appName.isEmpty() && (matchedIntent == "open_app" && confidence > 0.7f)) {
+                appName = cleanQuery.replace("please", "").replace("can you", "").replace("could you", "").trim()
+            }
+            appName = appName.replace("?", "").replace(".", "").replace("!", "").trim()
             if (appName.startsWith("the ")) {
                 appName = appName.substring(4).trim()
             }
@@ -450,34 +437,6 @@ class AgentCore(
                     })
                     if (result.success) return result.data
                 }
-            }
-        }
-
-        // N. Flashlight Strength Adjustment
-        val isTorchStrength = matchedIntent == "torch_strength" && confidence > 0.7f ||
-                cleanQuery.contains("torch strength") || cleanQuery.contains("flashlight strength") || cleanQuery.contains("torch level")
-        if (isTorchStrength) {
-            val pctMatch = Regex("(\\d+)").find(cleanQuery)
-            val pct = if (pctMatch != null) {
-                val num = pctMatch.groupValues[1].toInt()
-                if (num <= 5) (num * 20).toString() else num.toString()
-            } else if (cleanQuery.contains("max") || cleanQuery.contains("full")) {
-                "100"
-            } else if (cleanQuery.contains("low") || cleanQuery.contains("min")) {
-                "20"
-            } else if (cleanQuery.contains("medium") || cleanQuery.contains("half")) {
-                "50"
-            } else {
-                "50"
-            }
-            _agentStatusFlow.emit("Setting torch strength to $pct%...")
-            val tool = ToolRegistry.get("system_control")
-            if (tool != null) {
-                val result = tool.execute(JsonObject().apply {
-                    addProperty("action", "set_torch_strength")
-                    addProperty("value", "$pct%")
-                })
-                return if (result.success) result.data else "Failed to adjust torch strength."
             }
         }
 
@@ -711,7 +670,11 @@ class AgentCore(
             }
             _agentStatusFlow.emit("Thinking...")
             val currentPrompt = promptBuilder.buildPrompt(userInput)
-            val response = llamaEngine.generate(currentPrompt, maxTokens = 128, temp = 0.7f).trim()
+            val response = llamaEngine.generateStream(currentPrompt, maxTokens = 128, temp = 0.7f, callback = object : LlamaEngine.TokenCallback {
+                override fun onToken(token: String) {
+                    onToken(token)
+                }
+            }).trim()
             val finalResponse = sanitizeResponse(response)
             
             memoryManager.saveConversationTurn(userInput, finalResponse)

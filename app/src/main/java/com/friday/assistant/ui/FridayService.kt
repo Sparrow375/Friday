@@ -249,6 +249,12 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     }
 
     private fun startWakeWordListening() {
+        val enabled = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("assistant_enabled", true)
+        if (!enabled) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "Assistant is disabled by preference; not starting background listening")
+            return
+        }
+
         val hasMicPerm = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         if (!hasMicPerm) {
             com.friday.assistant.core.FridayLogger.w(TAG, "No mic permission - cannot start background wake-word listening")
@@ -256,25 +262,14 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         }
 
         if (pipelineState.value == PipelineState.IDLE) {
-            wakeWordDetector?.let { detector ->
-                if (!FridayApplication.audioCaptureManager.isActive()) {
-                    com.friday.assistant.core.FridayLogger.d(TAG, "Registering WakeWordDetector to AudioCaptureManager")
-                    FridayApplication.audioCaptureManager.registerListener(detector)
-                    val started = FridayApplication.audioCaptureManager.startCapture()
-                    com.friday.assistant.core.FridayLogger.d(TAG, "Background audio capture started: $started")
-                }
-            }
+            com.friday.assistant.core.FridayLogger.d(TAG, "Starting background wake-word listening")
+            wakeWordDetector?.startListening()
         }
     }
 
     private fun stopWakeWordListening() {
-        wakeWordDetector?.let { detector ->
-            if (FridayApplication.audioCaptureManager.isActive()) {
-                com.friday.assistant.core.FridayLogger.d(TAG, "Unregistering WakeWordDetector from AudioCaptureManager")
-                FridayApplication.audioCaptureManager.unregisterListener(detector)
-                FridayApplication.audioCaptureManager.stopCapture()
-            }
-        }
+        com.friday.assistant.core.FridayLogger.d(TAG, "Stopping background wake-word listening")
+        wakeWordDetector?.stopListening()
     }
 
     private suspend fun onWakeWordTriggered() {
@@ -302,8 +297,77 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
     private suspend fun executeAgentQuery(query: String) {
         transitionToState(PipelineState.THINKING, statusMessage = "Thinking...", transcriptText = query)
-        val response = agentCore.processQuery(query)
-        speakResponse(response)
+        
+        var responseAccumulator = ""
+        var ttsBuffer = ""
+        var isFirstChunk = true
+        
+        val response = agentCore.processQuery(query) { token ->
+            serviceScope.launch {
+                responseAccumulator += token
+                ttsBuffer += token
+                
+                // Update overlay UI text in real-time
+                overlayManager?.updateState(
+                    pipelineState.value, 
+                    statusMessage = if (isFirstChunk) "Thinking..." else "Speaking...", 
+                    responseText = responseAccumulator, 
+                    trans = query
+                )
+                
+                // Check for punctuation boundaries to queue TTS chunks
+                val boundaryIndex = findPunctuationBoundary(ttsBuffer)
+                if (boundaryIndex != -1) {
+                    val chunk = ttsBuffer.substring(0, boundaryIndex + 1).trim()
+                    ttsBuffer = ttsBuffer.substring(boundaryIndex + 1)
+                    if (chunk.isNotEmpty()) {
+                        speakStreamChunk(chunk, isFirstChunk, responseAccumulator)
+                        isFirstChunk = false
+                    }
+                }
+            }
+        }
+        
+        // Handle any leftover TTS buffer
+        val remainingText = ttsBuffer.trim()
+        if (remainingText.isNotEmpty()) {
+            speakStreamChunk(remainingText, isFirstChunk, responseAccumulator)
+            isFirstChunk = false
+        }
+        
+        // If it was a fast command mapper response and didn't stream anything
+        if (responseAccumulator.isEmpty() && response.isNotEmpty()) {
+            speakResponse(response)
+        } else if (responseAccumulator.isNotEmpty() && isFirstChunk) {
+            // Streamed but no punctuation was found
+            speakStreamChunk(responseAccumulator, true, responseAccumulator)
+        }
+    }
+
+    private fun findPunctuationBoundary(text: String): Int {
+        val boundaries = charArrayOf('.', '?', '!', '\n', ',', ';', ':')
+        for (i in text.indices) {
+            val c = text[i]
+            if (boundaries.contains(c)) {
+                return i
+            }
+        }
+        return -1
+    }
+
+    private fun speakStreamChunk(chunk: String, isFirst: Boolean, fullResponseText: String) {
+        if (!isTtsInitialized || tts == null) return
+        
+        val cleanedChunk = chunk.trim()
+        if (cleanedChunk.isEmpty()) return
+
+        if (isFirst) {
+            transitionToState(PipelineState.SPEAKING, responseText = fullResponseText)
+            tts?.speak(cleanedChunk, TextToSpeech.QUEUE_FLUSH, null, "${UTTERANCE_ID}_0")
+        } else {
+            overlayManager?.updateState(PipelineState.SPEAKING, "Speaking...", responseText = fullResponseText)
+            tts?.speak(cleanedChunk, TextToSpeech.QUEUE_ADD, null, "${UTTERANCE_ID}_${System.currentTimeMillis()}")
+        }
     }
 
     private fun speakResponse(response: String) {
@@ -372,6 +436,11 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     }
 
     fun showOverlay() {
+        val enabled = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("assistant_enabled", true)
+        if (!enabled) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "Assistant is disabled by preference; not showing overlay")
+            return
+        }
         overlayManager?.show()
     }
 

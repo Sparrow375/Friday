@@ -1,72 +1,34 @@
 package com.friday.assistant.audio
 
 import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.util.Log
-import ai.onnxruntime.OnnxTensor
-import ai.onnxruntime.OrtEnvironment
-import ai.onnxruntime.OrtSession
 import com.friday.assistant.core.ModelManager
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import java.io.File
-import java.nio.FloatBuffer
-import kotlin.math.sqrt
+import java.util.Locale
 
 class WakeWordDetector(
     private val context: Context,
-    private val modelManager: ModelManager,
+    private val modelManager: ModelManager, // Kept for signature compatibility
     private val onWakeWordDetected: () -> Unit
-) : AudioCaptureManager.AudioFrameListener {
+) {
 
     companion object {
         private const val TAG = "WakeWordDetector"
         private const val PREFS_NAME = "friday_wakeword_prefs"
         const val KEY_WAKEWORD = "custom_wakeword"
         const val DEFAULT_WAKEWORD = "friday"
-        
-        private const val MIN_SPEECH_DURATION_MS = 200L
-        private const val MAX_SPEECH_DURATION_MS = 2500L
-        private const val SILENCE_TIMEOUT_MS = 500L
     }
 
     private val sharedPrefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    private val scope = CoroutineScope(Dispatchers.Default)
-
-    // ONNX Runtime variables
-    private var ortEnv: OrtEnvironment? = null
-    private var ortSession: OrtSession? = null
-
-    // VAD Variables
-    private var backgroundRms = 100f
-    private var isBackgroundRmsInitialized = false
-    private val rmsAlpha = 0.98f // Running average smoothing factor
-    private var isSpeaking = false
-    private var speechStartTimestamp = 0L
-    private var lastSpeechTimestamp = 0L
-
-    // Audio buffer to store captured speech
-    private val speechBuffer = mutableListOf<Short>()
-    // Ring buffer to capture the pre-speech buffer (approx 400ms)
-    private val preSpeechRingBuffer = ShortArray(16000 * 4 / 10) // 400ms of 16kHz
-    private var ringBufferIndex = 0
-
-    init {
-        try {
-            ortEnv = OrtEnvironment.getEnvironment()
-            val modelPath = modelManager.getWakeWordModelPath()
-            if (File(modelPath).exists()) {
-                ortSession = ortEnv?.createSession(modelPath, OrtSession.SessionOptions())
-                Log.i(TAG, "ONNX Wake-Word model loaded successfully from: $modelPath")
-            } else {
-                Log.e(TAG, "Wake-word model does not exist at: $modelPath")
-            }
-        } catch (e: Throwable) {
-            Log.e(TAG, "Failed to initialize ONNX Runtime or load wake-word model", e)
-        }
-    }
-
-    fun isModelLoaded(): Boolean = ortSession != null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var speechRecognizer: SpeechRecognizer? = null
+    private var isListeningEnabled = false
 
     fun getWakeWord(): String {
         return sharedPrefs.getString(KEY_WAKEWORD, DEFAULT_WAKEWORD) ?: DEFAULT_WAKEWORD
@@ -76,152 +38,154 @@ class WakeWordDetector(
         sharedPrefs.edit().putString(KEY_WAKEWORD, word.trim().lowercase()).apply()
     }
 
-    override fun onAudioFrame(pcmData: ShortArray) {
-        val rms = calculateRMS(pcmData)
-        
-        if (!isBackgroundRmsInitialized) {
-            backgroundRms = rms.coerceIn(50f, 1000f)
-            isBackgroundRmsInitialized = true
-        } else {
-            // Update background noise level (if it's quiet, track it)
-            if (rms < backgroundRms * 1.5f) {
-                backgroundRms = backgroundRms * rmsAlpha + rms * (1f - rmsAlpha)
-            } else {
-                // Very slowly decay the background noise upwards in case of a sustained louder environment
-                backgroundRms = backgroundRms * 0.999f + rms * 0.001f
-            }
-        }
+    fun isModelLoaded(): Boolean = true // Now virtual since we use the native system recognizer
 
-        // Voice Activity Detection Threshold
-        val vadThreshold = backgroundRms * 1.5f + 100f // Noise-adaptive multiplicative threshold
-        val now = System.currentTimeMillis()
-
-        if (rms > vadThreshold) {
-            // Speech detected
-            if (!isSpeaking) {
-                isSpeaking = true
-                speechStartTimestamp = now
-                speechBuffer.clear()
-                // Append pre-speech buffer for context
-                appendPreSpeechBuffer()
-                Log.d(TAG, "Speech start detected (RMS: $rms, Background: $backgroundRms)")
-            }
-            lastSpeechTimestamp = now
-        }
-
-        if (isSpeaking) {
-            // Append current frame to speech buffer
-            pcmData.forEach { speechBuffer.add(it) }
-
-            val speechDuration = now - speechStartTimestamp
-            val silenceDuration = now - lastSpeechTimestamp
-
-            // Stop speech accumulation on silence or max duration limit
-            if (silenceDuration > SILENCE_TIMEOUT_MS || speechDuration > MAX_SPEECH_DURATION_MS) {
-                isSpeaking = false
-                val finalSpeechDuration = lastSpeechTimestamp - speechStartTimestamp
-                
-                if (finalSpeechDuration > MIN_SPEECH_DURATION_MS && speechBuffer.isNotEmpty()) {
-                    val capturedAudio = speechBuffer.toShortArray()
-                    scope.launch {
-                        processCapturedSpeech(capturedAudio)
-                    }
-                }
-                speechBuffer.clear()
-            }
-        } else {
-            // Save current frame into ring buffer for pre-speech capture
-            writeToRingBuffer(pcmData)
+    fun startListening() {
+        mainHandler.post {
+            if (isListeningEnabled) return@post
+            Log.i(TAG, "Starting wake-word continuous listening")
+            isListeningEnabled = true
+            startRecognizerInternal()
         }
     }
 
-    private fun calculateRMS(pcmData: ShortArray): Float {
-        var sum = 0.0
-        for (sample in pcmData) {
-            sum += sample.toDouble() * sample.toDouble()
-        }
-        return sqrt(sum / pcmData.size).toFloat()
-    }
-
-    private fun writeToRingBuffer(pcmData: ShortArray) {
-        for (sample in pcmData) {
-            preSpeechRingBuffer[ringBufferIndex] = sample
-            ringBufferIndex = (ringBufferIndex + 1) % preSpeechRingBuffer.size
+    fun stopListening() {
+        mainHandler.post {
+            if (!isListeningEnabled) return@post
+            Log.i(TAG, "Stopping wake-word continuous listening")
+            isListeningEnabled = false
+            destroyRecognizer()
         }
     }
 
-    private fun appendPreSpeechBuffer() {
-        // Read out the ring buffer chronologically
-        val size = preSpeechRingBuffer.size
-        for (i in 0 until size) {
-            val idx = (ringBufferIndex + i) % size
-            speechBuffer.add(preSpeechRingBuffer[idx])
-        }
-    }
-
-    private suspend fun processCapturedSpeech(pcmData: ShortArray) {
-        val session = ortSession ?: return
-        val env = ortEnv ?: return
+    private fun startRecognizerInternal() {
+        if (!isListeningEnabled) return
+        destroyRecognizer()
 
         try {
-            val floatAudio = preprocessAudioForOnnx(pcmData)
-            
-            // Input shape: [1, 1, 24000]
-            val shape = longArrayOf(1, 1, floatAudio.size.toLong())
-            val buffer = FloatBuffer.wrap(floatAudio)
-            val inputTensor = OnnxTensor.createTensor(env, buffer, shape)
-            
-            val inputName = session.inputNames.iterator().next()
-            val results = session.run(mapOf(inputName to inputTensor))
-            
-            val outputValue = results[0].value
-            val probabilities = when {
-                outputValue is Array<*> && outputValue[0] is FloatArray -> outputValue[0] as FloatArray
-                outputValue is FloatArray -> outputValue
-                else -> null
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) {
+                        Log.d(TAG, "Wake-word recognizer ready")
+                    }
+
+                    override fun onBeginningOfSpeech() {
+                        Log.d(TAG, "Wake-word beginning of speech")
+                    }
+
+                    override fun onRmsChanged(rmsdB: Float) {}
+
+                    override fun onBufferReceived(buffer: ByteArray?) {}
+
+                    override fun onEndOfSpeech() {
+                        Log.d(TAG, "Wake-word end of speech")
+                    }
+
+                    override fun onError(error: Int) {
+                        val msg = getErrorMessage(error)
+                        Log.d(TAG, "Wake-word recognizer error: $msg ($error)")
+                        
+                        // Restart listening after a short delay if enabled
+                        mainHandler.postDelayed({
+                            if (isListeningEnabled) {
+                                startRecognizerInternal()
+                            }
+                        }, 250)
+                    }
+
+                    override fun onResults(results: Bundle?) {
+                        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        if (checkMatchesForWakeWord(matches)) {
+                            Log.i(TAG, "Wake word detected in onResults!")
+                            triggerWakeWord()
+                        } else {
+                            // Restart listening
+                            mainHandler.postDelayed({
+                                if (isListeningEnabled) {
+                                    startRecognizerInternal()
+                                }
+                            }, 150)
+                        }
+                    }
+
+                    override fun onPartialResults(partialResults: Bundle?) {
+                        val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        if (checkMatchesForWakeWord(matches)) {
+                            Log.i(TAG, "Wake word detected in onPartialResults!")
+                            triggerWakeWord()
+                        }
+                    }
+
+                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                })
             }
-            
-            results.close()
-            inputTensor.close()
-            
-            if (probabilities != null && probabilities.size >= 2) {
-                // Apply Softmax to get confidence for class 1 (positive wake word)
-                val expNeg = Math.exp(probabilities[0].toDouble())
-                val expPos = Math.exp(probabilities[1].toDouble())
-                val confidence = (expPos / (expNeg + expPos)).toFloat()
-                
-                Log.d(TAG, "ONNX Wake Word logits: [${probabilities[0]}, ${probabilities[1]}], confidence: $confidence")
-                
-                // Trigger wake word if confidence >= 0.85 (highly confident prediction)
-                if (confidence >= 0.85f) {
-                    Log.i(TAG, "Custom ONNX wake word detected! (Confidence: $confidence)")
-                    onWakeWordDetected()
-                }
+
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
             }
+
+            speechRecognizer?.startListening(intent)
         } catch (e: Exception) {
-            Log.e(TAG, "Error running wake-word ONNX session", e)
+            Log.e(TAG, "Failed to start wake-word speech recognizer", e)
+            mainHandler.postDelayed({
+                if (isListeningEnabled) {
+                    startRecognizerInternal()
+                }
+            }, 500)
         }
     }
 
-    private fun preprocessAudioForOnnx(pcmData: ShortArray): FloatArray {
-        val targetLen = 24000
-        val floatData = FloatArray(targetLen)
+    private fun checkMatchesForWakeWord(matches: ArrayList<String>?): Boolean {
+        if (matches == null) return false
+        val targetWakeWord = getWakeWord().lowercase().trim()
         
-        if (pcmData.size > targetLen) {
-            // Center crop
-            val start = (pcmData.size - targetLen) / 2
-            for (i in 0 until targetLen) {
-                floatData[i] = pcmData[start + i].toFloat() / 32768.0f
-            }
-        } else {
-            // Center pad
-            val padLen = targetLen - pcmData.size
-            val left = padLen / 2
-            val startIdx = left
-            for (i in pcmData.indices) {
-                floatData[startIdx + i] = pcmData[i].toFloat() / 32768.0f
+        // Phonetic variants
+        val variants = mutableSetOf(targetWakeWord, "friday", "fri day", "frida", "freeday", "free day")
+        if (targetWakeWord != "friday") {
+            variants.add(targetWakeWord.replace(" ", ""))
+        }
+
+        for (match in matches) {
+            val cleanMatch = match.lowercase().trim()
+            for (variant in variants) {
+                if (cleanMatch.contains(variant)) {
+                    return true
+                }
             }
         }
-        return floatData
+        return false
+    }
+
+    private fun triggerWakeWord() {
+        stopListening()
+        onWakeWordDetected()
+    }
+
+    private fun destroyRecognizer() {
+        try {
+            speechRecognizer?.setRecognitionListener(null)
+            speechRecognizer?.cancel()
+            speechRecognizer?.destroy()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error destroying wake-word recognizer", e)
+        }
+        speechRecognizer = null
+    }
+
+    private fun getErrorMessage(error: Int): String {
+        return when (error) {
+            SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"
+            SpeechRecognizer.ERROR_CLIENT -> "Client side error"
+            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Insufficient permissions"
+            SpeechRecognizer.ERROR_NETWORK -> "Network error"
+            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
+            SpeechRecognizer.ERROR_NO_MATCH -> "No match found"
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognition service busy"
+            SpeechRecognizer.ERROR_SERVER -> "Server error"
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech input"
+            else -> "Unknown error"
+        }
     }
 }

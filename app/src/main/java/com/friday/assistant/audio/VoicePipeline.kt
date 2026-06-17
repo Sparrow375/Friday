@@ -57,7 +57,7 @@ class VoicePipeline(
     fun startPipeline() {
         Log.i(TAG, "Starting Voice Pipeline")
         audioCaptureManager.registerListener(this)
-        audioCaptureManager.registerListener(wakeWordDetector!!)
+        wakeWordDetector?.startListening()
         audioCaptureManager.startCapture()
         _state.value = PipelineState.IDLE
     }
@@ -66,7 +66,7 @@ class VoicePipeline(
         Log.i(TAG, "Stopping Voice Pipeline")
         audioCaptureManager.stopCapture()
         audioCaptureManager.unregisterListener(this)
-        audioCaptureManager.unregisterListener(wakeWordDetector!!)
+        wakeWordDetector?.stopListening()
         _state.value = PipelineState.IDLE
     }
 
