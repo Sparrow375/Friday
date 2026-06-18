@@ -61,4 +61,20 @@ object AutomationBridge {
         latch.await(3, TimeUnit.SECONDS)
         return result.get()
     }
+
+    /**
+     * After a WhatsApp chat is opened via deep link, waits for WhatsApp to foreground
+     * then taps the send button autonomously. Blocks for up to 7 seconds.
+     */
+    fun performWhatsAppSend(): Boolean {
+        val svc = service ?: return false
+        val result = AtomicBoolean(false)
+        val latch = CountDownLatch(1)
+        svc.postWhatsAppSend(timeoutMs = 7000L) { ok ->
+            result.set(ok)
+            latch.countDown()
+        }
+        latch.await(8, TimeUnit.SECONDS)
+        return result.get()
+    }
 }

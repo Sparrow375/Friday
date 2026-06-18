@@ -489,6 +489,16 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         overlayManager?.show()
     }
 
+    /** Called by ScreenshotTool before dispatching the capture action. */
+    fun hideOverlayForScreenshot() {
+        serviceScope.launch { overlayManager?.dismiss() }
+    }
+
+    /** Called by ScreenshotTool after the capture has been dispatched. */
+    fun restoreOverlayAfterScreenshot() {
+        serviceScope.launch { overlayManager?.show() }
+    }
+
     private fun getStatusText(state: PipelineState): String {
         return when (state) {
             PipelineState.IDLE -> "Active"
