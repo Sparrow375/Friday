@@ -34,7 +34,11 @@ class NluIntentClassifier(private val context: Context) {
         "take_screenshot", "web_search",
         "clipboard_read", "clipboard_write",
         "read_notifications", "get_battery", "get_time",
-        "airplane_mode_toggle", "mobile_data_toggle", "unknown"
+        "airplane_mode_toggle", "mobile_data_toggle",
+        "open_camera",
+        "notes_create", "notes_list", "notes_search", "notes_delete",
+        "search_google", "remember_preference", "recall_preference", "open_files",
+        "unknown"
     )
 
     init {

@@ -562,6 +562,88 @@ class AgentCore(
             }
         }
 
+        // L2. Google search
+        val isSearchGoogle = matchedIntent == "search_google" && confidence > 0.7f ||
+                cleanQuery.startsWith("google ") ||
+                cleanQuery.contains("search google") ||
+                cleanQuery.contains("search the web for") ||
+                (cleanQuery.contains("look this up") && !cleanQuery.contains("reddit"))
+        if (isSearchGoogle) {
+            var searchPhrase = cleanQuery
+                .replace(Regex("(?i)^(google|search google for|search the web for|look this up on google|look this up|search for)\\s+"), "")
+                .trim()
+            if (searchPhrase.isEmpty()) searchPhrase = userInput
+            _agentStatusFlow.emit("Searching Google...")
+            val searchTool = ToolRegistry.get("web_search")
+            if (searchTool != null) {
+                val result = searchTool.execute(JsonObject().apply { addProperty("query", searchPhrase) })
+                if (result.success) return fast(result.data)
+            }
+            return try {
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    data = Uri.parse("https://www.google.com/search?q=" + java.net.URLEncoder.encode(searchPhrase, "UTF-8"))
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(intent)
+                fast("Searching Google for '$searchPhrase'.")
+            } catch (e: Exception) {
+                QueryResult("Failed to open Google search.", true)
+            }
+        }
+
+        // L3. Remember / Recall preferences
+        val isRemember = matchedIntent == "remember_preference" && confidence > 0.7f ||
+                cleanQuery.startsWith("remember that") || cleanQuery.startsWith("store the fact") ||
+                cleanQuery.startsWith("keep in mind") || cleanQuery.contains("note that i prefer")
+        if (isRemember) {
+            val rememberTool = ToolRegistry.get("remember")
+            if (rememberTool != null) {
+                val factMatch = Regex("(?i)(?:remember that|store the fact that|keep in mind that|note that)\\s+(.+)").find(resolvedInput)
+                val fact = factMatch?.groupValues?.get(1)?.trim() ?: resolvedInput
+                _agentStatusFlow.emit("Saving preference...")
+                val result = rememberTool.execute(JsonObject().apply { addProperty("text", fact) })
+                return toolResult(result)
+            }
+        }
+        val isRecall = matchedIntent == "recall_preference" && confidence > 0.7f ||
+                cleanQuery.contains("what do you remember about me") ||
+                cleanQuery.contains("what have i told you") ||
+                cleanQuery.contains("my saved preferences") ||
+                cleanQuery.contains("recall what you know")
+        if (isRecall) {
+            val recallTool = ToolRegistry.get("recall")
+            if (recallTool != null) {
+                _agentStatusFlow.emit("Recalling preferences...")
+                val result = recallTool.execute(JsonObject())
+                return toolResult(result)
+            }
+        }
+
+        // L4. Open Files
+        val isOpenFiles = matchedIntent == "open_files" && confidence > 0.7f ||
+                cleanQuery.contains("open my files") || cleanQuery.contains("open file manager") ||
+                cleanQuery.contains("show downloads") || cleanQuery.contains("browse documents") ||
+                cleanQuery.contains("show my photos") || cleanQuery.contains("browse my files")
+        if (isOpenFiles) {
+            _agentStatusFlow.emit("Opening file manager...")
+            return try {
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    type = "resource/folder"
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(intent)
+                fast("Opening file manager.")
+            } catch (e: Exception) {
+                // Fallback: open the app launcher with "files"
+                val tool = ToolRegistry.get("app_launcher")
+                if (tool != null) {
+                    val result = tool.execute(JsonObject().apply { addProperty("app_name", "files") })
+                    if (result.success) return fast(result.data)
+                }
+                QueryResult("Could not open file manager.", true)
+            }
+        }
+
         // T. Play Media / Search Music (before open_app to avoid "start playing" collision)
         val isPlayMedia = matchedIntent == "play_media" || matchedIntent == "play_spotify" ||
             matchedIntent == "play_youtube" ||
