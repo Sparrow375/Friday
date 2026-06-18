@@ -109,6 +109,10 @@ object DialogueStateTracker {
                 isOn -> "turn on mobile data"
                 else -> query
             }
+            "camera" -> when {
+                isOn -> "open camera"
+                else -> query
+            }
             "volume" -> when {
                 isUp -> "increase volume"
                 isDown -> "decrease volume"

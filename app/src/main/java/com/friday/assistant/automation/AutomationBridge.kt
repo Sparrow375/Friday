@@ -45,4 +45,20 @@ object AutomationBridge {
         latch.await(5, TimeUnit.SECONDS)
         return result.get()
     }
+
+    /**
+     * Asks the accessibility service to find and click a Play/Resume button in the
+     * currently-focused app. Used as a Tier-3 media fallback.
+     */
+    fun triggerInAppPlay(): Boolean {
+        val svc = service ?: return false
+        val result = AtomicBoolean(false)
+        val latch = CountDownLatch(1)
+        svc.postInAppPlay { ok ->
+            result.set(ok)
+            latch.countDown()
+        }
+        latch.await(3, TimeUnit.SECONDS)
+        return result.get()
+    }
 }

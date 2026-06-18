@@ -761,8 +761,150 @@ class AgentCore(
             }
         }
 
+        // V1. Airplane Mode
+        val isAirplaneModeQuery = matchedIntent == "airplane_mode_toggle" ||
+            cleanQuery.contains("airplane mode") || cleanQuery.contains("flight mode") ||
+            cleanQuery.contains("aeroplane mode")
+        if (isAirplaneModeQuery) {
+            val isOff = cleanQuery.contains("off") || cleanQuery.contains("disable") ||
+                cleanQuery.contains("deactivate") || cleanQuery.contains("turn off")
+            val isOn = cleanQuery.contains("on") || cleanQuery.contains("enable") ||
+                cleanQuery.contains("activate") || cleanQuery.contains("turn on")
+            val state = if (isOff && !isOn) "off" else "on"
+            _agentStatusFlow.emit(if (state == "on") "Enabling airplane mode..." else "Disabling airplane mode...")
+            val tool = ToolRegistry.get("system_control")
+            if (tool != null) {
+                val result = tool.execute(JsonObject().apply {
+                    addProperty("action", "toggle_airplane_mode")
+                    addProperty("value", state)
+                })
+                return if (result.success) fast(result.data, "airplane_mode", state) else QueryResult("Failed to toggle airplane mode.", true)
+            }
+        }
+
+        // V2. Mobile Data
+        val isMobileDataQuery = matchedIntent == "mobile_data_toggle" ||
+            cleanQuery.contains("mobile data") || cleanQuery.contains("cellular data") ||
+            cleanQuery.contains("data connection") || cleanQuery.contains("turn on data") ||
+            cleanQuery.contains("turn off data") || cleanQuery.contains("enable data") ||
+            cleanQuery.contains("disable data")
+        if (isMobileDataQuery) {
+            val isOff = cleanQuery.contains("off") || cleanQuery.contains("disable") ||
+                cleanQuery.contains("deactivate") || cleanQuery.contains("turn off")
+            val isOn = cleanQuery.contains("on") || cleanQuery.contains("enable") ||
+                cleanQuery.contains("activate") || cleanQuery.contains("turn on")
+            val state = if (isOff && !isOn) "off" else "on"
+            _agentStatusFlow.emit(if (state == "on") "Enabling mobile data..." else "Disabling mobile data...")
+            val tool = ToolRegistry.get("system_control")
+            if (tool != null) {
+                val result = tool.execute(JsonObject().apply {
+                    addProperty("action", "toggle_mobile_data")
+                    addProperty("value", state)
+                })
+                return if (result.success) fast(result.data, "mobile_data", state) else QueryResult("Failed to toggle mobile data.", true)
+            }
+        }
+
+        // V3. Camera
+        val isCameraQuery = matchedIntent == "open_camera" ||
+            (cleanQuery.contains("camera") && !cleanQuery.contains("screenshot")) ||
+            cleanQuery.contains("take a photo") || cleanQuery.contains("take a picture") ||
+            cleanQuery.contains("open camera") || cleanQuery.contains("launch camera") ||
+            cleanQuery.contains("capture photo") || cleanQuery.contains("snap a photo")
+        if (isCameraQuery && !EntityExtractor.isScreenshotQuery(cleanQuery)) {
+            val isCapture = cleanQuery.contains("take") || cleanQuery.contains("capture") ||
+                cleanQuery.contains("snap") || cleanQuery.contains("photo") || cleanQuery.contains("picture")
+            val cameraAction = if (isCapture) "capture_photo" else "open_camera"
+            _agentStatusFlow.emit("Opening camera...")
+            val tool = ToolRegistry.get("camera_control")
+            if (tool != null) {
+                val result = tool.execute(JsonObject().apply {
+                    addProperty("action", cameraAction)
+                })
+                return toolResult(result)
+            }
+        }
+
+        // V4. Notes
+        val isNotesQuery = matchedIntent == "notes_create" || matchedIntent == "notes_list" ||
+            matchedIntent == "notes_search" || matchedIntent == "notes_delete" ||
+            cleanQuery.contains("note") || cleanQuery.contains("jot down") ||
+            cleanQuery.contains("write down") || cleanQuery.contains("save a note") ||
+            cleanQuery.contains("remind me") && !cleanQuery.contains("remind me at") ||
+            cleanQuery.contains("my notes")
+        if (isNotesQuery) {
+            val tool = ToolRegistry.get("notes_control")
+            if (tool != null) {
+                when {
+                    // Create: "note that...", "jot down...", "write down...", "save note..."
+                    cleanQuery.contains("jot down") || cleanQuery.contains("write down") ||
+                    cleanQuery.contains("save a note") || cleanQuery.contains("save note") ||
+                    cleanQuery.contains("note that") || cleanQuery.contains("note down") ||
+                    matchedIntent == "notes_create" -> {
+                        val contentPatterns = listOf(
+                            "(?i)(?:note that|jot down|write down|save a? ?note(?:(?: that| saying)?))\\s+(.+)".toRegex(),
+                            "(?i)(?:remind me)\\s+(?:to\\s+)?(.+)".toRegex(),
+                            "(?i)note:\\s*(.+)".toRegex()
+                        )
+                        var content = ""
+                        for (p in contentPatterns) {
+                            val m = p.find(resolvedInput)
+                            if (m != null) { content = m.groupValues[1].trim(); break }
+                        }
+                        if (content.isEmpty()) content = resolvedInput
+                            .replace(Regex("(?i)(note|jot|write|save|down|that|please|friday)"), "").trim()
+                        if (content.isNotEmpty()) {
+                            _agentStatusFlow.emit("Saving note...")
+                            val result = tool.execute(JsonObject().apply {
+                                addProperty("action", "create")
+                                addProperty("content", content)
+                            })
+                            return toolResult(result)
+                        }
+                    }
+                    // Search: "find note about...", "search notes for..."
+                    cleanQuery.contains("find note") || cleanQuery.contains("search note") ||
+                    cleanQuery.contains("look up note") || matchedIntent == "notes_search" -> {
+                        val qMatch = Regex("(?i)(?:find|search|look up)\\s+(?:notes?\\s+)?(?:about|for|with)?\\s+(.+)").find(resolvedInput)
+                        val q = qMatch?.groupValues?.get(1)?.trim() ?: ""
+                        if (q.isNotEmpty()) {
+                            _agentStatusFlow.emit("Searching notes...")
+                            val result = tool.execute(JsonObject().apply {
+                                addProperty("action", "search")
+                                addProperty("query", q)
+                            })
+                            return toolResult(result)
+                        }
+                    }
+                    // Delete: "delete note 3", "remove note with id 5"
+                    (cleanQuery.contains("delete note") || cleanQuery.contains("remove note")) &&
+                    matchedIntent == "notes_delete" -> {
+                        val idMatch = Regex("(\\d+)").find(cleanQuery)
+                        if (idMatch != null) {
+                            val id = idMatch.groupValues[1].toLong()
+                            _agentStatusFlow.emit("Deleting note...")
+                            val result = tool.execute(JsonObject().apply {
+                                addProperty("action", "delete")
+                                addProperty("note_id", id)
+                            })
+                            return toolResult(result)
+                        }
+                    }
+                    // List: "show my notes", "list notes", "what are my notes"
+                    else -> {
+                        _agentStatusFlow.emit("Reading notes...")
+                        val result = tool.execute(JsonObject().apply {
+                            addProperty("action", "list")
+                        })
+                        return toolResult(result)
+                    }
+                }
+            }
+        }
+
         // U. WhatsApp Send Message (NLU Route Integration)
         if (matchedIntent == "send_whatsapp" && confidence > 0.7f) {
+
             val patterns = listOf(
                 "(?i)(?:message|text|send message to)\\s+(.+?)\\s+on\\s+whatsapp\\s+(?:saying|text|message)?\\s*(.+)".toRegex(),
                 "(?i)(?:message|text|send message to)\\s+(.+?)\\s+(?:saying|text|message)?\\s*(.+)\\s+on\\s+whatsapp".toRegex(),

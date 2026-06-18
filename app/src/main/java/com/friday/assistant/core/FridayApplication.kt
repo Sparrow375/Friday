@@ -6,26 +6,34 @@ import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import com.friday.assistant.audio.AudioCaptureManager
 import com.friday.assistant.core.db.FridayDatabase
 import com.friday.assistant.core.native.LlamaEngine
 import com.friday.assistant.core.native.WhisperEngine
-import com.friday.assistant.audio.AudioCaptureManager
+import com.friday.assistant.intelligence.AgentCore
+import com.friday.assistant.intelligence.MemoryManager
 
 class FridayApplication : Application() {
 
     companion object {
         private const val TAG = "FridayApplication"
         const val CHANNEL_ID = "friday_assistant_channel"
-        
+
         lateinit var instance: FridayApplication
             private set
-        
+
         lateinit var database: FridayDatabase
             private set
 
+        // Shared heavy engines — one instance for the entire process lifetime.
         val llamaEngine by lazy { LlamaEngine() }
         val whisperEngine by lazy { WhisperEngine() }
         val audioCaptureManager by lazy { AudioCaptureManager(instance) }
+
+        // NLU + agent core — singleton so ONNX sessions are not duplicated when the
+        // service is recreated (e.g. after crash / OS kill + restart).
+        val memoryManager by lazy { MemoryManager(instance) }
+        val agentCore by lazy { AgentCore(instance, memoryManager) }
     }
 
     override fun onCreate() {
@@ -33,10 +41,10 @@ class FridayApplication : Application() {
         instance = this
         FridayLogger.init(this)
         FridayLogger.i(TAG, "Initializing Project Friday Application")
-        
+
         // Initialize Database
         database = FridayDatabase.getDatabase(this)
-        
+
         // Setup Notification Channel
         createNotificationChannel()
     }

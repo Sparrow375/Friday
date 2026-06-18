@@ -169,6 +169,12 @@ class MediaControlTool(private val context: Context) : Tool {
             context.startActivity(intent)
             ToolResult(true, "Playing '$query'")
         } catch (e: Exception) {
+            Log.w(TAG, "MEDIA_PLAY_FROM_SEARCH failed, trying in-app play via Accessibility", e)
+            // Tier-3: accessibility service clicks the Play button in the currently-active app
+            if (com.friday.assistant.automation.AutomationBridge.isReady()) {
+                val ok = com.friday.assistant.automation.AutomationBridge.triggerInAppPlay()
+                if (ok) return ToolResult(true, "Triggered playback in the active app")
+            }
             ToolResult(false, "Failed to start media playback: ${e.message}")
         }
     }

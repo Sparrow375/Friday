@@ -190,6 +190,73 @@ class SemanticIntentRouter(private val context: Context) {
         ReferenceCommand("turn on mobile data", "mobile_data_toggle"),
         ReferenceCommand("disable mobile data", "mobile_data_toggle"),
 
+        // Camera
+        ReferenceCommand("open the camera", "open_camera"),
+        ReferenceCommand("launch camera app", "open_camera"),
+        ReferenceCommand("take a photo", "open_camera"),
+        ReferenceCommand("take a picture please", "open_camera"),
+        ReferenceCommand("capture a photo for me", "open_camera"),
+        ReferenceCommand("snap a selfie", "open_camera"),
+        ReferenceCommand("open front camera", "open_camera"),
+        ReferenceCommand("start camera viewfinder", "open_camera"),
+
+        // Notes
+        ReferenceCommand("note that I need to buy groceries", "notes_create"),
+        ReferenceCommand("jot down call dentist tomorrow", "notes_create"),
+        ReferenceCommand("write down buy milk and bread", "notes_create"),
+        ReferenceCommand("save a note saying meeting at 3pm", "notes_create"),
+        ReferenceCommand("remind me to check the oven", "notes_create"),
+        ReferenceCommand("make a note about project deadline", "notes_create"),
+        ReferenceCommand("show me my notes", "notes_list"),
+        ReferenceCommand("list all my saved notes", "notes_list"),
+        ReferenceCommand("what notes do I have", "notes_list"),
+        ReferenceCommand("find notes about dentist", "notes_search"),
+        ReferenceCommand("search my notes for groceries", "notes_search"),
+        ReferenceCommand("delete note number three", "notes_delete"),
+        ReferenceCommand("remove note with id five", "notes_delete"),
+
+        // Airplane mode expanded
+        ReferenceCommand("activate flight mode", "airplane_mode_toggle"),
+        ReferenceCommand("switch on aeroplane mode", "airplane_mode_toggle"),
+        ReferenceCommand("I am about to board a flight", "airplane_mode_toggle"),
+        ReferenceCommand("disable flight mode", "airplane_mode_toggle"),
+        ReferenceCommand("switch off airplane mode", "airplane_mode_toggle"),
+
+        // Mobile data expanded
+        ReferenceCommand("turn on cellular data", "mobile_data_toggle"),
+        ReferenceCommand("disable my internet connection", "mobile_data_toggle"),
+        ReferenceCommand("enable data connection", "mobile_data_toggle"),
+        ReferenceCommand("switch off mobile internet", "mobile_data_toggle"),
+        ReferenceCommand("I want to save my data", "mobile_data_toggle"),
+
+        // In-app media play (open app then play)
+        ReferenceCommand("play despacito on spotify app", "play_spotify"),
+        ReferenceCommand("open spotify and play jazz", "play_spotify"),
+        ReferenceCommand("put on some music in spotify", "play_spotify"),
+        ReferenceCommand("open youtube and search cats", "play_youtube"),
+        ReferenceCommand("find funny videos on youtube", "play_youtube"),
+        ReferenceCommand("search youtube for workout music", "play_youtube"),
+        ReferenceCommand("play lofi beats on youtube music", "play_media"),
+        ReferenceCommand("start playing podcast on spotify", "play_media"),
+        ReferenceCommand("search google for latest news", "search_google"),
+        ReferenceCommand("look this up on google", "search_google"),
+        ReferenceCommand("google the weather today", "search_google"),
+
+        // WhatsApp in-app send
+        ReferenceCommand("open whatsapp and message mom", "send_whatsapp"),
+        ReferenceCommand("go to whatsapp and text dad", "send_whatsapp"),
+
+        // Recall / Remember preferences
+        ReferenceCommand("remember that my favorite color is blue", "remember_preference"),
+        ReferenceCommand("recall what you know about me", "recall_preference"),
+        ReferenceCommand("what do you remember about me", "recall_preference"),
+        ReferenceCommand("store the fact that I prefer dark mode", "remember_preference"),
+
+        // File manager
+        ReferenceCommand("open my files", "open_files"),
+        ReferenceCommand("show downloads folder", "open_files"),
+        ReferenceCommand("browse my documents", "open_files"),
+
         // Follow-up phrasing (maps via dialogue state at runtime; still train for semantic similarity)
         ReferenceCommand("turn it off", "torch_toggle"),
         ReferenceCommand("turn it on", "torch_toggle"),

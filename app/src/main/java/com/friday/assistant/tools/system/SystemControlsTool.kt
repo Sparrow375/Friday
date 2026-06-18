@@ -26,7 +26,7 @@ class SystemControlsTool(private val context: Context) : Tool {
     override val description: String = """
         Controls physical device settings including flashlight, flashlight strength level, volume levels, 
         screen brightness, WiFi status, Bluetooth status, Do Not Disturb (DND), screen mirroring (screencast), 
-        and battery saver settings.
+        battery saver settings, airplane mode, and mobile data.
     """.trimIndent()
 
     override val parameters: JsonObject = JsonParser.parseString("""
@@ -35,7 +35,7 @@ class SystemControlsTool(private val context: Context) : Tool {
           "properties": {
             "action": {
               "type": "string",
-              "enum": ["toggle_torch", "set_volume", "set_brightness", "toggle_wifi", "toggle_bluetooth", "toggle_dnd", "set_torch_strength", "toggle_screencast", "toggle_power_saver", "lock_phone", "toggle_hotspot"],
+              "enum": ["toggle_torch", "set_volume", "set_brightness", "toggle_wifi", "toggle_bluetooth", "toggle_dnd", "set_torch_strength", "toggle_screencast", "toggle_power_saver", "lock_phone", "toggle_hotspot", "toggle_airplane_mode", "toggle_mobile_data"],
               "description": "The system setting control action to execute"
             },
             "value": {
@@ -64,6 +64,8 @@ class SystemControlsTool(private val context: Context) : Tool {
                 "toggle_power_saver" -> togglePowerSaver()
                 "lock_phone" -> lockPhone()
                 "toggle_hotspot" -> toggleHotspot()
+                "toggle_airplane_mode" -> toggleAirplaneMode(value == "on")
+                "toggle_mobile_data" -> toggleMobileData(value == "on")
                 else -> ToolResult(false, "Unknown system action: $action")
             }
         } catch (e: Exception) {
@@ -319,6 +321,61 @@ class SystemControlsTool(private val context: Context) : Tool {
             ToolResult(true, "Opening Battery Saver settings...")
         } catch (e: Exception) {
             ToolResult(false, "Failed to open Battery Saver settings: ${e.message}")
+        }
+    }
+
+    private fun toggleAirplaneMode(enable: Boolean): ToolResult {
+        // Android 4.2+ removed direct programmatic control of airplane mode.
+        // Try Accessibility quick-setting first, then fall back to the settings panel.
+        if (AutomationBridge.isReady()) {
+            val ok = AutomationBridge.toggleQuickSetting("airplane", enable)
+            if (ok) {
+                val status = if (enable) "enabled" else "disabled"
+                return ToolResult(true, "Airplane mode $status")
+            }
+        }
+        return try {
+            val intent = Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(intent)
+            ToolResult(true, "Opening Airplane Mode settings...")
+        } catch (e: Exception) {
+            ToolResult(false, "Failed to open Airplane Mode settings: ${e.message}")
+        }
+    }
+
+    private fun toggleMobileData(enable: Boolean): ToolResult {
+        // Direct programmatic toggle requires MODIFY_PHONE_STATE (system/carrier-signed apps only).
+        // Try Accessibility quick-setting tile first, then Settings deep-link fallback.
+        if (AutomationBridge.isReady()) {
+            val ok = AutomationBridge.toggleQuickSetting("mobile_data", enable)
+            if (ok) {
+                val status = if (enable) "enabled" else "disabled"
+                return ToolResult(true, "Mobile data $status")
+            }
+        }
+        return try {
+            @Suppress("DiscouragedPrivateApi")
+            val intent = Intent().apply {
+                component = android.content.ComponentName(
+                    "com.android.settings",
+                    "com.android.settings.Settings\$DataUsageSummaryActivity"
+                )
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(intent)
+            ToolResult(true, "Opening Mobile Data settings...")
+        } catch (e: Exception) {
+            try {
+                val intent = Intent(Settings.ACTION_DATA_ROAMING_SETTINGS).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(intent)
+                ToolResult(true, "Opening network settings...")
+            } catch (ex: Exception) {
+                ToolResult(false, "Failed to open mobile data settings: ${ex.message}")
+            }
         }
     }
 }

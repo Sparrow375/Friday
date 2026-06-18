@@ -16,7 +16,6 @@ import com.friday.assistant.audio.SpeechToTextHelper
 import com.friday.assistant.core.FridayApplication
 import com.friday.assistant.core.ModelManager
 import com.friday.assistant.intelligence.AgentCore
-import com.friday.assistant.intelligence.MemoryManager
 import com.friday.assistant.tools.ToolRegistrar
 import com.friday.assistant.ui.overlay.OverlayManager
 import kotlinx.coroutines.CoroutineScope
@@ -55,11 +54,13 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.Main)
-    
+
     // Core engine dependencies
     private lateinit var modelManager: ModelManager
-    private lateinit var memoryManager: MemoryManager
-    private lateinit var agentCore: AgentCore
+    // agentCore and memoryManager are application-level singletons (FridayApplication.agentCore /
+    // FridayApplication.memoryManager) — accessed via property delegation to avoid duplicating
+    // the heavy NLU ONNX session on every service restart.
+    private val agentCore: AgentCore get() = FridayApplication.agentCore
     private lateinit var speechToTextHelper: SpeechToTextHelper
     private var wakeWordDetector: com.friday.assistant.audio.WakeWordDetector? = null
     
@@ -82,11 +83,13 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         // 1. Initialize core logic components
         modelManager = ModelManager(this)
-        memoryManager = MemoryManager(this)
-        agentCore = AgentCore(this, memoryManager)
+        // memoryManager and agentCore are shared singletons held by FridayApplication.
+        // Touching FridayApplication.agentCore here ensures the lazy is initialised on the
+        // main thread (safe — no heavy work happens inside the lazy block itself).
+        FridayApplication.agentCore  // warm up singleton
 
         // 2. Register Agentic Tools
-        ToolRegistrar.registerAll(this, memoryManager)
+        ToolRegistrar.registerAll(this, FridayApplication.memoryManager)
 
         // 3. Setup TTS
         tts = TextToSpeech(this, this)
