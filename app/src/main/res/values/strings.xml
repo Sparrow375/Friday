@@ -2,4 +2,5 @@
     <string name="app_name">Friday</string>
     <string name="accessibility_description">Friday Accessibility Service enables deep offline voice controls and agentic in-app automation capabilities.</string>
     <string name="device_admin_description">Friday Device Admin allows locking the screen when requested.</string>
+    <string name="accessibility_service_description">Friday uses UI automation to take screenshots, toggle system settings silently, and control apps in the background.</string>
 </resources>

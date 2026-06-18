@@ -34,27 +34,171 @@ class AgentCore(
     private val _agentStatusFlow = MutableSharedFlow<String>(extraBufferCapacity = 10)
     val agentStatusFlow: SharedFlow<String> = _agentStatusFlow.asSharedFlow()
 
-    suspend fun processQuery(userInput: String, onToken: (String) -> Unit = {}): String {
+    suspend fun processQuery(userInput: String, onToken: (String) -> Unit = {}): QueryResult {
         com.friday.assistant.core.FridayLogger.i(TAG, "AgentCore processing query: '$userInput'")
-        
+
+        // 0. Resolve anaphoric follow-ups ("turn it off" after "turn on torch")
+        val resolvedInput = DialogueStateTracker.resolveFollowUp(userInput)
+        if (resolvedInput != userInput) {
+            com.friday.assistant.core.FridayLogger.i(TAG, "Follow-up resolved: '$userInput' -> '$resolvedInput'")
+        }
+
         // 1. Core Intent Classification (Semantic Router, NLU Classifier, or Rule-Based Fallback)
-        val cleanQuery = userInput.trim().lowercase()
+        val cleanQuery = resolvedInput.trim().lowercase()
         var matchedIntent = "unknown"
         var confidence = 0f
 
         if (semanticRouter.isModelLoaded()) {
-            val res = semanticRouter.routeIntent(userInput)
+            val res = semanticRouter.routeIntent(resolvedInput)
             matchedIntent = res.first
             confidence = res.second
         }
         
         if (matchedIntent == "unknown" && nluClassifier.isModelLoaded()) {
-            val res = nluClassifier.classifyIntent(userInput)
+            val res = nluClassifier.classifyIntent(resolvedInput)
             matchedIntent = res.first
             confidence = res.second
         }
 
-        // 2. Direct Command Execution for system controls
+        // 2. Direct Command Execution — high-priority routes first
+
+        // A0. Screenshot (must run before brightness — "screen" keyword collision)
+        if (EntityExtractor.isScreenshotQuery(cleanQuery) || matchedIntent == "take_screenshot") {
+            _agentStatusFlow.emit("Taking screenshot...")
+            val tool = ToolRegistry.get("screenshot")
+            if (tool != null) {
+                val result = tool.execute(JsonObject().apply { addProperty("action", "capture") })
+                return toolResult(result)
+            }
+        }
+
+        // A0b. Phone call — "call Mom", "can you call John"
+        val callContact = EntityExtractor.extractCallContact(resolvedInput)
+        val isCallQuery = callContact != null || matchedIntent == "call_contact"
+        if (isCallQuery) {
+            val name = callContact ?: cleanQuery
+                .replace(Regex("(?i)(call|phone|dial|ring)\\s+"), "")
+                .trim()
+            if (name.isNotEmpty()) {
+                _agentStatusFlow.emit("Calling $name...")
+                val tool = ToolRegistry.get("phone_control")
+                if (tool != null) {
+                    val result = tool.execute(JsonObject().apply {
+                        addProperty("action", "call")
+                        addProperty("contact_name", name)
+                    })
+                    return toolResult(result)
+                }
+            }
+        }
+
+        // A0c. Send SMS
+        val smsDetails = EntityExtractor.extractSmsDetails(resolvedInput)
+        if (smsDetails != null || matchedIntent == "send_sms") {
+            if (smsDetails != null) {
+                _agentStatusFlow.emit("Sending SMS to ${smsDetails.first}...")
+                val tool = ToolRegistry.get("phone_control")
+                if (tool != null) {
+                    val result = tool.execute(JsonObject().apply {
+                        addProperty("action", "send_sms")
+                        addProperty("recipient", smsDetails.first)
+                        addProperty("message", smsDetails.second)
+                    })
+                    return toolResult(result)
+                }
+            }
+        }
+
+        // A0d. Read SMS / call log
+        if (cleanQuery.contains("read sms") || cleanQuery.contains("read my messages") ||
+            cleanQuery.contains("check messages") || matchedIntent == "read_sms") {
+            _agentStatusFlow.emit("Reading messages...")
+            val tool = ToolRegistry.get("phone_control")
+            if (tool != null) {
+                val result = tool.execute(JsonObject().apply { addProperty("action", "read_sms") })
+                return toolResult(result)
+            }
+        }
+        if (cleanQuery.contains("call log") || cleanQuery.contains("recent calls") || matchedIntent == "read_call_log") {
+            _agentStatusFlow.emit("Reading call log...")
+            val tool = ToolRegistry.get("phone_control")
+            if (tool != null) {
+                val result = tool.execute(JsonObject().apply { addProperty("action", "read_call_log") })
+                return toolResult(result)
+            }
+        }
+
+        // A0e. Clipboard
+        if (cleanQuery.contains("clipboard") || matchedIntent == "clipboard_read" || matchedIntent == "clipboard_write") {
+            val tool = ToolRegistry.get("clipboard_control")
+            if (tool != null) {
+                if (cleanQuery.contains("copy") || cleanQuery.contains("write") || matchedIntent == "clipboard_write") {
+                    val textMatch = Regex("(?i)(?:copy|write)\\s+(.+)\\s+(?:to clipboard|to the clipboard)").find(resolvedInput)
+                    val text = textMatch?.groupValues?.get(1)?.trim()
+                    if (!text.isNullOrEmpty()) {
+                        _agentStatusFlow.emit("Copying to clipboard...")
+                        val result = tool.execute(JsonObject().apply {
+                            addProperty("action", "write")
+                            addProperty("text", text)
+                        })
+                        return toolResult(result)
+                    }
+                } else {
+                    _agentStatusFlow.emit("Reading clipboard...")
+                    val result = tool.execute(JsonObject().apply { addProperty("action", "read") })
+                    return toolResult(result)
+                }
+            }
+        }
+
+        // A0f. Battery / time
+        if (cleanQuery.contains("battery") || matchedIntent == "get_battery") {
+            val bm = context.getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
+            val level = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            val msg = "Battery is at $level percent."
+            return fast(msg)
+        }
+        if (cleanQuery.contains("what time") || cleanQuery.contains("current time") || matchedIntent == "get_time") {
+            val fmt = java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
+            val msg = "It's ${fmt.format(java.util.Date())}."
+            return fast(msg)
+        }
+
+        // A0g. Media transport controls (pause / next / previous / resume)
+        if (cleanQuery.contains("pause") && (cleanQuery.contains("music") || cleanQuery.contains("media") || cleanQuery.contains("playback")) ||
+            matchedIntent == "pause_media" || cleanQuery == "pause" || cleanQuery == "pause it") {
+            _agentStatusFlow.emit("Pausing media...")
+            val tool = ToolRegistry.get("media_control")
+            if (tool != null) {
+                val result = tool.execute(JsonObject().apply { addProperty("action", "pause") })
+                DialogueStateTracker.record("media", "off")
+                return toolResult(result)
+            }
+        }
+        if (cleanQuery.contains("next track") || cleanQuery.contains("skip") || matchedIntent == "next_track") {
+            val tool = ToolRegistry.get("media_control")
+            if (tool != null) {
+                val result = tool.execute(JsonObject().apply { addProperty("action", "next") })
+                return toolResult(result)
+            }
+        }
+        if (cleanQuery.contains("previous track") || cleanQuery.contains("go back") && cleanQuery.contains("song") ||
+            matchedIntent == "previous_track") {
+            val tool = ToolRegistry.get("media_control")
+            if (tool != null) {
+                val result = tool.execute(JsonObject().apply { addProperty("action", "previous") })
+                return toolResult(result)
+            }
+        }
+        if (cleanQuery.contains("resume") && cleanQuery.contains("music") || cleanQuery == "resume" || cleanQuery == "resume it") {
+            val tool = ToolRegistry.get("media_control")
+            if (tool != null) {
+                val result = tool.execute(JsonObject().apply { addProperty("action", "play") })
+                DialogueStateTracker.record("media", "on")
+                return toolResult(result)
+            }
+        }
+
         // A. Volume Controls
         val isVolumeQuery = cleanQuery.contains("volume") || cleanQuery.contains("sound") || cleanQuery.contains("audio") || cleanQuery.contains("mute") || cleanQuery.contains("unmute") || cleanQuery.contains("louder") || cleanQuery.contains("quieter") || matchedIntent == "volume_up" || matchedIntent == "volume_down"
         if (isVolumeQuery) {
@@ -100,12 +244,14 @@ class AgentCore(
                     addProperty("action", "set_volume")
                     addProperty("value", actionVal)
                 })
-                return if (result.success) result.data else "Failed to adjust volume."
+                return if (result.success) fast(result.data, "volume", actionVal) else QueryResult("Failed to adjust volume.", true)
             }
         }
 
-        // B. Brightness Controls
-        val isBrightnessQuery = (cleanQuery.contains("brightness") || cleanQuery.contains("dim") || (cleanQuery.contains("screen") && !cleanQuery.contains("lock") && !cleanQuery.contains("off"))) || matchedIntent == "brightness_up" || matchedIntent == "brightness_down"
+        // B. Brightness Controls — require brightness keywords (NOT bare "screen")
+        val isBrightnessQuery = cleanQuery.contains("brightness") || cleanQuery.contains("dim") ||
+            cleanQuery.contains("brighter") || cleanQuery.contains("dimmer") ||
+            matchedIntent == "brightness_up" || matchedIntent == "brightness_down"
         if (isBrightnessQuery) {
             val actionVal: String
             val actionText: String
@@ -143,7 +289,7 @@ class AgentCore(
                     addProperty("action", "set_brightness")
                     addProperty("value", actionVal)
                 })
-                return if (result.success) result.data else "Failed to adjust brightness."
+                return if (result.success) fast(result.data, "brightness", actionVal) else QueryResult("Failed to adjust brightness.", true)
             }
         }
 
@@ -152,9 +298,9 @@ class AgentCore(
         if (isTorchQuery) {
             val isOff = cleanQuery.contains("off") || cleanQuery.contains("disable") || cleanQuery.contains("stop") || cleanQuery.contains("deactivate")
             val isOn = cleanQuery.contains("on") || cleanQuery.contains("enable") || cleanQuery.contains("start") || cleanQuery.contains("activate")
-            
+
             val hasStrengthWord = cleanQuery.contains("strength") || cleanQuery.contains("level") || cleanQuery.contains("intensity") || cleanQuery.contains("brightness") || cleanQuery.contains("max") || cleanQuery.contains("full") || cleanQuery.contains("medium") || cleanQuery.contains("half") || cleanQuery.contains("low") || Regex("\\d+").containsMatchIn(cleanQuery)
-            
+
             if (isOff && !isOn) {
                 _agentStatusFlow.emit("Turning flashlight off...")
                 val tool = ToolRegistry.get("system_control")
@@ -163,7 +309,7 @@ class AgentCore(
                         addProperty("action", "toggle_torch")
                         addProperty("value", "off")
                     })
-                    return if (result.success) result.data else "Failed to toggle flashlight."
+                    return if (result.success) fast(result.data, "torch", "off") else QueryResult("Failed to toggle flashlight.", true)
                 }
             } else if (hasStrengthWord) {
                 val pctVal: String
@@ -189,7 +335,7 @@ class AgentCore(
                         addProperty("action", "set_torch_strength")
                         addProperty("value", pctVal)
                     })
-                    return if (result.success) result.data else "Failed to adjust torch strength."
+                    return if (result.success) fast(result.data, "torch", pctVal) else QueryResult("Failed to adjust torch strength.", true)
                 }
             } else {
                 _agentStatusFlow.emit("Turning flashlight on...")
@@ -199,7 +345,7 @@ class AgentCore(
                         addProperty("action", "toggle_torch")
                         addProperty("value", "on")
                     })
-                    return if (result.success) result.data else "Failed to toggle flashlight."
+                    return if (result.success) fast(result.data, "torch", "on") else QueryResult("Failed to toggle flashlight.", true)
                 }
             }
         }
@@ -218,7 +364,7 @@ class AgentCore(
                     addProperty("action", "toggle_wifi")
                     addProperty("value", state)
                 })
-                return if (result.success) result.data else "Failed to toggle WiFi."
+                return if (result.success) fast(result.data, "wifi", state) else QueryResult("Failed to toggle WiFi.", true)
             }
         }
 
@@ -236,7 +382,7 @@ class AgentCore(
                     addProperty("action", "toggle_bluetooth")
                     addProperty("value", state)
                 })
-                return if (result.success) result.data else "Failed to toggle Bluetooth."
+                return if (result.success) fast(result.data, "bluetooth", state) else QueryResult("Failed to toggle Bluetooth.", true)
             }
         }
 
@@ -249,7 +395,7 @@ class AgentCore(
                 val result = tool.execute(JsonObject().apply {
                     addProperty("action", "toggle_hotspot")
                 })
-                return if (result.success) result.data else "Failed to toggle Hotspot."
+                return if (result.success) fast(result.data, "hotspot", null) else QueryResult("Failed to toggle Hotspot.", true)
             }
         }
 
@@ -267,7 +413,7 @@ class AgentCore(
                     addProperty("action", "toggle_dnd")
                     addProperty("value", state)
                 })
-                return if (result.success) result.data else "Failed to toggle DND."
+                return if (result.success) fast(result.data, "dnd", state) else QueryResult("Failed to toggle DND.", true)
             }
         }
 
@@ -291,7 +437,7 @@ class AgentCore(
                                 addProperty("recipient", recipient)
                                 addProperty("message", msgText)
                             })
-                            return result.data
+                            return fast(result.data)
                         }
                     }
                 }
@@ -319,7 +465,7 @@ class AgentCore(
                                 addProperty("subject", subject)
                                 addProperty("body", body)
                             })
-                            return result.data
+                            return fast(result.data)
                         }
                     } else if (match.groupValues.size == 3) {
                         val body = match.groupValues[2].trim()
@@ -331,7 +477,7 @@ class AgentCore(
                                 addProperty("subject", "Message from Friday")
                                 addProperty("body", body)
                             })
-                            return result.data
+                            return fast(result.data)
                         }
                     }
                 }
@@ -348,14 +494,14 @@ class AgentCore(
                 val result = tool.execute(JsonObject().apply {
                     addProperty("action", "list")
                 })
-                return result.data
+                return toolResult(result)
             }
         }
 
         // J. Replying to Notifications
         if (cleanQuery.contains("reply") && cleanQuery.contains("notification")) {
             val replyPattern = "(?i)reply\\s+to\\s+(.+?)\\s+(?:saying|with)?\\s*(.+)".toRegex()
-            val match = replyPattern.find(userInput)
+            val match = replyPattern.find(resolvedInput)
             if (match != null) {
                 val key = match.groupValues[1].trim()
                 val text = match.groupValues[2].trim()
@@ -367,7 +513,7 @@ class AgentCore(
                         addProperty("notification_key", key)
                         addProperty("reply_text", text)
                     })
-                    return result.data
+                    return toolResult(result)
                 }
             }
         }
@@ -386,7 +532,7 @@ class AgentCore(
                 val result = tool.execute(JsonObject().apply {
                     addProperty("action", "lock_phone")
                 })
-                return if (result.success) result.data else "Failed to lock the screen: ${result.data}"
+                return if (result.success) fast(result.data) else QueryResult("Failed to lock the screen: ${result.data}", true)
             }
         }
 
@@ -410,32 +556,51 @@ class AgentCore(
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
                 context.startActivity(intent)
-                "Searching for '$searchPhrase' on Reddit."
+                fast("Searching for '$searchPhrase' on Reddit.")
             } catch (e: Exception) {
-                "Failed to open Reddit search."
+                QueryResult("Failed to open Reddit search.", true)
+            }
+        }
+
+        // T. Play Media / Search Music (before open_app to avoid "start playing" collision)
+        val isPlayMedia = matchedIntent == "play_media" || matchedIntent == "play_spotify" ||
+            matchedIntent == "play_youtube" ||
+            Regex("play\\s+(.+)").containsMatchIn(cleanQuery) ||
+            Regex("listen\\s+to\\s+(.+)").containsMatchIn(cleanQuery)
+        if (isPlayMedia && !EntityExtractor.isScreenshotQuery(cleanQuery)) {
+            val (mediaQuery, targetApp) = EntityExtractor.extractMediaQuery(resolvedInput)
+            if (mediaQuery.isNotEmpty()) {
+                val app = targetApp ?: when (matchedIntent) {
+                    "play_spotify" -> "spotify"
+                    "play_youtube" -> "youtube"
+                    else -> null
+                }
+                _agentStatusFlow.emit("Playing $mediaQuery${if (app != null) " on $app" else ""}...")
+                val mediaTool = ToolRegistry.get("media_control")
+                if (mediaTool != null) {
+                    val result = mediaTool.execute(JsonObject().apply {
+                        addProperty("action", "play_search")
+                        addProperty("query", mediaQuery)
+                        if (app != null) addProperty("app", app)
+                    })
+                    DialogueStateTracker.record("media", "on")
+                    return toolResult(result)
+                }
             }
         }
 
         // M. Open App
-        val isLaunchApp = matchedIntent == "open_app" && confidence > 0.7f ||
-                cleanQuery.contains("open ") || cleanQuery.contains("launch ") || cleanQuery.contains("start ") || cleanQuery.contains("go to ") || cleanQuery.contains("open up ") || cleanQuery.contains("show ")
+        val isLaunchApp = (matchedIntent == "open_app" && confidence > 0.7f ||
+                cleanQuery.contains("open ") || cleanQuery.contains("launch ") ||
+                cleanQuery.contains("go to ") || cleanQuery.contains("open up ") || cleanQuery.contains("show ")) &&
+            !cleanQuery.contains("play ") && !cleanQuery.contains("listen to") &&
+            matchedIntent != "play_media" && matchedIntent != "play_spotify" && matchedIntent != "play_youtube"
         if (isLaunchApp) {
-            var appName = ""
-            val launchKeywords = listOf("open up ", "go to ", "open ", "launch ", "start ", "show ")
-            for (kw in launchKeywords) {
-                val idx = cleanQuery.indexOf(kw)
-                if (idx != -1) {
-                    appName = cleanQuery.substring(idx + kw.length).trim()
-                    break
-                }
-            }
-            if (appName.isEmpty() && (matchedIntent == "open_app" && confidence > 0.7f)) {
+            var appName = EntityExtractor.extractLaunchAppName(resolvedInput)
+            if (appName.isEmpty() && matchedIntent == "open_app" && confidence > 0.7f) {
                 appName = cleanQuery.replace("please", "").replace("can you", "").replace("could you", "").trim()
             }
-            appName = appName.replace("?", "").replace(".", "").replace("!", "").trim()
-            if (appName.startsWith("the ")) {
-                appName = appName.substring(4).trim()
-            }
+            if (appName.startsWith("the ")) appName = appName.substring(4).trim()
             if (appName.isNotEmpty()) {
                 _agentStatusFlow.emit("Opening $appName...")
                 val tool = ToolRegistry.get("app_launcher")
@@ -443,7 +608,7 @@ class AgentCore(
                     val result = tool.execute(JsonObject().apply {
                         addProperty("app_name", appName)
                     })
-                    if (result.success) return result.data
+                    if (result.success) return fast(result.data)
                 }
             }
         }
@@ -458,7 +623,7 @@ class AgentCore(
                 val result = tool.execute(JsonObject().apply {
                     addProperty("action", "toggle_screencast")
                 })
-                return if (result.success) result.data else "Failed to open screen cast settings."
+                return if (result.success) fast(result.data, "screencast", null) else QueryResult("Failed to open screen cast settings.", true)
             }
         }
 
@@ -472,7 +637,7 @@ class AgentCore(
                 val result = tool.execute(JsonObject().apply {
                     addProperty("action", "toggle_power_saver")
                 })
-                return if (result.success) result.data else "Failed to open battery saver settings."
+                return if (result.success) fast(result.data, "power_saver", null) else QueryResult("Failed to open battery saver settings.", true)
             }
         }
 
@@ -507,7 +672,7 @@ class AgentCore(
                         addProperty("action", "navigate")
                         addProperty("destination", destination)
                     })
-                    return result.data
+                    return toolResult(result)
                 }
             }
         }
@@ -556,7 +721,7 @@ class AgentCore(
                     addProperty("minute", minute)
                     addProperty("title", label)
                 })
-                return result.data
+                return toolResult(result)
             }
         }
 
@@ -592,42 +757,7 @@ class AgentCore(
                     addProperty("duration", durationSeconds)
                     addProperty("title", label)
                 })
-                return result.data
-            }
-        }
-
-        // T. Play Media / Search Music
-        val isPlayMedia = matchedIntent == "play_media" && confidence > 0.7f ||
-                Regex("play\\s+(.+)").containsMatchIn(cleanQuery) ||
-                Regex("listen\\s+to\\s+(.+)").containsMatchIn(cleanQuery)
-        if (isPlayMedia) {
-            val patterns = listOf(
-                "(?i)play\\s+(.+)".toRegex(),
-                "(?i)listen\\s+to\\s+(.+)".toRegex(),
-                "(?i)start\\s+playing\\s+(.+)".toRegex()
-            )
-            var searchQuery = ""
-            for (p in patterns) {
-                val match = p.find(userInput)
-                if (match != null) {
-                    searchQuery = match.groupValues[1].trim()
-                    break
-                }
-            }
-            if (searchQuery.isEmpty()) {
-                searchQuery = cleanQuery.replace("play", "").replace("listen", "").replace("to", "").replace("music", "").trim()
-            }
-            
-            if (searchQuery.isNotEmpty()) {
-                _agentStatusFlow.emit("Playing music...")
-                val mediaTool = ToolRegistry.get("media_control")
-                if (mediaTool != null) {
-                    val result = mediaTool.execute(JsonObject().apply {
-                        addProperty("action", "play_search")
-                        addProperty("query", searchQuery)
-                    })
-                    return result.data
-                }
+                return toolResult(result)
             }
         }
 
@@ -656,7 +786,7 @@ class AgentCore(
                         addProperty("recipient", recipient)
                         addProperty("message", msgText)
                     })
-                    return result.data
+                    return toolResult(result)
                 }
             }
         }
@@ -673,36 +803,44 @@ class AgentCore(
                 val success = llamaEngine.loadModel(path)
                 com.friday.assistant.core.FridayLogger.i(TAG, "LLM GGUF model load success: $success")
                 if (!success) {
-                    return "Failed to load the local brain. Please check if your device has enough free memory."
+                    return QueryResult("Failed to load the local brain. Please check if your device has enough free memory.", false)
                 }
             }
             _agentStatusFlow.emit("Thinking...")
-            // Use minimal prompt for conversational fallback — NLU has already ruled out all tool intents
-            val currentPrompt = promptBuilder.buildMinimalPrompt(userInput)
+            val currentPrompt = promptBuilder.buildMinimalPrompt(resolvedInput)
             val response = llamaEngine.generateStream(currentPrompt, maxTokens = 128, temp = 0.7f, callback = object : LlamaEngine.TokenCallback {
                 override fun onToken(token: String) {
                     onToken(token)
                 }
             }).trim()
             val finalResponse = sanitizeResponse(response)
-            
-            memoryManager.saveConversationTurn(userInput, finalResponse)
-            return finalResponse
+
+            memoryManager.saveConversationTurn(resolvedInput, finalResponse)
+            return QueryResult(finalResponse, false)
         } else {
-            // General Search Fallback for unstructured queries
             if (cleanQuery.startsWith("search ") || cleanQuery.startsWith("google ") || cleanQuery.contains("what is") || cleanQuery.contains("how to") || cleanQuery.contains("who is")) {
                 _agentStatusFlow.emit("Searching the web...")
                 val searchTool = ToolRegistry.get("web_search")
                 if (searchTool != null) {
                     val result = searchTool.execute(JsonObject().apply {
-                        addProperty("query", userInput)
+                        addProperty("query", resolvedInput)
                     })
-                    if (result.success) return result.data
+                    if (result.success) return fast(result.data)
                 }
             }
 
-            return "I'm running in offline assistant mode, but the local brain (Qwen GGUF) is not loaded or has been offloaded. You can download or enable it in the Friday app dashboard."
+            return QueryResult("I'm running in offline assistant mode, but the local brain (Qwen GGUF) is not loaded or has been offloaded. You can download or enable it in the Friday app dashboard.", false)
         }
+    }
+
+    private fun fast(msg: String, domain: String? = null, action: String? = null): QueryResult {
+        if (domain != null) DialogueStateTracker.record(domain, action)
+        return QueryResult(msg, true)
+    }
+
+    private fun toolResult(result: com.friday.assistant.tools.ToolResult, domain: String? = null, action: String? = null): QueryResult {
+        if (result.success && domain != null) DialogueStateTracker.record(domain, action)
+        return QueryResult(result.data, true)
     }
 
     private fun parseToolCall(response: String): Pair<String, JsonObject>? {

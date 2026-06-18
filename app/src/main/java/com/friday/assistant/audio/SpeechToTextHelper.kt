@@ -16,17 +16,36 @@ class SpeechToTextHelper(
     private val onTranscriptUpdate: (String) -> Unit,
     private val onFinalResult: (String) -> Unit,
     private val onRmsUpdate: (Float) -> Unit,
-    private val onStateChanged: (PipelineState) -> Unit
+    private val onStateChanged: (PipelineState) -> Unit,
+    private val profile: RecognitionProfile = RecognitionProfile.COMMAND,
+    private val onEarlyCommit: ((String) -> Unit)? = null
 ) {
+    enum class RecognitionProfile {
+        COMMAND,
+        CONVERSATION
+    }
+
     companion object {
         private const val TAG = "SpeechToTextHelper"
+        private const val EARLY_COMMIT_STABLE_MS = 400L
+
+        private val FAST_ROUTE_PATTERN = Regex(
+            "(?i)(volume|brightness|flashlight|torch|wifi|bluetooth|hotspot|lock|screenshot|screen shot|" +
+                "pause|call |dial |mute|unmute|play |next track|previous track|turn it (on|off|up|down))"
+        )
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var speechRecognizer: SpeechRecognizer? = null
     private var isListening = false
+    private var lastPartialText = ""
+    private var lastPartialChangeMs = 0L
+    private var earlyCommitFired = false
+    private var earlyCommitRunnable: Runnable? = null
+
     private fun destroyRecognizer() {
         isListening = false
+        cancelEarlyCommitTimer()
         try {
             speechRecognizer?.setRecognitionListener(null)
             speechRecognizer?.cancel()
@@ -37,13 +56,49 @@ class SpeechToTextHelper(
         speechRecognizer = null
     }
 
+    private fun cancelEarlyCommitTimer() {
+        earlyCommitRunnable?.let { mainHandler.removeCallbacks(it) }
+        earlyCommitRunnable = null
+    }
+
+    private fun scheduleEarlyCommitCheck(text: String) {
+        if (profile != RecognitionProfile.COMMAND || onEarlyCommit == null) return
+        if (earlyCommitFired || text.isBlank() || !FAST_ROUTE_PATTERN.containsMatchIn(text)) return
+
+        if (text != lastPartialText) {
+            lastPartialText = text
+            lastPartialChangeMs = System.currentTimeMillis()
+        }
+
+        cancelEarlyCommitTimer()
+        earlyCommitRunnable = Runnable {
+            if (earlyCommitFired || !isListening) return@Runnable
+            if (lastPartialText == text &&
+                System.currentTimeMillis() - lastPartialChangeMs >= EARLY_COMMIT_STABLE_MS
+            ) {
+                earlyCommitFired = true
+                isListening = false
+                Log.i(TAG, "Early commit on stable partial: '$text'")
+                try {
+                    speechRecognizer?.cancel()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to cancel recognizer after early commit", e)
+                }
+                onFinalResult(text)
+            }
+        }
+        mainHandler.postDelayed(earlyCommitRunnable!!, EARLY_COMMIT_STABLE_MS)
+    }
+
     fun startListening() {
         mainHandler.post {
             if (isListening) return@post
+            earlyCommitFired = false
+            lastPartialText = ""
+            lastPartialChangeMs = 0L
             Log.i(TAG, "Starting native speech recognizer")
 
             try {
-                // Only create a new recognizer if one doesn't exist — avoid expensive IPC rebind
                 if (speechRecognizer == null) {
                     speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
                         setRecognitionListener(buildRecognitionListener())
@@ -54,9 +109,15 @@ class SpeechToTextHelper(
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1000L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 800L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 800L)
+                    if (profile == RecognitionProfile.COMMAND) {
+                        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 300L)
+                        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 450L)
+                        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 350L)
+                    } else {
+                        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1000L)
+                        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 800L)
+                        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 800L)
+                    }
                 }
 
                 speechRecognizer?.startListening(intent)
@@ -90,20 +151,23 @@ class SpeechToTextHelper(
 
         override fun onEndOfSpeech() {
             Log.d(TAG, "End of speech detected")
-            onStateChanged(PipelineState.PROCESSING)
+            if (!earlyCommitFired) {
+                onStateChanged(PipelineState.PROCESSING)
+            }
         }
 
         override fun onError(error: Int) {
+            if (earlyCommitFired) return
             val message = getErrorMessage(error)
             Log.e(TAG, "Speech recognition error: $message ($error)")
             mainHandler.post {
                 isListening = false
-                // Hard errors require full recognizer reset; soft errors just reset state
+                cancelEarlyCommitTimer()
                 val isHardError = error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
-                                  error == SpeechRecognizer.ERROR_CLIENT ||
-                                  error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS
+                    error == SpeechRecognizer.ERROR_CLIENT ||
+                    error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS
                 if (isHardError) {
-                    destroyRecognizer() // Full IPC rebind only when truly needed
+                    destroyRecognizer()
                 } else {
                     isListening = false
                 }
@@ -113,9 +177,11 @@ class SpeechToTextHelper(
         }
 
         override fun onResults(results: Bundle?) {
+            if (earlyCommitFired) return
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val finalResultText = matches?.firstOrNull() ?: ""
             mainHandler.post {
+                cancelEarlyCommitTimer()
                 isListening = false
                 if (finalResultText.isNotBlank()) {
                     Log.i(TAG, "Speech recognition final result: '$finalResultText'")
@@ -127,11 +193,13 @@ class SpeechToTextHelper(
         }
 
         override fun onPartialResults(partialResults: Bundle?) {
+            if (earlyCommitFired) return
             val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             if (!matches.isNullOrEmpty()) {
                 val text = matches[0]
                 Log.d(TAG, "Speech recognition partial result: '$text'")
                 onTranscriptUpdate(text)
+                scheduleEarlyCommitCheck(text)
             }
         }
 
@@ -141,6 +209,7 @@ class SpeechToTextHelper(
     fun stopListening() {
         mainHandler.post {
             if (!isListening) return@post
+            cancelEarlyCommitTimer()
             try {
                 speechRecognizer?.stopListening()
             } catch (e: Exception) {
@@ -154,6 +223,7 @@ class SpeechToTextHelper(
             destroyRecognizer()
         }
     }
+
     private fun getErrorMessage(error: Int): String {
         return when (error) {
             SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"

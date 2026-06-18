@@ -59,6 +59,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import com.friday.assistant.intelligence.AgentCore
 import com.friday.assistant.intelligence.MemoryManager
+import com.friday.assistant.tools.ToolRegistrar
 import com.friday.assistant.audio.SpeechToTextHelper
 import com.friday.assistant.audio.PipelineState
 
@@ -81,6 +82,7 @@ class MainActivity : ComponentActivity() {
         modelManager = ModelManager(this)
         speakerVerifier = SpeakerVerifier(this, modelManager)
         memoryManager = MemoryManager(this)
+        ToolRegistrar.registerAll(this, memoryManager)
         agentCore = AgentCore(this, memoryManager)
 
         setContent {
@@ -138,6 +140,9 @@ class MainActivity : ComponentActivity() {
         var hasDndPermission by remember {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
             mutableStateOf(nm.isNotificationPolicyAccessGranted)
+        }
+        var hasAccessibility by remember {
+            mutableStateOf(com.friday.assistant.core.AccessibilityHelper.isFridayAccessibilityEnabled(context))
         }
 
         // Model statuses
@@ -219,6 +224,7 @@ class MainActivity : ComponentActivity() {
 
                 val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
                 hasDndPermission = nm.isNotificationPolicyAccessGranted
+                hasAccessibility = com.friday.assistant.core.AccessibilityHelper.isFridayAccessibilityEnabled(context)
                 
                 assistantEnabled = context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("assistant_enabled", true)
 
@@ -610,6 +616,16 @@ class MainActivity : ComponentActivity() {
                     onAction = {
                         val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
                         startActivity(intent)
+                    }
+                )
+                Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
+
+                ChecklistItem(
+                    title = "UI Automation (Accessibility)",
+                    description = "Silent screenshots, WiFi/Bluetooth toggles, and in-app control",
+                    status = hasAccessibility,
+                    onAction = {
+                        com.friday.assistant.core.AccessibilityHelper.openAccessibilitySettings(context)
                     }
                 )
             }
@@ -1384,7 +1400,8 @@ class MainActivity : ComponentActivity() {
                 onTranscriptUpdate = onTranscript,
                 onFinalResult = onFinal,
                 onRmsUpdate = { },
-                onStateChanged = onState
+                onStateChanged = onState,
+                profile = SpeechToTextHelper.RecognitionProfile.CONVERSATION
             )
             activitySpeechToTextHelper = helper
         }
@@ -1508,7 +1525,7 @@ class MainActivity : ComponentActivity() {
                             }
                             
                             try {
-                                val reply = agentCore.processQuery(finalResult)
+                                val reply = agentCore.processQuery(finalResult).message
                                 chatMessages.add(ChatMessage(reply, isUser = false))
                             } catch (e: Exception) {
                                 chatMessages.add(ChatMessage("Error: ${e.localizedMessage}", isUser = false))
@@ -1543,7 +1560,7 @@ class MainActivity : ComponentActivity() {
                     }
                     
                     try {
-                        val reply = agentCore.processQuery(query)
+                        val reply = agentCore.processQuery(query).message
                         chatMessages.add(ChatMessage(reply, isUser = false))
                     } catch (e: Exception) {
                         chatMessages.add(ChatMessage("Error: ${e.localizedMessage}", isUser = false))

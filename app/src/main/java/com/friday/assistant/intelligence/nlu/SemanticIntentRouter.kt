@@ -146,7 +146,56 @@ class SemanticIntentRouter(private val context: Context) {
         ReferenceCommand("turn on mobile hotspot", "hotspot_toggle"),
         ReferenceCommand("enable personal hotspot", "hotspot_toggle"),
         ReferenceCommand("disable tethering sharing", "hotspot_toggle"),
-        ReferenceCommand("turn off wireless hotspot", "hotspot_toggle")
+        ReferenceCommand("turn off wireless hotspot", "hotspot_toggle"),
+
+        // Phone & SMS
+        ReferenceCommand("call mom", "call_contact"),
+        ReferenceCommand("phone dad please", "call_contact"),
+        ReferenceCommand("can you call john", "call_contact"),
+        ReferenceCommand("dial the office", "call_contact"),
+        ReferenceCommand("give sarah a call", "call_contact"),
+        ReferenceCommand("text mom saying i am running late", "send_sms"),
+        ReferenceCommand("send sms to dad", "send_sms"),
+        ReferenceCommand("read my text messages", "read_sms"),
+        ReferenceCommand("check my recent calls", "read_call_log"),
+
+        // Screenshot & utilities
+        ReferenceCommand("take a screenshot", "take_screenshot"),
+        ReferenceCommand("capture the screen", "take_screenshot"),
+        ReferenceCommand("screenshot this screen", "take_screenshot"),
+        ReferenceCommand("what is my battery level", "get_battery"),
+        ReferenceCommand("how much battery do i have", "get_battery"),
+        ReferenceCommand("what time is it", "get_time"),
+        ReferenceCommand("tell me the current time", "get_time"),
+        ReferenceCommand("read my clipboard", "clipboard_read"),
+        ReferenceCommand("copy hello world to clipboard", "clipboard_write"),
+        ReferenceCommand("check my notifications", "read_notifications"),
+
+        // Media controls
+        ReferenceCommand("pause the music", "pause_media"),
+        ReferenceCommand("pause playback", "pause_media"),
+        ReferenceCommand("next track", "next_track"),
+        ReferenceCommand("skip this song", "next_track"),
+        ReferenceCommand("previous track", "previous_track"),
+        ReferenceCommand("play sunflower on spotify", "play_spotify"),
+        ReferenceCommand("listen to jazz on spotify", "play_spotify"),
+        ReferenceCommand("search cats on youtube", "play_youtube"),
+        ReferenceCommand("play video on youtube", "play_youtube"),
+
+        // DND & connectivity
+        ReferenceCommand("turn on do not disturb", "dnd_toggle"),
+        ReferenceCommand("disable do not disturb mode", "dnd_toggle"),
+        ReferenceCommand("enable airplane mode", "airplane_mode_toggle"),
+        ReferenceCommand("turn off airplane mode", "airplane_mode_toggle"),
+        ReferenceCommand("turn on mobile data", "mobile_data_toggle"),
+        ReferenceCommand("disable mobile data", "mobile_data_toggle"),
+
+        // Follow-up phrasing (maps via dialogue state at runtime; still train for semantic similarity)
+        ReferenceCommand("turn it off", "torch_toggle"),
+        ReferenceCommand("turn it on", "torch_toggle"),
+        ReferenceCommand("switch it off", "wifi_toggle"),
+        ReferenceCommand("turn it down", "volume_down"),
+        ReferenceCommand("make it louder", "volume_up")
     )
 
     init {

@@ -17,23 +17,7 @@ import com.friday.assistant.core.FridayApplication
 import com.friday.assistant.core.ModelManager
 import com.friday.assistant.intelligence.AgentCore
 import com.friday.assistant.intelligence.MemoryManager
-import com.friday.assistant.tools.ToolRegistry
-import com.friday.assistant.tools.system.SystemControlsTool
-import com.friday.assistant.tools.phone.PhoneTool
-import com.friday.assistant.tools.apps.AppLauncherTool
-import com.friday.assistant.tools.media.MediaControlTool
-import com.friday.assistant.tools.search.WebSearchTool
-import com.friday.assistant.tools.clipboard.ClipboardTool
-import com.friday.assistant.tools.notes.NotesTool
-import com.friday.assistant.tools.notes.RememberPreferenceTool
-import com.friday.assistant.tools.notes.RecallPreferenceTool
-import com.friday.assistant.tools.calendar.CalendarTool
-import com.friday.assistant.tools.notifications.NotificationTool
-import com.friday.assistant.tools.location.LocationTool
-import com.friday.assistant.tools.camera.CameraTool
-import com.friday.assistant.tools.files.FileManagerTool
-import com.friday.assistant.tools.whatsapp.WhatsAppTool
-import com.friday.assistant.tools.email.EmailTool
+import com.friday.assistant.tools.ToolRegistrar
 import com.friday.assistant.ui.overlay.OverlayManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -102,22 +86,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         agentCore = AgentCore(this, memoryManager)
 
         // 2. Register Agentic Tools
-        ToolRegistry.register(SystemControlsTool(this))
-        ToolRegistry.register(PhoneTool(this))
-        ToolRegistry.register(AppLauncherTool(this, memoryManager))
-        ToolRegistry.register(MediaControlTool(this))
-        ToolRegistry.register(WebSearchTool(this))
-        ToolRegistry.register(ClipboardTool(this))
-        ToolRegistry.register(NotesTool())
-        ToolRegistry.register(CalendarTool(this))
-        ToolRegistry.register(NotificationTool(this))
-        ToolRegistry.register(LocationTool(this))
-        ToolRegistry.register(CameraTool(this))
-        ToolRegistry.register(FileManagerTool(this))
-        ToolRegistry.register(RememberPreferenceTool(memoryManager))
-        ToolRegistry.register(RecallPreferenceTool(memoryManager))
-        ToolRegistry.register(WhatsAppTool(this, memoryManager))
-        ToolRegistry.register(EmailTool(this, memoryManager))
+        ToolRegistrar.registerAll(this, memoryManager)
 
         // 3. Setup TTS
         tts = TextToSpeech(this, this)
@@ -288,7 +257,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     private suspend fun onWakeWordTriggered() {
         overlayManager?.show()
         transitionToState(PipelineState.LISTENING)
-        kotlinx.coroutines.delay(100) // Allow mic resources to release completely
+        kotlinx.coroutines.delay(50) // Allow mic resources to release completely
         speechToTextHelper.startListening()
     }
 
@@ -302,33 +271,32 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             }
             serviceScope.launch {
                 transitionToState(PipelineState.LISTENING)
-                kotlinx.coroutines.delay(100) // Allow mic resources to release completely
+                kotlinx.coroutines.delay(50) // Allow mic resources to release completely
                 speechToTextHelper.startListening()
             }
         }
     }
 
     private suspend fun executeAgentQuery(query: String) {
-        transitionToState(PipelineState.THINKING, statusMessage = "Thinking...", transcriptText = query)
-        
         var responseAccumulator = ""
         var ttsBuffer = ""
         var isFirstChunk = true
-        
-        val response = agentCore.processQuery(query) { token ->
+
+        val queryResult = agentCore.processQuery(query) { token ->
             serviceScope.launch {
+                if (pipelineState.value != PipelineState.THINKING && pipelineState.value != PipelineState.SPEAKING) {
+                    transitionToState(PipelineState.THINKING, statusMessage = "Thinking...", transcriptText = query)
+                }
                 responseAccumulator += token
                 ttsBuffer += token
-                
-                // Update overlay UI text in real-time
+
                 overlayManager?.updateState(
-                    state = pipelineState.value, 
-                    text = if (isFirstChunk) "Thinking..." else "Speaking...", 
-                    resp = responseAccumulator, 
+                    state = pipelineState.value,
+                    text = if (isFirstChunk) "Thinking..." else "Speaking...",
+                    resp = responseAccumulator,
                     trans = query
                 )
-                
-                // Check for punctuation boundaries to queue TTS chunks
+
                 val boundaryIndex = findPunctuationBoundary(ttsBuffer)
                 if (boundaryIndex != -1) {
                     val chunk = ttsBuffer.substring(0, boundaryIndex + 1).trim()
@@ -340,19 +308,34 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 }
             }
         }
-        
-        // Handle any leftover TTS buffer
+
+        val response = queryResult.message
+
+        if (queryResult.isFastTool) {
+            overlayManager?.updateState(PipelineState.IDLE, response, trans = query, resp = response)
+            val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+            val confirmTools = prefs.getBoolean("voice_confirm_tools", true)
+            if (confirmTools && response.isNotBlank()) {
+                speakResponse(response)
+            } else {
+                transitionToState(PipelineState.IDLE, responseText = response, transcriptText = query)
+            }
+            return
+        }
+
+        if (pipelineState.value != PipelineState.THINKING && pipelineState.value != PipelineState.SPEAKING) {
+            transitionToState(PipelineState.THINKING, statusMessage = "Thinking...", transcriptText = query)
+        }
+
         val remainingText = ttsBuffer.trim()
         if (remainingText.isNotEmpty()) {
             speakStreamChunk(remainingText, isFirstChunk, responseAccumulator)
             isFirstChunk = false
         }
-        
-        // If it was a fast command mapper response and didn't stream anything
+
         if (responseAccumulator.isEmpty() && response.isNotEmpty()) {
             speakResponse(response)
         } else if (responseAccumulator.isNotEmpty() && isFirstChunk) {
-            // Streamed but no punctuation was found
             speakStreamChunk(responseAccumulator, true, responseAccumulator)
         }
     }

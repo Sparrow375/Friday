@@ -9,6 +9,7 @@ import android.util.Log
 import android.net.wifi.WifiManager
 import android.bluetooth.BluetoothAdapter
 import android.app.NotificationManager
+import com.friday.assistant.automation.AutomationBridge
 import com.friday.assistant.tools.Tool
 import com.friday.assistant.tools.ToolResult
 import com.google.gson.JsonObject
@@ -164,6 +165,13 @@ class SystemControlsTool(private val context: Context) : Tool {
     private fun toggleWifi(enable: Boolean): ToolResult {
         val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            if (AutomationBridge.isReady()) {
+                val ok = AutomationBridge.toggleQuickSetting("wifi", enable)
+                if (ok) {
+                    val status = if (enable) "enabled" else "disabled"
+                    return ToolResult(true, "WiFi has been $status")
+                }
+            }
             return try {
                 val intent = Intent(Settings.Panel.ACTION_WIFI).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -189,6 +197,13 @@ class SystemControlsTool(private val context: Context) : Tool {
             ?: return ToolResult(false, "Bluetooth is not supported on this device")
         
         if (android.os.Build.VERSION.SDK_INT >= 33) {
+            if (AutomationBridge.isReady()) {
+                val ok = AutomationBridge.toggleQuickSetting("bluetooth", enable)
+                if (ok) {
+                    val status = if (enable) "enabled" else "disabled"
+                    return ToolResult(true, "Bluetooth has been $status")
+                }
+            }
             return try {
                 val intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -211,6 +226,10 @@ class SystemControlsTool(private val context: Context) : Tool {
     }
 
     private fun toggleHotspot(): ToolResult {
+        if (AutomationBridge.isReady()) {
+            val ok = AutomationBridge.toggleQuickSetting("hotspot", true)
+            if (ok) return ToolResult(true, "Hotspot toggled")
+        }
         return try {
             val intent = Intent().apply {
                 action = "android.settings.TETHER_SETTINGS"

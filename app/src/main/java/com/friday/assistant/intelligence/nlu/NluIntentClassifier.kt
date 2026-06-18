@@ -21,13 +21,20 @@ class NluIntentClassifier(private val context: Context) {
     private var tokenizer: WordpieceTokenizer? = null
     private var isLoaded = false
 
-    // Mapped labels expected from the fine-tuned ONNX classifier
+    // Mapped labels — overridden at runtime from labels.txt when model is loaded
     private var intentLabels = listOf(
-        "volume_up", "volume_down", "brightness_up", "brightness_down", 
-        "torch_toggle", "torch_strength", "lock_phone", "open_app", 
-        "navigate_to", "set_alarm", "set_timer", "send_whatsapp", 
-        "play_media", "power_saver_toggle", "screencast_toggle",
-        "wifi_toggle", "bluetooth_toggle", "hotspot_toggle", "unknown"
+        "volume_up", "volume_down", "brightness_up", "brightness_down",
+        "torch_toggle", "torch_strength", "lock_phone", "open_app",
+        "navigate_to", "set_alarm", "set_timer", "send_whatsapp",
+        "play_media", "play_spotify", "play_youtube",
+        "pause_media", "next_track", "previous_track",
+        "power_saver_toggle", "screencast_toggle",
+        "wifi_toggle", "bluetooth_toggle", "hotspot_toggle", "dnd_toggle",
+        "call_contact", "send_sms", "read_sms", "read_call_log",
+        "take_screenshot", "web_search",
+        "clipboard_read", "clipboard_write",
+        "read_notifications", "get_battery", "get_time",
+        "airplane_mode_toggle", "mobile_data_toggle", "unknown"
     )
 
     init {
