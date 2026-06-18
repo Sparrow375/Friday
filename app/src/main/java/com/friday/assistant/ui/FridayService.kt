@@ -204,8 +204,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 overlayManager?.updateAmplitude(0f)
                 speechToTextHelper.destroy()
                 
-                // Auto-dismiss overlay — short delay so user can read the result
-                val dismissDelay = if (oldState == PipelineState.SPEAKING) 1500L else 600L
+                // Auto-dismiss overlay — reduced delays since dismiss() now calls hide() (instant re-show)
+                val dismissDelay = if (oldState == PipelineState.SPEAKING) 400L else 300L
                 serviceScope.launch {
                     kotlinx.coroutines.delay(dismissDelay)
                     if (pipelineState.value == PipelineState.IDLE) {
@@ -252,7 +252,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     private suspend fun onWakeWordTriggered() {
         overlayManager?.show()
         transitionToState(PipelineState.LISTENING)
-        kotlinx.coroutines.delay(50) // Allow mic resources to release completely
+        // No delay needed — SpeechRecognizer manages its own audio session setup
+        com.friday.assistant.core.FridayLogger.d(TAG, "STT start triggered immediately (no mic handover delay)")
         speechToTextHelper.startListening()
     }
 
@@ -266,7 +267,6 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             }
             serviceScope.launch {
                 transitionToState(PipelineState.LISTENING)
-                kotlinx.coroutines.delay(50) // Allow mic resources to release completely
                 speechToTextHelper.startListening()
             }
         }
@@ -276,6 +276,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         var responseAccumulator = ""
         var ttsBuffer = ""
         var isFirstChunk = true
+        var lastUiUpdateMs = 0L
 
         val queryResult = agentCore.processQuery(query) { token ->
             serviceScope.launch {
@@ -285,12 +286,16 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 responseAccumulator += token
                 ttsBuffer += token
 
-                overlayManager?.updateState(
-                    state = pipelineState.value,
-                    text = if (isFirstChunk) "Thinking..." else "Speaking...",
-                    resp = responseAccumulator,
-                    trans = query
-                )
+                val nowMs = System.currentTimeMillis()
+                if (nowMs - lastUiUpdateMs >= 50L) {
+                    overlayManager?.updateState(
+                        state = pipelineState.value,
+                        text = if (isFirstChunk) "Thinking..." else "Speaking...",
+                        resp = responseAccumulator,
+                        trans = query
+                    )
+                    lastUiUpdateMs = nowMs
+                }
 
                 val boundaryIndex = findPunctuationBoundary(ttsBuffer)
                 if (boundaryIndex != -1) {
@@ -302,6 +307,17 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                     }
                 }
             }
+        }
+
+        // Final unconditional UI flush — ensures the complete response is always shown
+        // even if the last tokens were gated out by the 50ms debounce
+        if (responseAccumulator.isNotEmpty()) {
+            overlayManager?.updateState(
+                state = pipelineState.value,
+                text = "Speaking...",
+                resp = responseAccumulator,
+                trans = query
+            )
         }
 
         val response = queryResult.message
@@ -465,7 +481,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         wakeWordDetector?.shutdown()
         speechToTextHelper.destroy()
-        overlayManager?.dismiss()
+        overlayManager?.destroyOverlay()
         tts?.shutdown()
 
         serviceScope.launch(Dispatchers.IO) {

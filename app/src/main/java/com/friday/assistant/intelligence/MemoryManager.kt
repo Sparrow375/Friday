@@ -13,12 +13,18 @@ class MemoryManager(private val context: Context) {
     companion object {
         private const val TAG = "MemoryManager"
         private const val MAX_WORKING_MEMORY_TURNS = 10
+        private const val CACHE_TTL_MS = 60_000L
     }
 
     private val dao = FridayApplication.database.dao()
 
     // Working Memory (in-RAM cache of recent conversation turns in current session)
     private val workingMemory = mutableListOf<ChatMessage>()
+
+    private var preferencesCacheValue = ""
+    private var preferencesCacheTime = 0L
+    private var appCacheValue = ""
+    private var appCacheTime = 0L
 
     data class ChatMessage(val role: String, val content: String, val timestamp: Long = System.currentTimeMillis())
 
@@ -89,6 +95,7 @@ class MemoryManager(private val context: Context) {
                 confidence = confidence
             )
             dao.insertMemory(memory)
+            preferencesCacheTime = 0L  // Invalidate preferences cache
             Log.i(TAG, "Remembered user preference: $normalizedKey = $value")
         } catch (e: Exception) {
             Log.e(TAG, "Error saving user preference in semantic memory", e)
@@ -132,13 +139,25 @@ class MemoryManager(private val context: Context) {
      * Reconstructs a memory summary block for system prompt context injector.
      */
     suspend fun getPreferencesSummary(): String {
-        val prefs = getAllPreferences()
-        if (prefs.isEmpty()) return "No user preferences remembered yet."
-        val summary = StringBuilder("User preferences and facts:\n")
-        prefs.forEach {
-            summary.append("- ${it.key.replace("_", " ")}: ${it.value}\n")
+        val now = System.currentTimeMillis()
+        if (preferencesCacheValue.isNotEmpty() && now - preferencesCacheTime < CACHE_TTL_MS) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "Preferences cache HIT")
+            return preferencesCacheValue
         }
-        return summary.toString()
+        com.friday.assistant.core.FridayLogger.d(TAG, "Preferences cache MISS — querying DB")
+        val prefs = getAllPreferences()
+        val result = if (prefs.isEmpty()) {
+            "No user preferences remembered yet."
+        } else {
+            val summary = StringBuilder("User preferences and facts:\n")
+            prefs.forEach {
+                summary.append("- ${it.key.replace("_", " ")}: ${it.value}\n")
+            }
+            summary.toString()
+        }
+        preferencesCacheValue = result
+        preferencesCacheTime = now
+        return result
     }
 
     // ==========================================
@@ -171,6 +190,7 @@ class MemoryManager(private val context: Context) {
                 value = newValue
             )
             dao.insertMemory(memory)
+            appCacheTime = 0L  // Invalidate app usage cache
             Log.d(TAG, "Incremented app launch count for $packageName ($appName)")
         } catch (e: Exception) {
             Log.e(TAG, "Error updating app launch stats", e)
@@ -202,8 +222,17 @@ class MemoryManager(private val context: Context) {
     }
 
     suspend fun getMostUsedAppsSummary(): String {
+        val now = System.currentTimeMillis()
+        if (appCacheValue.isNotEmpty() && now - appCacheTime < CACHE_TTL_MS) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "App usage cache HIT")
+            return appCacheValue
+        }
+        com.friday.assistant.core.FridayLogger.d(TAG, "App usage cache MISS — querying DB")
         val mostUsed = getMostUsedApps(3)
-        if (mostUsed.isEmpty()) return "No frequent apps tracked yet."
-        return "Most frequently launched apps: ${mostUsed.joinToString(", ")}"
+        val result = if (mostUsed.isEmpty()) "No frequent apps tracked yet."
+                     else "Most frequently launched apps: ${mostUsed.joinToString(", ")}"
+        appCacheValue = result
+        appCacheTime = now
+        return result
     }
 }

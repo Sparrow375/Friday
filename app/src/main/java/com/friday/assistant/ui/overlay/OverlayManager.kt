@@ -57,6 +57,8 @@ class OverlayManager(
     private val myViewModelStore = ViewModelStore()
     override val viewModelStore: ViewModelStore = myViewModelStore
 
+    private var sessionCount = 0
+
     init {
         myLifecycleRegistry.currentState = Lifecycle.State.INITIALIZED
         mySavedStateRegistryController.performRestore(null)
@@ -66,6 +68,17 @@ class OverlayManager(
 
     fun show() {
         if (isVisible) return
+
+        // Fast path: ComposeView is already attached but hidden — just make it visible again.
+        // This avoids the 200-400ms WindowManager.addView() overhead on consecutive commands.
+        if (composeView != null) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "show() fast path — restoring hidden ComposeView")
+            composeView?.visibility = android.view.View.VISIBLE
+            isVisible = true
+            resetStateFlows()
+            return
+        }
+
         com.friday.assistant.core.FridayLogger.i(TAG, "Showing overlay window")
 
         // Reset state flows to clear any previous responses/transcripts
@@ -99,6 +112,9 @@ class OverlayManager(
             this.params = layoutParams
 
             composeView = ComposeView(context).apply {
+                // DisposeOnDetachedFromWindow ensures Compose runtime is released when removeView() is called
+                // in destroyOverlay() — this is what triggers composition cleanup and prevents memory leaks
+                // from lingering recomposition scopes after the overlay is fully torn down.
                 setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
                 
                 // Attach lifecycle owners so Compose works inside a Service overlay
@@ -145,23 +161,55 @@ class OverlayManager(
         }
     }
 
-    fun dismiss() {
+    /**
+     * Hides the overlay visually without detaching it from WindowManager.
+     * The ComposeView and lifecycle remain alive so show() can restore it instantly
+     * without the 200-400ms WindowManager.addView() overhead.
+     */
+    fun hide() {
         if (!isVisible) return
-        com.friday.assistant.core.FridayLogger.i(TAG, "Dismissing overlay window")
+        com.friday.assistant.core.FridayLogger.d(TAG, "Hiding overlay (keeping ComposeView attached)")
+        composeView?.visibility = android.view.View.GONE
+        isVisible = false
+    }
+
+    private fun resetStateFlows() {
+        pipelineState.value = PipelineState.IDLE
+        statusText.value = "Active"
+        transcript.value = ""
+        assistantResponse.value = ""
+        audioAmplitude.value = 0f
+    }
+
+    /**
+     * Hides the overlay after command completion. Delegates to hide() to keep ComposeView alive
+     * for instant re-show on next wake-word trigger.
+     */
+    fun dismiss() {
+        hide()
+    }
+
+    /**
+     * Fully tears down the overlay — removes the view from WindowManager and destroys the lifecycle.
+     * Only call this on service destroy or explicit permanent close. For auto-dismiss use dismiss()/hide().
+     */
+    fun destroyOverlay() {
+        com.friday.assistant.core.FridayLogger.i(TAG, "Destroying overlay (full teardown)")
         try {
-            myLifecycleRegistry.currentState = Lifecycle.State.STARTED
-            myLifecycleRegistry.currentState = Lifecycle.State.CREATED
-            
-            composeView?.let {
-                windowManager.removeView(it)
+            if (myLifecycleRegistry.currentState != Lifecycle.State.DESTROYED) {
+                myLifecycleRegistry.currentState = Lifecycle.State.STARTED
+                myLifecycleRegistry.currentState = Lifecycle.State.CREATED
             }
+            composeView?.let { windowManager.removeView(it) }
             composeView = null
             isVisible = false
-            
-            myLifecycleRegistry.currentState = Lifecycle.State.DESTROYED
             myViewModelStore.clear()
+            com.friday.assistant.core.FridayLogger.d(TAG, "ViewModelStore cleared, overlay session: ${++sessionCount}")
+            if (myLifecycleRegistry.currentState != Lifecycle.State.DESTROYED) {
+                myLifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+            }
         } catch (e: Throwable) {
-            com.friday.assistant.core.FridayLogger.e(TAG, "Error removing overlay view from WindowManager", e)
+            com.friday.assistant.core.FridayLogger.e(TAG, "Error in destroyOverlay", e)
         }
     }
 

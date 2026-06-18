@@ -11,9 +11,11 @@ import com.friday.assistant.intelligence.nlu.NluIntentClassifier
 import com.friday.assistant.tools.ToolRegistry
 import com.friday.assistant.ui.FridayService
 import com.google.gson.JsonObject
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.withContext
 
 class AgentCore(
     private val context: Context,
@@ -22,6 +24,56 @@ class AgentCore(
     companion object {
         private const val TAG = "AgentCore"
         private const val MAX_TOOL_LOOPS = 4
+
+        // Pre-compiled regex patterns — avoids per-call Regex construction overhead
+        private val CALL_STRIP_REGEX = Regex("(?i)(call|phone|dial|ring)\\s+")
+        private val CLIPBOARD_WRITE_REGEX = Regex("(?i)(?:copy|write)\\s+(.+)\\s+(?:to clipboard|to the clipboard)")
+        private val PCT_REGEX = Regex("(\\d+)\\s*(?:%|percent)")
+        private val VOL_NUM_REGEX = Regex("volume\\s+(?:to\\s+)?(\\d+)")
+        private val BRIGHT_NUM_REGEX = Regex("brightness\\s+(?:to\\s+)?(\\d+)")
+        private val TORCH_DIGIT_REGEX = Regex("\\d+")
+        private val TORCH_NUM_REGEX = Regex("(\\d+)")
+        private val NOTIFY_LIST_REGEX = Regex("(?:check|list|show|any|get)\\s+(?:my\\s+)?(?:messages|notifications|mail)")
+        private val NOTIFY_REPLY_REGEX = Regex("(?i)reply\\s+to\\s+(.+?)\\s+(?:saying|with)?\\s*(.+)")
+        private val REDDIT_REGEX = Regex("(?i)(?:search|look up)?(.+?)(?: on reddit| reddit)")
+        private val GOOGLE_STRIP_REGEX = Regex("(?i)^(google|search google for|search for|search)\\s+")
+        private val MEMORY_STORE_REGEX = Regex("(?i)(?:remember that|store that|save that|note that)\\s*(.+)")
+        private val MUSIC_PLAY_REGEX = Regex("play\\s+(.+)")
+        private val MUSIC_LISTEN_REGEX = Regex("listen\\s+to\\s+(.+)")
+        private val NAV_NAVIGATE_REGEX = Regex("navigate\\s+to\\s+(.+)")
+        private val NAV_DIRECTIONS_REGEX = Regex("directions\\s+to\\s+(.+)")
+        private val ALARM_FOR_REGEX = Regex("alarm\\s+for")
+        private val ALARM_WAKE_REGEX = Regex("wake\\s+me\\s+up\\s+at")
+        private val ALARM_LABEL_REGEX = Regex("called\\s+([a-zA-Z0-9 ]+)")
+        private val ALARM_TIME_REGEX = Regex("(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?")
+        private val TIMER_FOR_REGEX = Regex("timer\\s+for")
+        private val TIMER_COUNTDOWN_REGEX = Regex("countdown\\s+for")
+        private val TIMER_LABEL_REGEX = Regex("(?:named|called|label)\\s+([a-zA-Z0-9 ]+)")
+        private val TIMER_DURATION_REGEX = Regex("(\\d+)\\s*(hour|hr|minute|min|second|sec)")
+        private val NOTES_FIND_REGEX = Regex("(?i)(?:find|search|look up)\\s+(?:notes?\\s+)?(?:about|on|for)?\\s*(.+)")
+        private val NOTES_ID_REGEX = Regex("(\\d+)")
+        private val NOTES_STRIP_REGEX = Regex("(?i)(note|jot|write|save|store|remember)\\s+(that\\s+)?")
+        private val NOTES_NOTE_REGEX = Regex("(?i)(?:note that|jot down|write down|save note)\\s*(.+)")
+        private val NOTES_REMIND_REGEX = Regex("(?i)(?:remind me)\\s+(?:to\\s+)?(.+)")
+        private val NOTES_PLAIN_REGEX = Regex("(?i)note:\\s*(.+)")
+        private val TOOL_CALL_REGEX = Regex("\"tool\"\\s*:\\s*\"([^\"]+)\"")
+        private val TOOL_ARG_REGEX = Regex("\"([^\"]+)\"\\s*:\\s*\"([^\"]+)\"")
+        private val EMOJI_REGEX = Regex("[\\p{So}\\p{Cn}]")
+        private val WHATSAPP_PATTERNS = listOf(
+            Regex("(?i)(?:message|text|send message to)\\s+(.+?)\\s+on\\s+whatsapp\\s+(?:saying|text|message)?\\s*(.+)"),
+            Regex("(?i)(?:message|text|send message to)\\s+(.+?)\\s+(?:saying|text|message)?\\s*(.+)\\s+on\\s+whatsapp"),
+            Regex("(?i)whatsapp\\s+(.+?)\\s+(?:saying|text|message)?\\s*(.+)")
+        )
+        private val EMAIL_PATTERNS = listOf(
+            Regex("(?i)(?:send email|send mail|email|mail)\\s+to\\s+(.+?)\\s+subject\\s+(.+?)\\s+body\\s+(.+)"),
+            Regex("(?i)(?:send email|send mail|email|mail)\\s+to\\s+(.+?)\\s+(?:saying|message)?\\s*(.+)")
+        )
+        private val NAV_PATTERNS = listOf(
+            Regex("(?i)navigate\\s+to\\s+(.+)"),
+            Regex("(?i)directions\\s+to\\s+(.+)"),
+            Regex("(?i)go\\s+to\\s+(.+)"),
+            Regex("(?i)routes\\s+to\\s+(.+)")
+        )
     }
 
     private val llamaEngine = FridayApplication.llamaEngine
@@ -45,19 +97,20 @@ class AgentCore(
 
         // 1. Core Intent Classification (Semantic Router, NLU Classifier, or Rule-Based Fallback)
         val cleanQuery = resolvedInput.trim().lowercase()
-        var matchedIntent = "unknown"
-        var confidence = 0f
-
-        if (semanticRouter.isModelLoaded()) {
-            val res = semanticRouter.routeIntent(resolvedInput)
-            matchedIntent = res.first
-            confidence = res.second
-        }
-        
-        if (matchedIntent == "unknown" && nluClassifier.isModelLoaded()) {
-            val res = nluClassifier.classifyIntent(resolvedInput)
-            matchedIntent = res.first
-            confidence = res.second
+        val (matchedIntent, confidence) = withContext(Dispatchers.Default) {
+            var intent = "unknown"
+            var conf = 0f
+            if (semanticRouter.isModelLoaded()) {
+                val res = semanticRouter.routeIntent(resolvedInput)
+                intent = res.first
+                conf = res.second
+            }
+            if (intent == "unknown" && nluClassifier.isModelLoaded()) {
+                val res = nluClassifier.classifyIntent(resolvedInput)
+                intent = res.first
+                conf = res.second
+            }
+            Pair(intent, conf)
         }
 
         // 2. Direct Command Execution — high-priority routes first
@@ -77,7 +130,7 @@ class AgentCore(
         val isCallQuery = callContact != null || matchedIntent == "call_contact"
         if (isCallQuery) {
             val name = callContact ?: cleanQuery
-                .replace(Regex("(?i)(call|phone|dial|ring)\\s+"), "")
+                .replace(CALL_STRIP_REGEX, "")
                 .trim()
             if (name.isNotEmpty()) {
                 _agentStatusFlow.emit("Calling $name...")
@@ -133,7 +186,7 @@ class AgentCore(
             val tool = ToolRegistry.get("clipboard_control")
             if (tool != null) {
                 if (cleanQuery.contains("copy") || cleanQuery.contains("write") || matchedIntent == "clipboard_write") {
-                    val textMatch = Regex("(?i)(?:copy|write)\\s+(.+)\\s+(?:to clipboard|to the clipboard)").find(resolvedInput)
+                    val textMatch = CLIPBOARD_WRITE_REGEX.find(resolvedInput)
                     val text = textMatch?.groupValues?.get(1)?.trim()
                     if (!text.isNullOrEmpty()) {
                         _agentStatusFlow.emit("Copying to clipboard...")
@@ -220,7 +273,7 @@ class AgentCore(
                 actionVal = "50%"
                 actionText = "Setting volume to 50%..."
             } else {
-                val pctMatch = Regex("(\\d+)\\s*(?:%|percent)").find(cleanQuery) ?: Regex("volume\\s+(?:to\\s+)?(\\d+)").find(cleanQuery)
+                val pctMatch = PCT_REGEX.find(cleanQuery) ?: VOL_NUM_REGEX.find(cleanQuery)
                 if (pctMatch != null) {
                     val pct = pctMatch.groupValues[1]
                     actionVal = "$pct%"
@@ -265,7 +318,7 @@ class AgentCore(
                 actionVal = "50%"
                 actionText = "Setting brightness to 50%..."
             } else {
-                val pctMatch = Regex("(\\d+)\\s*(?:%|percent)").find(cleanQuery) ?: Regex("brightness\\s+(?:to\\s+)?(\\d+)").find(cleanQuery)
+                val pctMatch = PCT_REGEX.find(cleanQuery) ?: BRIGHT_NUM_REGEX.find(cleanQuery)
                 if (pctMatch != null) {
                     val pct = pctMatch.groupValues[1]
                     actionVal = "$pct%"
@@ -299,7 +352,7 @@ class AgentCore(
             val isOff = cleanQuery.contains("off") || cleanQuery.contains("disable") || cleanQuery.contains("stop") || cleanQuery.contains("deactivate")
             val isOn = cleanQuery.contains("on") || cleanQuery.contains("enable") || cleanQuery.contains("start") || cleanQuery.contains("activate")
 
-            val hasStrengthWord = cleanQuery.contains("strength") || cleanQuery.contains("level") || cleanQuery.contains("intensity") || cleanQuery.contains("brightness") || cleanQuery.contains("max") || cleanQuery.contains("full") || cleanQuery.contains("medium") || cleanQuery.contains("half") || cleanQuery.contains("low") || Regex("\\d+").containsMatchIn(cleanQuery)
+            val hasStrengthWord = cleanQuery.contains("strength") || cleanQuery.contains("level") || cleanQuery.contains("intensity") || cleanQuery.contains("brightness") || cleanQuery.contains("max") || cleanQuery.contains("full") || cleanQuery.contains("medium") || cleanQuery.contains("half") || cleanQuery.contains("low") || TORCH_DIGIT_REGEX.containsMatchIn(cleanQuery)
 
             if (isOff && !isOn) {
                 _agentStatusFlow.emit("Turning flashlight off...")
@@ -320,7 +373,7 @@ class AgentCore(
                 } else if (cleanQuery.contains("medium") || cleanQuery.contains("half") || cleanQuery.contains("50%")) {
                     pctVal = "50%"
                 } else {
-                    val numMatch = Regex("(\\d+)").find(cleanQuery)
+                    val numMatch = TORCH_NUM_REGEX.find(cleanQuery)
                     pctVal = if (numMatch != null) {
                         val num = numMatch.groupValues[1].toInt()
                         if (num <= 5) (num * 20).toString() + "%" else num.toString() + "%"
@@ -419,12 +472,7 @@ class AgentCore(
 
         // G. WhatsApp Direct Messaging Route
         if (cleanQuery.contains("whatsapp") && (cleanQuery.contains("message") || cleanQuery.contains("send") || cleanQuery.contains("text"))) {
-            val patterns = listOf(
-                "(?i)(?:message|text|send message to)\\s+(.+?)\\s+on\\s+whatsapp\\s+(?:saying|text|message)?\\s*(.+)".toRegex(),
-                "(?i)(?:message|text|send message to)\\s+(.+?)\\s+(?:saying|text|message)?\\s*(.+)\\s+on\\s+whatsapp".toRegex(),
-                "(?i)whatsapp\\s+(.+?)\\s+(?:saying|text|message)?\\s*(.+)".toRegex()
-            )
-            for (pattern in patterns) {
+            for (pattern in WHATSAPP_PATTERNS) {
                 val match = pattern.find(userInput)
                 if (match != null) {
                     val recipient = match.groupValues[1].trim()
@@ -446,11 +494,7 @@ class AgentCore(
 
         // H. Gmail Direct Mail Route
         if (cleanQuery.contains("email") || cleanQuery.contains("mail") || cleanQuery.contains("gmail")) {
-            val patterns = listOf(
-                "(?i)(?:send email|send mail|email|mail)\\s+to\\s+(.+?)\\s+subject\\s+(.+?)\\s+body\\s+(.+)".toRegex(),
-                "(?i)(?:send email|send mail|email|mail)\\s+to\\s+(.+?)\\s+(?:saying|message)?\\s*(.+)".toRegex()
-            )
-            for (pattern in patterns) {
+            for (pattern in EMAIL_PATTERNS) {
                 val match = pattern.find(userInput)
                 if (match != null) {
                     val to = match.groupValues[1].trim()
@@ -485,7 +529,7 @@ class AgentCore(
         }
 
         // I. Checking Notifications
-        val isListNotifications = Regex("(?:check|list|show|any|get)\\s+(?:my\\s+)?(?:messages|notifications|mail)").containsMatchIn(cleanQuery) ||
+        val isListNotifications = NOTIFY_LIST_REGEX.containsMatchIn(cleanQuery) ||
                 cleanQuery.contains("notification") || cleanQuery.contains("notifications")
         if (isListNotifications) {
             _agentStatusFlow.emit("Checking notifications...")
@@ -500,8 +544,7 @@ class AgentCore(
 
         // J. Replying to Notifications
         if (cleanQuery.contains("reply") && cleanQuery.contains("notification")) {
-            val replyPattern = "(?i)reply\\s+to\\s+(.+?)\\s+(?:saying|with)?\\s*(.+)".toRegex()
-            val match = replyPattern.find(resolvedInput)
+            val match = NOTIFY_REPLY_REGEX.find(resolvedInput)
             if (match != null) {
                 val key = match.groupValues[1].trim()
                 val text = match.groupValues[2].trim()
@@ -542,8 +585,7 @@ class AgentCore(
                 cleanQuery.contains("reddit search")
         if (isSearchReddit) {
             var searchPhrase = userInput
-            val redditRegex = "(?i)(?:search|look up)?(.+?)(?: on reddit| reddit)?".toRegex()
-            val match = redditRegex.matchEntire(cleanQuery)
+            val match = REDDIT_REGEX.matchEntire(cleanQuery)
             if (match != null) {
                 searchPhrase = match.groupValues[1].replace("search", "").replace("for", "").trim()
             }
@@ -570,7 +612,7 @@ class AgentCore(
                 (cleanQuery.contains("look this up") && !cleanQuery.contains("reddit"))
         if (isSearchGoogle) {
             var searchPhrase = cleanQuery
-                .replace(Regex("(?i)^(google|search google for|search the web for|look this up on google|look this up|search for)\\s+"), "")
+                .replace(GOOGLE_STRIP_REGEX, "")
                 .trim()
             if (searchPhrase.isEmpty()) searchPhrase = userInput
             _agentStatusFlow.emit("Searching Google...")
@@ -647,8 +689,8 @@ class AgentCore(
         // T. Play Media / Search Music (before open_app to avoid "start playing" collision)
         val isPlayMedia = matchedIntent == "play_media" || matchedIntent == "play_spotify" ||
             matchedIntent == "play_youtube" ||
-            Regex("play\\s+(.+)").containsMatchIn(cleanQuery) ||
-            Regex("listen\\s+to\\s+(.+)").containsMatchIn(cleanQuery)
+            MUSIC_PLAY_REGEX.containsMatchIn(cleanQuery) ||
+            MUSIC_LISTEN_REGEX.containsMatchIn(cleanQuery)
         if (isPlayMedia && !EntityExtractor.isScreenshotQuery(cleanQuery)) {
             val (mediaQuery, targetApp) = EntityExtractor.extractMediaQuery(resolvedInput)
             if (mediaQuery.isNotEmpty()) {
@@ -725,17 +767,11 @@ class AgentCore(
 
         // Q. Turn-by-Turn Navigation (Maps)
         val isNavigateTo = matchedIntent == "navigate_to" && confidence > 0.7f ||
-                Regex("navigate\\s+to\\s+(.+)").containsMatchIn(cleanQuery) ||
-                Regex("directions\\s+to\\s+(.+)").containsMatchIn(cleanQuery)
+                NAV_NAVIGATE_REGEX.containsMatchIn(cleanQuery) ||
+                NAV_DIRECTIONS_REGEX.containsMatchIn(cleanQuery)
         if (isNavigateTo) {
-            val patterns = listOf(
-                "(?i)navigate\\s+to\\s+(.+)".toRegex(),
-                "(?i)directions\\s+to\\s+(.+)".toRegex(),
-                "(?i)go\\s+to\\s+(.+)".toRegex(),
-                "(?i)routes\\s+to\\s+(.+)".toRegex()
-            )
             var destination = ""
-            for (p in patterns) {
+            for (p in NAV_PATTERNS) {
                 val match = p.find(userInput)
                 if (match != null) {
                     destination = match.groupValues[1].trim()
@@ -761,19 +797,19 @@ class AgentCore(
 
         // R. Create System Alarm
         val isSetAlarm = matchedIntent == "set_alarm" && confidence > 0.7f ||
-                Regex("alarm\\s+for").containsMatchIn(cleanQuery) ||
-                Regex("wake\\s+me\\s+up\\s+at").containsMatchIn(cleanQuery)
+                ALARM_FOR_REGEX.containsMatchIn(cleanQuery) ||
+                ALARM_WAKE_REGEX.containsMatchIn(cleanQuery)
         if (isSetAlarm) {
             var hour = 7
             var minute = 0
             var label = "Friday Alarm"
             
-            val labelMatch = Regex("called\\s+([a-zA-Z0-9 ]+)").find(cleanQuery)
+            val labelMatch = ALARM_LABEL_REGEX.find(cleanQuery)
             if (labelMatch != null) {
                 label = labelMatch.groupValues[1].trim()
             }
             
-            val timeMatch = Regex("(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?").find(cleanQuery)
+            val timeMatch = ALARM_TIME_REGEX.find(cleanQuery)
             if (timeMatch != null) {
                 var h = timeMatch.groupValues[1].toInt()
                 val m = if (timeMatch.groupValues[2].isNotEmpty()) timeMatch.groupValues[2].toInt() else 0
@@ -809,18 +845,18 @@ class AgentCore(
 
         // S. Create Countdown Timer
         val isSetTimer = matchedIntent == "set_timer" && confidence > 0.7f ||
-                Regex("timer\\s+for").containsMatchIn(cleanQuery) ||
-                Regex("countdown\\s+for").containsMatchIn(cleanQuery)
+                TIMER_FOR_REGEX.containsMatchIn(cleanQuery) ||
+                TIMER_COUNTDOWN_REGEX.containsMatchIn(cleanQuery)
         if (isSetTimer) {
             var durationSeconds = 300 // default 5 minutes
             var label = "Friday Timer"
             
-            val labelMatch = Regex("(?:named|called|label)\\s+([a-zA-Z0-9 ]+)").find(cleanQuery)
+            val labelMatch = TIMER_LABEL_REGEX.find(cleanQuery)
             if (labelMatch != null) {
                 label = labelMatch.groupValues[1].trim()
             }
             
-            val durationMatch = Regex("(\\d+)\\s*(hour|hr|minute|min|second|sec)s?").find(cleanQuery)
+            val durationMatch = TIMER_DURATION_REGEX.find(cleanQuery)
             if (durationMatch != null) {
                 val value = durationMatch.groupValues[1].toInt()
                 val unit = durationMatch.groupValues[2].lowercase()
@@ -925,8 +961,8 @@ class AgentCore(
                     matchedIntent == "notes_create" -> {
                         val contentPatterns = listOf(
                             "(?i)(?:note that|jot down|write down|save a? ?note(?:(?: that| saying)?))\\s+(.+)".toRegex(),
-                            "(?i)(?:remind me)\\s+(?:to\\s+)?(.+)".toRegex(),
-                            "(?i)note:\\s*(.+)".toRegex()
+                            NOTES_REMIND_REGEX,
+                            NOTES_PLAIN_REGEX
                         )
                         var content = ""
                         for (p in contentPatterns) {
@@ -934,7 +970,7 @@ class AgentCore(
                             if (m != null) { content = m.groupValues[1].trim(); break }
                         }
                         if (content.isEmpty()) content = resolvedInput
-                            .replace(Regex("(?i)(note|jot|write|save|down|that|please|friday)"), "").trim()
+                            .replace(NOTES_STRIP_REGEX, "").trim()
                         if (content.isNotEmpty()) {
                             _agentStatusFlow.emit("Saving note...")
                             val result = tool.execute(JsonObject().apply {
@@ -961,7 +997,7 @@ class AgentCore(
                     // Delete: "delete note 3", "remove note with id 5"
                     (cleanQuery.contains("delete note") || cleanQuery.contains("remove note")) &&
                     matchedIntent == "notes_delete" -> {
-                        val idMatch = Regex("(\\d+)").find(cleanQuery)
+                        val idMatch = NOTES_ID_REGEX.find(cleanQuery)
                         if (idMatch != null) {
                             val id = idMatch.groupValues[1].toLong()
                             _agentStatusFlow.emit("Deleting note...")
@@ -987,14 +1023,9 @@ class AgentCore(
         // U. WhatsApp Send Message (NLU Route Integration)
         if (matchedIntent == "send_whatsapp" && confidence > 0.7f) {
 
-            val patterns = listOf(
-                "(?i)(?:message|text|send message to)\\s+(.+?)\\s+on\\s+whatsapp\\s+(?:saying|text|message)?\\s*(.+)".toRegex(),
-                "(?i)(?:message|text|send message to)\\s+(.+?)\\s+(?:saying|text|message)?\\s*(.+)\\s+on\\s+whatsapp".toRegex(),
-                "(?i)whatsapp\\s+(.+?)\\s+(?:saying|text|message)?\\s*(.+)".toRegex()
-            )
             var recipient = ""
             var msgText = ""
-            for (pattern in patterns) {
+            for (pattern in WHATSAPP_PATTERNS) {
                 val match = pattern.find(userInput)
                 if (match != null) {
                     recipient = match.groupValues[1].trim()
@@ -1092,13 +1123,11 @@ class AgentCore(
         }
         
         // RegEx fallback for less structured tool output
-        val toolRegex = "\"tool\"\\s*:\\s*\"([^\"]+)\"".toRegex()
-        val match = toolRegex.find(response)
+        val match = TOOL_CALL_REGEX.find(response)
         if (match != null) {
             val toolName = match.groupValues[1]
             val args = JsonObject()
-            val argRegex = "\"([^\"]+)\"\\s*:\\s*\"([^\"]+)\"".toRegex()
-            argRegex.findAll(response).forEach { argMatch ->
+            TOOL_ARG_REGEX.findAll(response).forEach { argMatch ->
                 val key = argMatch.groupValues[1]
                 val value = argMatch.groupValues[2]
                 if (key != "tool" && key != "arguments") {
@@ -1125,7 +1154,6 @@ class AgentCore(
     }
 
     private fun removeEmojis(text: String): String {
-        val emojiRegex = "[\\p{So}\\p{Cn}]".toRegex()
-        return text.replace(emojiRegex, "").trim()
+        return text.replace(EMOJI_REGEX, "").trim()
     }
 }

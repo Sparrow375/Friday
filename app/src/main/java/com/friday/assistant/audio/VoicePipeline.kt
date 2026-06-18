@@ -108,17 +108,17 @@ class VoicePipeline(
         // Play wake chime or sound (implemented in Service or UI layer later)
     }
 
-    override fun onAudioFrame(pcmData: ShortArray) {
+    override fun onAudioFrame(pcmData: ShortArray, length: Int) {
         val currentState = _state.value
         
         if (currentState == PipelineState.LISTENING) {
-            // Store audio samples
+            // Store audio samples — only the valid portion of the shared buffer
             synchronized(commandAudioBuffer) {
-                pcmData.forEach { commandAudioBuffer.add(it) }
+                for (i in 0 until length) commandAudioBuffer.add(pcmData[i])
             }
 
             val now = System.currentTimeMillis()
-            val rms = calculateRMS(pcmData)
+            val rms = calculateRMS(pcmData, length)
 
             // Dynamic silence detection
             if (rms < SILENCE_THRESHOLD_RMS) {
@@ -175,11 +175,13 @@ class VoicePipeline(
         }
     }
 
-    private fun calculateRMS(pcmData: ShortArray): Float {
+    private fun calculateRMS(pcmData: ShortArray, length: Int): Float {
+        if (length == 0) return 0f
         var sum = 0.0
-        for (sample in pcmData) {
-            sum += sample.toDouble() * sample.toDouble()
+        for (i in 0 until length) {
+            val sample = pcmData[i].toDouble()
+            sum += sample * sample
         }
-        return sqrt(sum / pcmData.size).toFloat()
+        return sqrt(sum / length).toFloat()
     }
 }

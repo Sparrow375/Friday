@@ -18,7 +18,8 @@ class AudioCaptureManager(private val context: Context) {
     }
 
     interface AudioFrameListener {
-        fun onAudioFrame(pcmData: ShortArray)
+        // IMPORTANT: pcmData is a shared buffer reused each frame. Copy contents before any async use.
+        fun onAudioFrame(pcmData: ShortArray, length: Int)
     }
 
     private val listeners = CopyOnWriteArrayList<AudioFrameListener>()
@@ -88,9 +89,9 @@ class AudioCaptureManager(private val context: Context) {
                 while (isRecording) {
                     val readResult = audioRecord?.read(buffer, 0, frameSize) ?: -1
                     if (readResult > 0) {
-                        val frame = ShortArray(readResult)
-                        System.arraycopy(buffer, 0, frame, 0, readResult)
-                        notifyListeners(frame)
+                        // Pass shared buffer directly — avoids per-frame allocation (10x/sec GC pressure reduction).
+                        // Listeners must copy data before any async use.
+                        notifyListeners(buffer, readResult)
                     } else if (readResult < 0) {
                         Log.e(TAG, "AudioRecord read error: $readResult")
                         break
@@ -133,10 +134,10 @@ class AudioCaptureManager(private val context: Context) {
         Log.i(TAG, "Audio capture stopped")
     }
 
-    private fun notifyListeners(pcmData: ShortArray) {
+    private fun notifyListeners(pcmData: ShortArray, length: Int) {
         for (listener in listeners) {
             try {
-                listener.onAudioFrame(pcmData)
+                listener.onAudioFrame(pcmData, length)
             } catch (e: Exception) {
                 Log.e(TAG, "Error notifying audio listener", e)
             }

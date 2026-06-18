@@ -31,6 +31,9 @@ class WakeWordDetector(
     private var speechRecognizer: SpeechRecognizer? = null
     private var isListeningEnabled = false
     private var maxRmsSeen = -100f
+    // Pre-allocated DP array for Levenshtein distance — avoids per-call allocation in hot path
+    private val dpArray = IntArray(32)
+    private var cachedVariants: Set<String> = buildVariantSet(DEFAULT_WAKEWORD)
 
     fun getWakeWord(): String {
         return sharedPrefs.getString(KEY_WAKEWORD, DEFAULT_WAKEWORD) ?: DEFAULT_WAKEWORD
@@ -38,6 +41,7 @@ class WakeWordDetector(
 
     fun setWakeWord(word: String) {
         sharedPrefs.edit().putString(KEY_WAKEWORD, word.trim().lowercase()).apply()
+        cachedVariants = buildVariantSet(word.trim().lowercase())
     }
 
     fun isModelLoaded(): Boolean = true // Now virtual since we use the native system recognizer
@@ -182,13 +186,8 @@ class WakeWordDetector(
             return false
         }
 
-        val targetWakeWord = getWakeWord().lowercase().trim()
-        
-        // Target phonetics
-        val targetVariants = mutableSetOf(targetWakeWord, "friday", "frida", "freeday", "friyay")
-        if (targetWakeWord != "friday") {
-            targetVariants.add(targetWakeWord.replace(" ", ""))
-        }
+        // Use pre-computed variant set (updated in setWakeWord, avoids per-call allocation)
+        val targetVariants = cachedVariants
 
         for (match in matches) {
             val cleanMatch = match.lowercase().trim()
@@ -216,21 +215,42 @@ class WakeWordDetector(
         return false
     }
 
+    /**
+     * Pre-computes the set of acceptable wake word variants for matching.
+     * Called once at construction and whenever the wake word is changed.
+     */
+    private fun buildVariantSet(word: String): Set<String> {
+        val variants = mutableSetOf(word, "friday", "frida", "freeday", "friyay")
+        if (word != "friday") {
+            variants.add(word.replace(" ", ""))
+        }
+        return variants
+    }
+
     private fun levenshteinDistance(s1: String, s2: String): Int {
-        val dp = IntArray(s2.length + 1) { it }
+        // Early exit: length difference alone exceeds max threshold
+        if (kotlin.math.abs(s1.length - s2.length) > 2) return 3
+
+        val len2 = s2.length.coerceAtMost(dpArray.size - 1)
+        for (j in 0..len2) dpArray[j] = j
+
         for (i in 1..s1.length) {
             var prev = i
-            for (j in 1..s2.length) {
-                val temp = dp[j]
-                dp[j] = if (s1[i - 1] == s2[j - 1]) {
-                    dp[j - 1]
+            var rowMin = i
+            for (j in 1..len2) {
+                val temp = dpArray[j]
+                dpArray[j] = if (s1[i - 1] == s2[j - 1]) {
+                    dpArray[j - 1]
                 } else {
-                    1 + minOf(dp[j - 1], dp[j], prev)
+                    1 + minOf(dpArray[j - 1], dpArray[j], prev)
                 }
+                if (dpArray[j] < rowMin) rowMin = dpArray[j]
                 prev = temp
             }
+            // Early exit: entire row exceeds threshold — no match possible
+            if (rowMin > 2) return 3
         }
-        return dp[s2.length]
+        return dpArray[len2]
     }
 
     private fun triggerWakeWord() {
