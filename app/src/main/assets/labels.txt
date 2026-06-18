@@ -35,4 +35,13 @@ get_battery
 get_time
 airplane_mode_toggle
 mobile_data_toggle
+open_camera
+notes_create
+notes_list
+notes_search
+notes_delete
+search_google
+remember_preference
+recall_preference
+open_files
 unknown
