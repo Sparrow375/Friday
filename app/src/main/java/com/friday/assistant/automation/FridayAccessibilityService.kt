@@ -3,6 +3,8 @@ package com.friday.assistant.automation
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -12,6 +14,9 @@ class FridayAccessibilityService : AccessibilityService() {
     companion object {
         private const val TAG = "FridayAccessibility"
     }
+
+    // AccessibilityService does not expose a mainHandler — declare one explicitly.
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onServiceConnected() {
         super.onServiceConnected()
