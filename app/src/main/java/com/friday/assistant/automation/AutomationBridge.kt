@@ -70,11 +70,11 @@ object AutomationBridge {
         val svc = service ?: return false
         val result = AtomicBoolean(false)
         val latch = CountDownLatch(1)
-        svc.postWhatsAppSend(timeoutMs = 7000L) { ok ->
+        svc.postWhatsAppSend(timeoutMs = 4000L) { ok ->
             result.set(ok)
             latch.countDown()
         }
-        latch.await(8, TimeUnit.SECONDS)
+        latch.await(5, TimeUnit.SECONDS)
         return result.get()
     }
 }

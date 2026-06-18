@@ -107,52 +107,53 @@ class FridayAccessibilityService : AccessibilityService() {
     }
 
     fun postToggleQuickSetting(label: String, enable: Boolean, callback: (Boolean) -> Unit) {
-        mainHandler.post {
+        // Run entirely on a background thread — Thread.sleep() on the main thread
+        // blocks rootInActiveWindow from refreshing and prevents click delivery.
+        Thread {
             try {
-                if (!performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)) {
-                    callback(false)
-                    return@post
-                }
+                mainHandler.post { performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS) }
                 // Wait for QS panel to fully expand
-                Thread.sleep(600)
+                Thread.sleep(700)
 
                 val root = rootInActiveWindow ?: run {
-                    performGlobalAction(GLOBAL_ACTION_BACK)
+                    mainHandler.post { performGlobalAction(GLOBAL_ACTION_BACK) }
                     callback(false)
-                    return@post
+                    return@Thread
                 }
 
                 val tile = findQsTileNode(root, label)
                 if (tile == null) {
                     Log.w(TAG, "QS tile not found for label='$label'")
-                    performGlobalAction(GLOBAL_ACTION_BACK)
+                    mainHandler.post { performGlobalAction(GLOBAL_ACTION_BACK) }
                     callback(false)
-                    return@post
+                    return@Thread
                 }
 
-                // Check current checked/enabled state to avoid toggling in the wrong direction
+                // Determine current state — avoid double-toggle
                 val isCurrentlyEnabled = tile.isChecked || tile.isSelected ||
-                    tile.contentDescription?.toString()?.lowercase()?.let {
-                        it.contains("on") && !it.contains("off")
-                    } ?: false
+                    tile.contentDescription?.toString()?.lowercase()
+                        ?.let { it.contains("on") && !it.contains("off") } ?: false
 
                 val needsClick = (enable && !isCurrentlyEnabled) || (!enable && isCurrentlyEnabled)
-                val clicked = if (needsClick) {
+                var clicked = false
+                if (needsClick) {
                     val target = findClickableNode(tile) ?: tile
-                    target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    mainHandler.post { target.performAction(AccessibilityNodeInfo.ACTION_CLICK) }
+                    Thread.sleep(400)
+                    clicked = true
                 } else {
-                    true // already in desired state
+                    clicked = true // already in desired state
                 }
 
-                Thread.sleep(300)
-                performGlobalAction(GLOBAL_ACTION_BACK)
+                Thread.sleep(200)
+                mainHandler.post { performGlobalAction(GLOBAL_ACTION_BACK) }
                 callback(clicked)
             } catch (e: Exception) {
                 Log.e(TAG, "Quick setting toggle failed for $label", e)
-                try { performGlobalAction(GLOBAL_ACTION_BACK) } catch (_: Exception) {}
+                try { mainHandler.post { performGlobalAction(GLOBAL_ACTION_BACK) } } catch (_: Exception) {}
                 callback(false)
             }
-        }
+        }.start()
     }
 
     /**
@@ -218,8 +219,10 @@ class FridayAccessibilityService : AccessibilityService() {
      * After a WhatsApp chat is opened (via deep link), waits for the send button
      * to appear and taps it. Polls for up to [timeoutMs] ms.
      */
-    fun postWhatsAppSend(timeoutMs: Long = 6000L, callback: (Boolean) -> Unit) {
-        mainHandler.post {
+    fun postWhatsAppSend(timeoutMs: Long = 4000L, callback: (Boolean) -> Unit) {
+        // Run on a background thread — polling with Thread.sleep() on the main thread
+        // blocks rootInActiveWindow from seeing the WhatsApp window.
+        Thread {
             val deadline = System.currentTimeMillis() + timeoutMs
             var sent = false
 
@@ -231,19 +234,26 @@ class FridayAccessibilityService : AccessibilityService() {
                         if (pkg.contains("whatsapp", ignoreCase = true)) {
                             val sendNode = findWhatsAppSendButton(root)
                             if (sendNode != null) {
-                                sent = sendNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                                if (sent) break
+                                // Perform click on main thread, then wait for it to register
+                                var clickResult = false
+                                val latch = java.util.concurrent.CountDownLatch(1)
+                                mainHandler.post {
+                                    clickResult = sendNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                                    latch.countDown()
+                                }
+                                latch.await(500, java.util.concurrent.TimeUnit.MILLISECONDS)
+                                if (clickResult) { sent = true; break }
                             }
                         }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "postWhatsAppSend poll error", e)
                 }
-                Thread.sleep(300)
+                Thread.sleep(200)
             }
 
             callback(sent)
-        }
+        }.start()
     }
 
     private fun findWhatsAppSendButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {

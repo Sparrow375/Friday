@@ -204,8 +204,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 overlayManager?.updateAmplitude(0f)
                 speechToTextHelper.destroy()
                 
-                // Auto-dismiss overlay UI when task finishes
-                val dismissDelay = if (oldState == PipelineState.SPEAKING) 4000L else 1500L
+                // Auto-dismiss overlay — short delay so user can read the result
+                val dismissDelay = if (oldState == PipelineState.SPEAKING) 1500L else 600L
                 serviceScope.launch {
                     kotlinx.coroutines.delay(dismissDelay)
                     if (pipelineState.value == PipelineState.IDLE) {
@@ -214,16 +214,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                     }
                 }
 
-                if (oldState == PipelineState.SPEAKING) {
-                    serviceScope.launch {
-                        kotlinx.coroutines.delay(1500)
-                        if (pipelineState.value == PipelineState.IDLE) {
-                            startWakeWordListening()
-                        }
-                    }
-                } else {
-                    startWakeWordListening()
-                }
+                // Restart wake word immediately — no extra delay needed
+                startWakeWordListening()
             } else {
                 stopWakeWordListening()
             }
@@ -315,12 +307,14 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         val response = queryResult.message
 
         if (queryResult.isFastTool) {
-            overlayManager?.updateState(PipelineState.IDLE, response, trans = query, resp = response)
             val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
             val confirmTools = prefs.getBoolean("voice_confirm_tools", true)
             if (confirmTools && response.isNotBlank()) {
+                // Speak the brief confirmation then auto-dismiss
                 speakResponse(response)
             } else {
+                // No TTS — show result on overlay briefly then dismiss immediately
+                overlayManager?.updateState(PipelineState.IDLE, response, trans = query, resp = response)
                 transitionToState(PipelineState.IDLE, responseText = response, transcriptText = query)
             }
             return
