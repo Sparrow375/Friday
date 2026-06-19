@@ -242,10 +242,15 @@ class WakeWordDetector(
             val cleanMatch = match.trim()
             val lowerMatch = cleanMatch.lowercase()
             
-            for (variant in targetVariants) {
-                val idx = lowerMatch.indexOf(variant)
+            // Find the longest variant that is actually present in the match
+            val bestVariant = targetVariants
+                .filter { lowerMatch.contains(it) }
+                .maxByOrNull { it.length }
+                
+            if (bestVariant != null) {
+                val idx = lowerMatch.indexOf(bestVariant)
                 if (idx != -1) {
-                    val commandStart = idx + variant.length
+                    val commandStart = idx + bestVariant.length
                     if (commandStart < cleanMatch.length) {
                         val command = cleanMatch.substring(commandStart).trim()
                         val cleanedCommand = command.replace(Regex("^[^a-zA-Z0-9]+"), "").trim()

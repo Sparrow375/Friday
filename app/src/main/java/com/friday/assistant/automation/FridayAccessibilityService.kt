@@ -138,8 +138,8 @@ class FridayAccessibilityService : AccessibilityService() {
                 // Determine current state — check both tile and target
                 val isCurrentlyEnabled = tile.isChecked || tile.isSelected ||
                     target.isChecked || target.isSelected ||
-                    tile.contentDescription?.toString()?.lowercase()?.let { it.contains("on") && !it.contains("off") } ?: false ||
-                    target.contentDescription?.toString()?.lowercase()?.let { it.contains("on") && !it.contains("off") } ?: false
+                    tile.contentDescription?.toString()?.lowercase()?.let { (it.contains("on") || it.contains("connected")) && !it.contains("off") } ?: false ||
+                    target.contentDescription?.toString()?.lowercase()?.let { (it.contains("on") || it.contains("connected")) && !it.contains("off") } ?: false
 
                 val needsClick = (enable && !isCurrentlyEnabled) || (!enable && isCurrentlyEnabled)
                 var clicked = false
@@ -171,7 +171,7 @@ class FridayAccessibilityService : AccessibilityService() {
         for (i in 0 until parent.childCount) {
             val child = parent.getChild(i) ?: continue
             if (child != tile) {
-                val clickable = findClickableNode(child)
+                val clickable = findClickableDescendant(child)
                 if (clickable != null) {
                     Log.i(TAG, "Found sibling clickable node for $lowerLabel toggle: ${clickable.className}")
                     return clickable
@@ -180,6 +180,17 @@ class FridayAccessibilityService : AccessibilityService() {
         }
         return tile
     }
+
+    private fun findClickableDescendant(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isClickable) return node
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findClickableDescendant(child)
+            if (found != null) return found
+        }
+        return null
+    }
+
 
     /**
      * Finds a Quick Settings tile node using multiple search strategies:
