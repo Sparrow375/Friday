@@ -107,7 +107,6 @@ class WakeWordDetector(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to set wake-word recognition listener", e)
         }
-    }
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
