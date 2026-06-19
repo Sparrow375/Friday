@@ -386,7 +386,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             tts?.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, "${UTTERANCE_ID}_0")
         } else {
             overlayManager?.updateState(PipelineState.SPEAKING, "Speaking...", resp = fullResponseText)
-            tts?.speak(textToSpeak, TextToSpeak.QUEUE_ADD, null, "${UTTERANCE_ID}_${System.currentTimeMillis()}")
+            tts?.speak(textToSpeak, TextToSpeech.QUEUE_ADD, null, "${UTTERANCE_ID}_${System.currentTimeMillis()}")
         }
     }
 

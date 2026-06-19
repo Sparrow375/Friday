@@ -14,6 +14,7 @@ import com.friday.assistant.tools.ToolResult
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import java.net.URLEncoder
+import com.friday.assistant.automation.AutomationBridge
 
 class MediaControlTool(private val context: Context) : Tool {
 

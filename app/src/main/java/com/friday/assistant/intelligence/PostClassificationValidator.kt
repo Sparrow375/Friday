@@ -69,8 +69,8 @@ object PostClassificationValidator {
             val packages = pm.getInstalledPackages(0)
             val cleanName = appName.lowercase().trim()
             packages.any {
-                val label = it.applicationInfo.loadLabel(pm).toString().lowercase().trim()
-                label == cleanName || label.replace(" ", "") == cleanName.replace(" ", "")
+                val label = it.applicationInfo?.loadLabel(pm)?.toString()?.lowercase()?.trim() ?: ""
+                label.isNotEmpty() && (label == cleanName || label.replace(" ", "") == cleanName.replace(" ", ""))
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error checking installed apps", e)

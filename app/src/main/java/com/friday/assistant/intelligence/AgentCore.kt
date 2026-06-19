@@ -1112,7 +1112,7 @@ class AgentCore(
                     }
                 }
             }
-        }        }
+        }
 
         // 3. Fallback: LLM Chat Brain (Free of Tool Calling Loop)
         val sharedPrefs = context.getSharedPreferences("friday_model_prefs", Context.MODE_PRIVATE)
