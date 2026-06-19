@@ -279,7 +279,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         val wakeWordVariants = setOf("friday", "frida", "freeday", "friyay")
         val isWakeWordOnly = cleanCommand.isEmpty() || wakeWordVariants.contains(cleanCommand)
         
-        if (!isWakeWordOnly && cleanCommand.length >= 3) {
+        if (!isWakeWordOnly && command != null && cleanCommand.length >= 3) {
             com.friday.assistant.core.FridayLogger.d(TAG, "Executing same-breath command directly: $command")
             transitionToState(PipelineState.THINKING, statusMessage = "Thinking...", transcriptText = command)
             executeAgentQuery(command)
