@@ -16,7 +16,7 @@ FAILURE: Build failed with an exception.
 org.gradle.api.InvalidUserDataException: Invalid TOML catalog definition:
   - Problem: In version catalog libs, parsing failed with 1 error.
     
-    Reason: In file '/home/runner/work/Friday/Friday/gradle/libs.versions.toml' at line 61, column 62: Unexpected '\r', expected a newline or end-of-input.
+    Reason: In file '/home/runner/work/Friday/Friday/gradle/libs.versions.toml' at line 63, column 1: Unexpected '\r', expected a newline or end-of-input.
     
     Possible solution: Fix the TOML file according to the syntax described at https://toml.io.
     
@@ -24,7 +24,7 @@ org.gradle.api.InvalidUserDataException: Invalid TOML catalog definition:
 > Invalid TOML catalog definition:
     - Problem: In version catalog libs, parsing failed with 1 error.
       
-      Reason: In file '/home/runner/work/Friday/Friday/gradle/libs.versions.toml' at line 61, column 62: Unexpected '\r', expected a newline or end-of-input.
+      Reason: In file '/home/runner/work/Friday/Friday/gradle/libs.versions.toml' at line 63, column 1: Unexpected '\r', expected a newline or end-of-input.
       
       Possible solution: Fix the TOML file according to the syntax described at https://toml.io.
       
