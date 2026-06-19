@@ -103,31 +103,55 @@ class MediaControlTool(private val context: Context) : Tool {
 
     private fun playOnSpotify(query: String): ToolResult {
         return try {
-            val encoded = URLEncoder.encode(query, "UTF-8")
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:$encoded")).apply {
+            val intent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
                 setPackage(PKG_SPOTIFY)
+                putExtra(SearchManager.QUERY, query)
+                putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
             }
             context.startActivity(intent)
             ToolResult(true, "Playing '$query' on Spotify")
         } catch (e: Exception) {
-            Log.w(TAG, "Spotify deep link failed, falling back", e)
-            playFromSearchDefault(query)
+            Log.w(TAG, "Spotify auto-play intent failed, falling back to search URI", e)
+            try {
+                val encoded = URLEncoder.encode(query, "UTF-8")
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:$encoded")).apply {
+                    setPackage(PKG_SPOTIFY)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
+                }
+                context.startActivity(intent)
+                ToolResult(true, "Searching '$query' on Spotify")
+            } catch (ex: Exception) {
+                Log.w(TAG, "Spotify search deep link failed, falling back", ex)
+                playFromSearchDefault(query)
+            }
         }
     }
 
     private fun playOnYouTubeMusic(query: String): ToolResult {
         return try {
-            val encoded = URLEncoder.encode(query, "UTF-8")
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://music.youtube.com/search?q=$encoded")).apply {
+            val intent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
                 setPackage(PKG_YT_MUSIC)
+                putExtra(SearchManager.QUERY, query)
+                putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
             }
             context.startActivity(intent)
             ToolResult(true, "Playing '$query' on YouTube Music")
         } catch (e: Exception) {
-            Log.w(TAG, "YouTube Music deep link failed", e)
-            playFromSearchDefault(query)
+            Log.w(TAG, "YouTube Music auto-play intent failed, falling back to search URL", e)
+            try {
+                val encoded = URLEncoder.encode(query, "UTF-8")
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://music.youtube.com/search?q=$encoded")).apply {
+                    setPackage(PKG_YT_MUSIC)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
+                }
+                context.startActivity(intent)
+                ToolResult(true, "Searching '$query' on YouTube Music")
+            } catch (ex: Exception) {
+                Log.w(TAG, "YouTube Music deep link failed", ex)
+                playFromSearchDefault(query)
+            }
         }
     }
 
