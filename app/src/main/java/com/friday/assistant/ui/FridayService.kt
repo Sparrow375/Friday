@@ -63,6 +63,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     private val agentCore: AgentCore get() = FridayApplication.agentCore
     private lateinit var speechToTextHelper: SpeechToTextHelper
     private var wakeWordDetector: com.friday.assistant.audio.WakeWordDetector? = null
+    private var sharedSpeechRecognizer: android.speech.SpeechRecognizer? = null
     
     private var overlayManager: OverlayManager? = null
     private var tts: TextToSpeech? = null
@@ -95,6 +96,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         tts = TextToSpeech(this, this)
 
         // 4. Setup Speech to Text Helper
+        val sharedRecognizer = getSharedSpeechRecognizer()
         speechToTextHelper = SpeechToTextHelper(
             context = this,
             onTranscriptUpdate = { text ->
@@ -112,7 +114,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             },
             onStateChanged = { state ->
                 transitionToState(state)
-            }
+            },
+            sharedRecognizer = sharedRecognizer
         )
 
         // 5. Initialize UI Overlay Manager
@@ -137,12 +140,33 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         }.launchIn(serviceScope)
 
         // 7. Setup Wake Word Detector
-        wakeWordDetector = com.friday.assistant.audio.WakeWordDetector(this, modelManager) {
-            com.friday.assistant.core.FridayLogger.i(TAG, "Wake word 'friday' detected!")
+        wakeWordDetector = com.friday.assistant.audio.WakeWordDetector(
+            context = this,
+            modelManager = modelManager,
+            sharedRecognizer = sharedRecognizer
+        ) { command ->
+            com.friday.assistant.core.FridayLogger.i(TAG, "Wake word 'friday' detected! Command: $command")
             serviceScope.launch {
-                onWakeWordTriggered()
+                onWakeWordTriggered(command)
             }
         }
+    }
+
+    private fun getSharedSpeechRecognizer(): android.speech.SpeechRecognizer {
+        var recognizer = sharedSpeechRecognizer
+        if (recognizer == null) {
+            val useOnDevice = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                              android.speech.SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
+            recognizer = if (useOnDevice) {
+                com.friday.assistant.core.FridayLogger.i(TAG, "Using on-device speech recognizer")
+                android.speech.SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
+            } else {
+                com.friday.assistant.core.FridayLogger.i(TAG, "Using standard speech recognizer")
+                android.speech.SpeechRecognizer.createSpeechRecognizer(this)
+            }
+            sharedSpeechRecognizer = recognizer
+        }
+        return recognizer
     }
 
     override fun onReady() {
@@ -249,12 +273,17 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         // Note: no audio focus to abandon — we never requested it for wake-word listening
     }
 
-    private suspend fun onWakeWordTriggered() {
+    private suspend fun onWakeWordTriggered(command: String? = null) {
         overlayManager?.show()
-        transitionToState(PipelineState.LISTENING)
-        // No delay needed — SpeechRecognizer manages its own audio session setup
-        com.friday.assistant.core.FridayLogger.d(TAG, "STT start triggered immediately (no mic handover delay)")
-        speechToTextHelper.startListening()
+        if (command != null && command.isNotBlank()) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "Executing same-breath command directly: $command")
+            transitionToState(PipelineState.THINKING, statusMessage = "Thinking...", transcriptText = command)
+            executeAgentQuery(command)
+        } else {
+            transitionToState(PipelineState.LISTENING)
+            com.friday.assistant.core.FridayLogger.d(TAG, "STT start triggered immediately (no mic handover delay)")
+            speechToTextHelper.startListening()
+        }
     }
 
     private fun toggleListening() {
@@ -481,6 +510,14 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         wakeWordDetector?.shutdown()
         speechToTextHelper.destroy()
+        
+        try {
+            sharedSpeechRecognizer?.destroy()
+        } catch (e: Exception) {
+            com.friday.assistant.core.FridayLogger.e(TAG, "Error destroying shared speech recognizer", e)
+        }
+        sharedSpeechRecognizer = null
+
         overlayManager?.destroyOverlay()
         tts?.shutdown()
 

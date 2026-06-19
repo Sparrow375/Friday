@@ -36,7 +36,16 @@ class SpeakerVerifier(private val context: Context, private val modelManager: Mo
             ortEnv = OrtEnvironment.getEnvironment()
             val modelPath = modelManager.getSpeakerModelPath()
             if (File(modelPath).exists()) {
-                ortSession = ortEnv?.createSession(modelPath, OrtSession.SessionOptions())
+                val options = OrtSession.SessionOptions().apply {
+                    setIntraOpNumThreads(2)
+                    setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                    try {
+                        addNnapi()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "NNAPI failed to initialize for SpeakerVerifier, using CPU fallback", e)
+                    }
+                }
+                ortSession = ortEnv?.createSession(modelPath, options)
                 Log.i(TAG, "ONNX Speaker Verification model loaded successfully")
             } else {
                 Log.e(TAG, "Speaker model does not exist at: $modelPath")

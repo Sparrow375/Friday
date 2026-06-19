@@ -313,7 +313,16 @@ class SemanticIntentRouter(private val context: Context) {
 
             if (modelBytes != null && tokenizerLoaded) {
                 ortEnv = OrtEnvironment.getEnvironment()
-                ortSession = ortEnv?.createSession(modelBytes)
+                val options = OrtSession.SessionOptions().apply {
+                    setIntraOpNumThreads(2)
+                    setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                    try {
+                        addNnapi()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "NNAPI failed to initialize for SemanticIntentRouter, using CPU fallback", e)
+                    }
+                }
+                ortSession = ortEnv?.createSession(modelBytes, options)
                 
                 // Precompute reference command embeddings
                 precomputeReferenceEmbeddings()
