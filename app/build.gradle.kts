@@ -137,6 +137,11 @@ dependencies {
   // JSON Utilities
   implementation(libs.gson)
 
+  // Jsoup, OkHttp, and WorkManager for Phase 2 crawling
+  implementation(libs.jsoup)
+  implementation(libs.okhttp)
+  implementation(libs.androidx.work.runtime)
+
   // Material Icons
   implementation("androidx.compose.material:material-icons-core")
   implementation("androidx.compose.material:material-icons-extended")

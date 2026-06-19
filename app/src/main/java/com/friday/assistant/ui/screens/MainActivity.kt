@@ -85,6 +85,12 @@ class MainActivity : ComponentActivity() {
         ToolRegistrar.registerAll(this, memoryManager)
         agentCore = AgentCore(this, memoryManager)
 
+        // Seed default briefing interests and initialize scheduler
+        lifecycleScope.launch(Dispatchers.IO) {
+            com.friday.assistant.intelligence.brief.DefaultInterests.seedDefaultInterests(FridayApplication.database.dao())
+            com.friday.assistant.intelligence.brief.BriefScheduler.schedulePeriodicCrawl(applicationContext)
+        }
+
         setContent {
             FridayTheme {
                 Surface(
@@ -95,6 +101,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
     }
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -1379,7 +1390,8 @@ class MainActivity : ComponentActivity() {
 
     enum class AppScreen {
         DASHBOARD,
-        CHAT
+        CHAT,
+        BRIEF
     }
 
     data class ChatMessage(
@@ -1413,6 +1425,14 @@ class MainActivity : ComponentActivity() {
     fun MainScreenContainer() {
         var currentScreen by remember { mutableStateOf(AppScreen.DASHBOARD) }
 
+        // Handle navigation via intent extras (e.g. from voice trigger)
+        LaunchedEffect(intent) {
+            val navigateTo = intent?.getStringExtra("navigate_to")
+            if (navigateTo == "briefing") {
+                currentScreen = AppScreen.BRIEF
+            }
+        }
+
         Scaffold(
             bottomBar = {
                 NavigationBar(
@@ -1430,6 +1450,19 @@ class MainActivity : ComponentActivity() {
                         onClick = { currentScreen = AppScreen.DASHBOARD },
                         icon = { Icon(Icons.Default.Dashboard, contentDescription = "Dashboard") },
                         label = { Text("Dashboard") },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = NeonCyan,
+                            selectedTextColor = NeonCyan,
+                            unselectedIconColor = SilverText,
+                            unselectedTextColor = SilverText,
+                            indicatorColor = Color.Transparent
+                        )
+                    )
+                    NavigationBarItem(
+                        selected = currentScreen == AppScreen.BRIEF,
+                        onClick = { currentScreen = AppScreen.BRIEF },
+                        icon = { Icon(Icons.Default.Newspaper, contentDescription = "Daily Brief") },
+                        label = { Text("Briefing") },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = NeonCyan,
                             selectedTextColor = NeonCyan,
@@ -1459,6 +1492,7 @@ class MainActivity : ComponentActivity() {
                 when (currentScreen) {
                     AppScreen.DASHBOARD -> DashboardScreen()
                     AppScreen.CHAT -> ChatScreen()
+                    AppScreen.BRIEF -> DailyBriefScreen()
                 }
             }
         }

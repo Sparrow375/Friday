@@ -103,16 +103,45 @@ class MediaControlTool(private val context: Context) : Tool {
 
     private fun playOnSpotify(query: String): ToolResult {
         return try {
-            val encoded = URLEncoder.encode(query, "UTF-8")
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:$encoded")).apply {
+            Log.d(TAG, "playOnSpotify: query='$query'")
+            val intent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
                 setPackage(PKG_SPOTIFY)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
+                putExtra(SearchManager.QUERY, query)
+                putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/audio")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
             context.startActivity(intent)
-            ToolResult(true, "Playing '$query' on Spotify")
+            
+            if (AutomationBridge.isReady()) {
+                Thread {
+                    try { Thread.sleep(500) } catch (_: Exception) {}
+                    Log.d(TAG, "Triggering Spotify auto-play accessibility helper")
+                    val autoPlayed = AutomationBridge.triggerSpotifyAutoPlay(query)
+                    Log.d(TAG, "Spotify auto-play accessibility helper returned: $autoPlayed")
+                }.start()
+            }
+            
+            ToolResult(true, "Launched Spotify to play '$query'")
         } catch (e: Exception) {
-            Log.w(TAG, "Spotify deep link failed, falling back", e)
-            playFromSearchDefault(query)
+            Log.w(TAG, "Spotify INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH failed, falling back to search deep link", e)
+            try {
+                val encoded = URLEncoder.encode(query, "UTF-8")
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:$encoded")).apply {
+                    setPackage(PKG_SPOTIFY)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
+                }
+                context.startActivity(intent)
+                if (AutomationBridge.isReady()) {
+                    Thread {
+                        try { Thread.sleep(500) } catch (_: Exception) {}
+                        AutomationBridge.triggerSpotifyAutoPlay(query)
+                    }.start()
+                }
+                ToolResult(true, "Opened Spotify search for '$query'")
+            } catch (ex: Exception) {
+                Log.e(TAG, "Spotify search fallback failed", ex)
+                playFromSearchDefault(query)
+            }
         }
     }
 

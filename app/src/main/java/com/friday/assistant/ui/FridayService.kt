@@ -364,19 +364,29 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         return -1
     }
 
+    private fun cleanTextForTts(text: String): String {
+        var cleaned = text.replace("(?i)source\\s*link:\\s*https?://\\S+".toRegex(), "")
+        cleaned = cleaned.replace("(?i)source:\\s*https?://\\S+".toRegex(), "")
+        cleaned = cleaned.replace("https?://\\S+".toRegex(), "")
+        return cleaned.trim()
+    }
+
     private fun speakStreamChunk(chunk: String, isFirst: Boolean, fullResponseText: String) {
         if (!isTtsInitialized || tts == null) return
         
         val cleanedChunk = chunk.trim()
         if (cleanedChunk.isEmpty()) return
 
+        val textToSpeak = cleanTextForTts(cleanedChunk)
+        if (textToSpeak.isEmpty()) return
+
         if (isFirst) {
             transitionToState(PipelineState.SPEAKING, responseText = fullResponseText)
             requestAudioFocus(exclusive = true)  // Full exclusive focus while TTS is speaking
-            tts?.speak(cleanedChunk, TextToSpeech.QUEUE_FLUSH, null, "${UTTERANCE_ID}_0")
+            tts?.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, "${UTTERANCE_ID}_0")
         } else {
             overlayManager?.updateState(PipelineState.SPEAKING, "Speaking...", resp = fullResponseText)
-            tts?.speak(cleanedChunk, TextToSpeech.QUEUE_ADD, null, "${UTTERANCE_ID}_${System.currentTimeMillis()}")
+            tts?.speak(textToSpeak, TextToSpeak.QUEUE_ADD, null, "${UTTERANCE_ID}_${System.currentTimeMillis()}")
         }
     }
 
@@ -389,7 +399,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         transitionToState(PipelineState.SPEAKING, responseText = response)
         requestAudioFocus(exclusive = true)
-        tts?.speak(response, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID)
+        val textToSpeak = cleanTextForTts(response)
+        tts?.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID)
     }
 
     private val UTTERANCE_ID = "friday_tts_utterance"

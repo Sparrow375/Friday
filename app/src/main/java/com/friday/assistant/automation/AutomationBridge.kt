@@ -36,13 +36,43 @@ object AutomationBridge {
 
     fun toggleQuickSetting(label: String, enable: Boolean): Boolean {
         val svc = service ?: return false
-        val result = AtomicBoolean(false)
-        val latch = CountDownLatch(1)
+        
+        // Attempt 1
+        var result = AtomicBoolean(false)
+        var latch = CountDownLatch(1)
         svc.postToggleQuickSetting(label, enable) { ok ->
             result.set(ok)
             latch.countDown()
         }
-        latch.await(5, TimeUnit.SECONDS)
+        latch.await(10, TimeUnit.SECONDS)
+        if (result.get()) return true
+
+        // Retry Attempt 2
+        android.util.Log.w("AutomationBridge", "Quick setting toggle for '$label' failed on first attempt. Retrying in 1s...")
+        try { Thread.sleep(1000) } catch (_: Exception) {}
+        
+        result = AtomicBoolean(false)
+        latch = CountDownLatch(1)
+        svc.postToggleQuickSetting(label, enable) { ok ->
+            result.set(ok)
+            latch.countDown()
+        }
+        latch.await(10, TimeUnit.SECONDS)
+        return result.get()
+    }
+
+    /**
+     * Asks the accessibility service to auto-play a query in Spotify.
+     */
+    fun triggerSpotifyAutoPlay(query: String): Boolean {
+        val svc = service ?: return false
+        val result = AtomicBoolean(false)
+        val latch = CountDownLatch(1)
+        svc.postSpotifyAutoPlay(query) { ok ->
+            result.set(ok)
+            latch.countDown()
+        }
+        latch.await(6, TimeUnit.SECONDS)
         return result.get()
     }
 

@@ -62,4 +62,49 @@ interface FridayDao {
 
     @Delete
     suspend fun deleteRoutine(routine: RoutineEntity)
+
+    // ==========================================
+    // Interests (Daily Briefing)
+    // ==========================================
+    @Query("SELECT * FROM interests ORDER BY isCustom ASC, id ASC")
+    fun getAllInterestsFlow(): Flow<List<InterestEntity>>
+
+    @Query("SELECT * FROM interests")
+    suspend fun getAllInterests(): List<InterestEntity>
+
+    @Query("SELECT * FROM interests WHERE isEnabled = 1")
+    suspend fun getEnabledInterests(): List<InterestEntity>
+
+    @Query("SELECT * FROM interests WHERE id = :id LIMIT 1")
+    suspend fun getInterestById(id: String): InterestEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertInterest(interest: InterestEntity): Long
+
+    @Update
+    suspend fun updateInterest(interest: InterestEntity)
+
+    @Delete
+    suspend fun deleteInterest(interest: InterestEntity)
+
+    // ==========================================
+    // Brief Items (Daily Briefing)
+    // ==========================================
+    @Query("SELECT * FROM brief_items WHERE status = 'new' ORDER BY pubDate DESC")
+    fun getNewBriefItemsFlow(): Flow<List<BriefItemEntity>>
+
+    @Query("SELECT * FROM brief_items WHERE interestId = :interestId ORDER BY pubDate DESC")
+    fun getBriefItemsByInterestFlow(interestId: String): Flow<List<BriefItemEntity>>
+
+    @Query("SELECT * FROM brief_items WHERE status = 'new' ORDER BY pubDate DESC LIMIT :limit")
+    suspend fun getNewBriefItems(limit: Int): List<BriefItemEntity>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertBriefItem(item: BriefItemEntity): Long
+
+    @Query("UPDATE brief_items SET status = :status WHERE id = :id")
+    suspend fun updateBriefItemStatus(id: Long, status: String)
+
+    @Query("DELETE FROM brief_items WHERE pubDate < :cutoffTime")
+    suspend fun deleteOldBriefItems(cutoffTime: Long)
 }

@@ -34,6 +34,16 @@ class WakeWordDetector(
     // Pre-allocated DP array for Levenshtein distance — avoids per-call allocation in hot path
     private val dpArray = IntArray(32)
     private var cachedVariants: Set<String> = buildVariantSet(DEFAULT_WAKEWORD)
+    private var consecutiveSilentCycles = 0
+
+    private fun getAdaptiveRestartDelay(): Long {
+        return when {
+            consecutiveSilentCycles >= 30 -> 2000L
+            consecutiveSilentCycles >= 10 -> 1000L
+            consecutiveSilentCycles >= 3  -> 500L
+            else -> 50L // wake word miss fix: reduce restart delay from 150ms to 50ms for normal cycle
+        }
+    }
 
     fun getWakeWord(): String {
         return sharedPrefs.getString(KEY_WAKEWORD, DEFAULT_WAKEWORD) ?: DEFAULT_WAKEWORD
@@ -128,6 +138,7 @@ class WakeWordDetector(
         override fun onBeginningOfSpeech() {
             Log.d(TAG, "Wake-word beginning of speech")
             maxRmsSeen = -100f
+            consecutiveSilentCycles = 0
         }
 
         override fun onRmsChanged(rmsdB: Float) {
@@ -149,20 +160,35 @@ class WakeWordDetector(
             if (isHardError) {
                 destroyRecognizer() // Force full rebind only on hard errors
             }
+            
+            if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                consecutiveSilentCycles++
+            }
+            
+            val delay = if (isHardError) 500L else getAdaptiveRestartDelay()
+            Log.d(TAG, "Wake-word recognizer restart delay (error): ${delay}ms (silent cycles: $consecutiveSilentCycles)")
             mainHandler.postDelayed({
                 if (isListeningEnabled) startRecognizerInternal()
-            }, if (isHardError) 500L else 250L)
+            }, delay)
         }
 
         override fun onResults(results: Bundle?) {
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             if (checkMatchesForWakeWord(matches)) {
                 Log.i(TAG, "Wake word detected in onResults!")
+                consecutiveSilentCycles = 0
                 triggerWakeWord()
             } else {
+                if (!matches.isNullOrEmpty()) {
+                    consecutiveSilentCycles = 0
+                } else {
+                    consecutiveSilentCycles++
+                }
+                val delay = getAdaptiveRestartDelay()
+                Log.d(TAG, "Wake-word recognizer restart delay (no-match): ${delay}ms (silent cycles: $consecutiveSilentCycles)")
                 mainHandler.postDelayed({
                     if (isListeningEnabled) startRecognizerInternal()
-                }, 150)
+                }, delay)
             }
         }
 
@@ -170,6 +196,7 @@ class WakeWordDetector(
             val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             if (checkMatchesForWakeWord(matches)) {
                 Log.i(TAG, "Wake word detected in onPartialResults!")
+                consecutiveSilentCycles = 0
                 triggerWakeWord()
             }
         }
@@ -181,7 +208,7 @@ class WakeWordDetector(
         if (matches == null) return false
         
         // Gate: If the max RMS during the capture window was too low, it's silence or low static, so ignore
-        if (maxRmsSeen < 2.5f) {
+        if (maxRmsSeen < 1.5f) {
             Log.v(TAG, "Ignoring check: max RMS level too low ($maxRmsSeen)")
             return false
         }

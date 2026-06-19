@@ -21,8 +21,42 @@ object DialogueStateTracker {
         activeContext = ActiveContext(domain, action)
     }
 
-    fun clear() {
-        activeContext = null
+    fun getActiveDomain(): String? {
+        val ctx = activeContext ?: return null
+        if (System.currentTimeMillis() - ctx.timestamp > CONTEXT_TTL_MS) {
+            activeContext = null
+            return null
+        }
+        return ctx.domain
+    }
+
+    fun biasConfidence(intent: String, confidence: Float): Float {
+        val domain = getActiveDomain() ?: return confidence
+        val matches = when (domain) {
+            "torch" -> intent == "torch_toggle" || intent == "torch_strength"
+            "wifi" -> intent == "wifi_toggle"
+            "bluetooth" -> intent == "bluetooth_toggle"
+            "hotspot" -> intent == "hotspot_toggle"
+            "dnd" -> intent == "dnd_toggle"
+            "power_saver" -> intent == "power_saver_toggle"
+            "screencast" -> intent == "screencast_toggle"
+            "airplane_mode" -> intent == "airplane_mode_toggle"
+            "mobile_data" -> intent == "mobile_data_toggle"
+            "volume" -> intent == "volume_up" || intent == "volume_down"
+            "brightness" -> intent == "brightness_up" || intent == "brightness_down"
+            "media" -> intent == "play_media" || intent == "pause_media" || intent == "next_track" || intent == "previous_track" || intent == "play_spotify" || intent == "play_youtube"
+            else -> false
+        }
+        return if (matches) {
+            val biased = (confidence + 0.15f).coerceAtMost(1.0f)
+            com.friday.assistant.core.FridayLogger.d(
+                "DialogueStateTracker",
+                "Biasing intent '$intent' score from $confidence to $biased based on active domain '$domain'"
+            )
+            biased
+        } else {
+            confidence
+        }
     }
 
     /**

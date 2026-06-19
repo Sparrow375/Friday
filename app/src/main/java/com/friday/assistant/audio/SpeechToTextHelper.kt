@@ -27,10 +27,10 @@ class SpeechToTextHelper(
 
     companion object {
         private const val TAG = "SpeechToTextHelper"
-        private const val EARLY_COMMIT_STABLE_MS = 400L
+        private const val EARLY_COMMIT_STABLE_MS = 300L
 
         private val FAST_ROUTE_PATTERN = Regex(
-            "(?i)(volume|brightness|flashlight|torch|wifi|bluetooth|hotspot|lock|screenshot|screen shot|" +
+            "(?i)(volume|brightness|flashlight|torch|wifi|bluetooth|hotspot|dnd|do not disturb|airplane|mobile data|cellular data|lock|screenshot|screen shot|" +
                 "pause|call |dial |mute|unmute|play |next track|previous track|turn it (on|off|up|down))"
         )
     }

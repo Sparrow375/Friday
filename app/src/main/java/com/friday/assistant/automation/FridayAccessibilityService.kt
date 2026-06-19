@@ -112,18 +112,24 @@ class FridayAccessibilityService : AccessibilityService() {
         Thread {
             try {
                 mainHandler.post { performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS) }
-                // Wait for QS panel to fully expand
-                Thread.sleep(700)
+                // Wait for QS panel to partially expand
+                Thread.sleep(800)
 
-                val root = rootInActiveWindow ?: run {
-                    mainHandler.post { performGlobalAction(GLOBAL_ACTION_BACK) }
-                    callback(false)
-                    return@Thread
+                var root = rootInActiveWindow
+                var tile = if (root != null) findQsTileNode(root, label) else null
+                var expanded = false
+
+                if (tile == null) {
+                    Log.i(TAG, "QS tile not found in collapsed panel for '$label'. Expanding QS panel...")
+                    mainHandler.post { performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS) }
+                    Thread.sleep(600)
+                    root = rootInActiveWindow
+                    tile = if (root != null) findQsTileNode(root, label) else null
+                    expanded = true
                 }
 
-                val tile = findQsTileNode(root, label)
                 if (tile == null) {
-                    Log.w(TAG, "QS tile not found for label='$label'")
+                    Log.w(TAG, "QS tile not found for label='$label' after expansion")
                     mainHandler.post { performGlobalAction(GLOBAL_ACTION_BACK) }
                     callback(false)
                     return@Thread
@@ -132,14 +138,17 @@ class FridayAccessibilityService : AccessibilityService() {
                 // Determine current state — avoid double-toggle
                 val isCurrentlyEnabled = tile.isChecked || tile.isSelected ||
                     tile.contentDescription?.toString()?.lowercase()
-                        ?.let { it.contains("on") && !it.contains("off") } ?: false
+                        ?.let { 
+                            (it.contains("on") || it.contains("active") || it.contains("connected") || it.contains("enabled")) && 
+                            !it.contains("off") && !it.contains("inactive") && !it.contains("disconnected") && !it.contains("disabled")
+                        } ?: false
 
                 val needsClick = (enable && !isCurrentlyEnabled) || (!enable && isCurrentlyEnabled)
                 var clicked = false
                 if (needsClick) {
                     val target = findClickableNode(tile) ?: tile
                     mainHandler.post { target.performAction(AccessibilityNodeInfo.ACTION_CLICK) }
-                    Thread.sleep(400)
+                    Thread.sleep(700)
                     clicked = true
                 } else {
                     clicked = true // already in desired state
@@ -147,10 +156,26 @@ class FridayAccessibilityService : AccessibilityService() {
 
                 Thread.sleep(200)
                 mainHandler.post { performGlobalAction(GLOBAL_ACTION_BACK) }
+                
+                // If we expanded the panel fully, we might need a second BACK to close it completely
+                Thread.sleep(100)
+                val currentRoot = rootInActiveWindow
+                if (currentRoot != null && currentRoot.packageName?.toString()?.contains("systemui", ignoreCase = true) == true) {
+                    Log.d(TAG, "SystemUI still focused, sending second back to close panel")
+                    mainHandler.post { performGlobalAction(GLOBAL_ACTION_BACK) }
+                }
+
                 callback(clicked)
             } catch (e: Exception) {
                 Log.e(TAG, "Quick setting toggle failed for $label", e)
                 try { mainHandler.post { performGlobalAction(GLOBAL_ACTION_BACK) } } catch (_: Exception) {}
+                try {
+                    Thread.sleep(200)
+                    val currentRoot = rootInActiveWindow
+                    if (currentRoot != null && currentRoot.packageName?.toString()?.contains("systemui", ignoreCase = true) == true) {
+                        mainHandler.post { performGlobalAction(GLOBAL_ACTION_BACK) }
+                    }
+                } catch (_: Exception) {}
                 callback(false)
             }
         }.start()
@@ -163,7 +188,7 @@ class FridayAccessibilityService : AccessibilityService() {
      *    — covers Samsung One UI, AOSP, and Pixel QS implementations.
      */
     private fun findQsTileNode(root: AccessibilityNodeInfo, label: String): AccessibilityNodeInfo? {
-        val targets = qsTileNames(label)
+        val targets = qsTileNames(label).map { it.lowercase() }
 
         // Strategy 1: fast text search
         for (name in targets) {
@@ -173,32 +198,127 @@ class FridayAccessibilityService : AccessibilityService() {
                     val clickable = findClickableNode(node)
                     if (clickable != null) return clickable
                 }
-                // Return first match even if not directly clickable — caller will walk up
-                return nodes[0]
             }
         }
 
         // Strategy 2: full tree walk — matches contentDescription and viewIdResourceName
-        return walkTree(root) { node ->
+        val match = walkTree(root) { node ->
             val cd = node.contentDescription?.toString()?.lowercase() ?: ""
             val txt = node.text?.toString()?.lowercase() ?: ""
             val rid = node.viewIdResourceName?.lowercase() ?: ""
+            
             targets.any { t ->
-                val tl = t.lowercase()
-                cd.contains(tl) || txt.contains(tl) || rid.contains(tl)
+                cd.contains(t) || txt.contains(t) || rid.contains(t)
             }
         }
+        if (match != null) {
+            return findClickableNode(match) ?: match
+        }
+
+        return null
     }
 
     private fun qsTileNames(label: String): List<String> = when (label.lowercase()) {
-        "wifi", "wi-fi"        -> listOf("Wi-Fi", "WiFi", "WLAN", "Internet")
-        "bluetooth"            -> listOf("Bluetooth")
+        "wifi", "wi-fi"        -> listOf("Wi-Fi", "WiFi", "WLAN", "Internet", "Wi‑Fi")
+        "bluetooth"            -> listOf("Bluetooth", "BT")
         "hotspot"              -> listOf("Mobile Hotspot", "Hotspot", "Personal Hotspot", "Tethering")
         "airplane", "airplane_mode", "flight mode"
                                -> listOf("Airplane mode", "Flight mode", "Aeroplane mode")
         "mobile_data", "data"  -> listOf("Mobile data", "Cellular data", "Data", "Mobile Data")
         "dnd", "do not disturb"-> listOf("Do Not Disturb", "DND", "Do not disturb")
         else                   -> listOf(label)
+    }
+
+    /**
+     * Tries to find and click the play button or first search result in Spotify.
+     * Polls rootInActiveWindow for Spotify up to [timeoutMs] ms, then clicks the appropriate play element.
+     */
+    fun postSpotifyAutoPlay(query: String, timeoutMs: Long = 4000L, callback: (Boolean) -> Unit) {
+        Thread {
+            val deadline = System.currentTimeMillis() + timeoutMs
+            var success = false
+
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    val root = rootInActiveWindow
+                    if (root != null) {
+                        val pkg = root.packageName?.toString() ?: ""
+                        if (pkg.contains("spotify", ignoreCase = true)) {
+                            // Find and click the play element or search result item
+                            val playNode = findSpotifyPlayElement(root, query)
+                            if (playNode != null) {
+                                var clicked = false
+                                val latch = java.util.concurrent.CountDownLatch(1)
+                                mainHandler.post {
+                                    clicked = playNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                                    latch.countDown()
+                                }
+                                latch.await(500, java.util.concurrent.TimeUnit.MILLISECONDS)
+                                if (clicked) {
+                                    success = true
+                                    break
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "postSpotifyAutoPlay poll error", e)
+                }
+                Thread.sleep(250)
+            }
+            callback(success)
+        }.start()
+    }
+
+    private fun findSpotifyPlayElement(root: AccessibilityNodeInfo, query: String): AccessibilityNodeInfo? {
+        val playButtons = listOf("play", "shuffle play", "shuffle", "resume")
+        
+        // Strategy 1: Look for "Play" / "Shuffle Play" buttons explicitly
+        for (btnText in playButtons) {
+            val nodes = root.findAccessibilityNodeInfosByText(btnText)
+            if (!nodes.isNullOrEmpty()) {
+                for (node in nodes) {
+                    if (node.isClickable) return node
+                    val clickable = findClickableNode(node)
+                    if (clickable != null) return clickable
+                }
+            }
+        }
+
+        // Strategy 2: Search for nodes containing the query text
+        if (query.isNotEmpty()) {
+            val nodes = root.findAccessibilityNodeInfosByText(query)
+            if (!nodes.isNullOrEmpty()) {
+                for (node in nodes) {
+                    if (node.isClickable) return node
+                    val clickable = findClickableNode(node)
+                    if (clickable != null) return clickable
+                }
+            }
+        }
+
+        // Strategy 3: Find a RecyclerView child item to click on
+        val firstResult = walkTree(root) { node ->
+            val className = node.className?.toString() ?: ""
+            val isListItem = className.contains("ViewGroup") || className.contains("LinearLayout") || className.contains("RelativeLayout")
+            isListItem && node.isClickable && node.parent?.className?.toString()?.contains("RecyclerView") == true
+        }
+        if (firstResult != null) return firstResult
+
+        // Strategy 4: fallback to clicking the first clickable node inside a RecyclerView
+        val recyclerView = walkTree(root) { node ->
+            node.className?.toString()?.contains("RecyclerView") == true
+        }
+        if (recyclerView != null && recyclerView.childCount > 0) {
+            val firstChild = recyclerView.getChild(0)
+            if (firstChild != null) {
+                if (firstChild.isClickable) return firstChild
+                val clickable = findClickableNode(firstChild)
+                if (clickable != null) return clickable
+            }
+        }
+
+        return null
     }
 
     /** DFS tree walk; returns first node for which [predicate] returns true. */

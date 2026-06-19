@@ -6,8 +6,14 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 
 @Database(
-    entities = [MemoryEntity::class, NoteEntity::class, RoutineEntity::class],
-    version = 1,
+    entities = [
+        MemoryEntity::class,
+        NoteEntity::class,
+        RoutineEntity::class,
+        InterestEntity::class,
+        BriefItemEntity::class
+    ],
+    version = 2,
     exportSchema = false
 )
 abstract class FridayDatabase : RoomDatabase() {

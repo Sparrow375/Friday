@@ -39,6 +39,13 @@ import android.util.Log
 import com.friday.assistant.audio.PipelineState
 import com.friday.assistant.ui.theme.*
 import kotlinx.coroutines.delay
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.foundation.text.ClickableText
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -227,6 +234,7 @@ fun TypewriterText(
     modifier: Modifier = Modifier
 ) {
     var visibleText by remember { mutableStateOf("") }
+    val context = LocalContext.current
     
     // Animate typing on response changes
     LaunchedEffect(text) {
@@ -237,11 +245,64 @@ fun TypewriterText(
         }
     }
     
-    Text(
-        text = visibleText,
-        style = style,
-        modifier = modifier
-    )
+    val urlPattern = "(https?://[\\w-]+(\\.[\\w-]+)+(?:/[\\w-./?%&=]*)?)".toRegex()
+    val hasUrl = remember(visibleText) { urlPattern.containsMatchIn(visibleText) }
+
+    if (!hasUrl) {
+        Text(
+            text = visibleText,
+            style = style,
+            modifier = modifier
+        )
+    } else {
+        val annotatedString = remember(visibleText) {
+            buildAnnotatedString {
+                var lastIndex = 0
+                urlPattern.findAll(visibleText).forEach { matchResult ->
+                    val start = matchResult.range.first
+                    val end = matchResult.range.last + 1
+                    
+                    if (start > lastIndex) {
+                        append(visibleText.substring(lastIndex, start))
+                    }
+                    
+                    val url = matchResult.value
+                    pushStringAnnotation(tag = "URL", annotation = url)
+                    withStyle(style = SpanStyle(
+                        color = NeonCyan,
+                        textDecoration = TextDecoration.Underline,
+                        fontWeight = FontWeight.Bold
+                    )) {
+                        append(url)
+                    }
+                    pop()
+                    lastIndex = end
+                }
+                if (lastIndex < visibleText.length) {
+                    append(visibleText.substring(lastIndex))
+                }
+            }
+        }
+
+        ClickableText(
+            text = annotatedString,
+            style = style.copy(color = if (style.color != Color.Unspecified) style.color else Color.White),
+            modifier = modifier,
+            onClick = { offset ->
+                annotatedString.getStringAnnotations(tag = "URL", start = offset, end = offset)
+                    .firstOrNull()?.let { annotation ->
+                        try {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(annotation.item)).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            Log.e("TypewriterText", "Could not open URL: ${annotation.item}", e)
+                        }
+                    }
+            }
+        )
+    }
 }
 
 private fun getStatusColor(state: PipelineState): Color {

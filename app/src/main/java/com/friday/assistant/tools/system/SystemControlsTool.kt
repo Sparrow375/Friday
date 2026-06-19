@@ -165,15 +165,27 @@ class SystemControlsTool(private val context: Context) : Tool {
     }
 
     private fun toggleWifi(enable: Boolean): ToolResult {
+        Log.d(TAG, "toggleWifi requested: enable=$enable")
         val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
             if (AutomationBridge.isReady()) {
+                Log.d(TAG, "Accessibility service is ready. Attempting toggle via Quick Settings...")
                 val ok = AutomationBridge.toggleQuickSetting("wifi", enable)
                 if (ok) {
                     val status = if (enable) "enabled" else "disabled"
+                    Log.i(TAG, "WiFi successfully toggled via Quick Settings: $status")
                     return ToolResult(true, "WiFi has been $status")
+                } else {
+                    Log.w(TAG, "Failed to toggle WiFi via Quick Settings. Retrying once...")
+                    val retryOk = AutomationBridge.toggleQuickSetting("wifi", enable)
+                    if (retryOk) {
+                        val status = if (enable) "enabled" else "disabled"
+                        Log.i(TAG, "WiFi successfully toggled on retry via Quick Settings: $status")
+                        return ToolResult(true, "WiFi has been $status")
+                    }
                 }
             }
+            Log.w(TAG, "Quick Settings toggle failed or Accessibility not ready. Falling back to settings panel.")
             return try {
                 val intent = Intent(Settings.Panel.ACTION_WIFI).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -181,6 +193,7 @@ class SystemControlsTool(private val context: Context) : Tool {
                 context.startActivity(intent)
                 ToolResult(true, "Opening Wi-Fi settings panel...")
             } catch (e: Exception) {
+                Log.e(TAG, "Failed to open Wi-Fi settings panel", e)
                 ToolResult(false, "Failed to open Wi-Fi settings panel: ${e.message}")
             }
         }
@@ -188,24 +201,38 @@ class SystemControlsTool(private val context: Context) : Tool {
             @Suppress("DEPRECATION")
             wifiManager.isWifiEnabled = enable
             val status = if (enable) "enabled" else "disabled"
+            Log.i(TAG, "WiFi toggled programmatically (pre-Q): $status")
             ToolResult(true, "WiFi has been $status")
         } catch (e: Exception) {
+            Log.e(TAG, "Failed to toggle WiFi programmatically", e)
             ToolResult(false, "Failed to toggle WiFi: ${e.message}. System restrictions may apply.")
         }
     }
 
     private fun toggleBluetooth(enable: Boolean): ToolResult {
+        Log.d(TAG, "toggleBluetooth requested: enable=$enable")
         val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
             ?: return ToolResult(false, "Bluetooth is not supported on this device")
         
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             if (AutomationBridge.isReady()) {
+                Log.d(TAG, "Accessibility service is ready. Attempting toggle via Quick Settings...")
                 val ok = AutomationBridge.toggleQuickSetting("bluetooth", enable)
                 if (ok) {
                     val status = if (enable) "enabled" else "disabled"
+                    Log.i(TAG, "Bluetooth successfully toggled via Quick Settings: $status")
                     return ToolResult(true, "Bluetooth has been $status")
+                } else {
+                    Log.w(TAG, "Failed to toggle Bluetooth via Quick Settings. Retrying once...")
+                    val retryOk = AutomationBridge.toggleQuickSetting("bluetooth", enable)
+                    if (retryOk) {
+                        val status = if (enable) "enabled" else "disabled"
+                        Log.i(TAG, "Bluetooth successfully toggled on retry via Quick Settings: $status")
+                        return ToolResult(true, "Bluetooth has been $status")
+                    }
                 }
             }
+            Log.w(TAG, "Quick Settings toggle failed or Accessibility not ready. Falling back to settings panel.")
             return try {
                 val intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -213,6 +240,7 @@ class SystemControlsTool(private val context: Context) : Tool {
                 context.startActivity(intent)
                 ToolResult(true, "Opening Bluetooth settings...")
             } catch (e: Exception) {
+                Log.e(TAG, "Failed to open Bluetooth settings", e)
                 ToolResult(false, "Failed to open Bluetooth settings: ${e.message}")
             }
         }
@@ -221,8 +249,10 @@ class SystemControlsTool(private val context: Context) : Tool {
             @Suppress("DEPRECATION")
             if (enable) bluetoothAdapter.enable() else bluetoothAdapter.disable()
             val status = if (enable) "enabled" else "disabled"
+            Log.i(TAG, "Bluetooth toggled programmatically (pre-33): $status")
             ToolResult(true, "Bluetooth has been $status")
         } catch (e: Exception) {
+            Log.e(TAG, "Failed to toggle Bluetooth programmatically", e)
             ToolResult(false, "Failed to toggle Bluetooth: ${e.message}. System restrictions may apply.")
         }
     }

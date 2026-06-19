@@ -40,6 +40,11 @@ TRAINING_DATA = [
     ("turn on do not disturb", "dnd_toggle"), ("enable airplane mode", "airplane_mode_toggle"),
     ("turn off mobile data", "mobile_data_toggle"), ("search for weather today", "web_search"),
     ("what is the capital of france", "unknown"), ("tell me a joke", "unknown"),
+    ("set alarm for [TIME_1]", "set_alarm"), ("wake me up at [TIME_1]", "set_alarm"),
+    ("send message to [CONTACT] saying [QUOTE]", "send_whatsapp"), ("whatsapp [CONTACT] saying [QUOTE]", "send_whatsapp"),
+    ("text [CONTACT] saying [QUOTE]", "send_sms"), ("sms [CONTACT] saying [QUOTE]", "send_sms"),
+    ("call [PHONE_1]", "call_contact"), ("dial [PHONE_1]", "call_contact"),
+    ("copy [QUOTE_1] to clipboard", "clipboard_write"),
 ]
 
 class IntentDataset(Dataset):
