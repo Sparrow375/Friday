@@ -18,8 +18,7 @@ class SpeechToTextHelper(
     private val onRmsUpdate: (Float) -> Unit,
     private val onStateChanged: (PipelineState) -> Unit,
     private val profile: RecognitionProfile = RecognitionProfile.COMMAND,
-    private val onEarlyCommit: ((String) -> Unit)? = null,
-    private val sharedRecognizer: SpeechRecognizer? = null
+    private val onEarlyCommit: ((String) -> Unit)? = null
 ) {
     enum class RecognitionProfile {
         COMMAND,
@@ -37,7 +36,7 @@ class SpeechToTextHelper(
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var speechRecognizer: SpeechRecognizer? = sharedRecognizer
+    private var speechRecognizer: SpeechRecognizer? = null
     private var isListening = false
     private var lastPartialText = ""
     private var lastPartialChangeMs = 0L
@@ -50,15 +49,11 @@ class SpeechToTextHelper(
         try {
             speechRecognizer?.setRecognitionListener(null)
             speechRecognizer?.cancel()
-            if (sharedRecognizer == null) {
-                speechRecognizer?.destroy()
-            }
+            speechRecognizer?.destroy()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to destroy speech recognizer", e)
         }
-        if (sharedRecognizer == null) {
-            speechRecognizer = null
-        }
+        speechRecognizer = null
     }
 
     private fun cancelEarlyCommitTimer() {
@@ -105,13 +100,9 @@ class SpeechToTextHelper(
 
             try {
                 if (speechRecognizer == null) {
-                    speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
-                }
-
-                try {
-                    speechRecognizer?.setRecognitionListener(buildRecognitionListener())
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to set speech recognition listener", e)
+                    speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                        setRecognitionListener(buildRecognitionListener())
+                    }
                 }
 
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {

@@ -16,8 +16,7 @@ import java.util.Locale
 class WakeWordDetector(
     private val context: Context,
     private val modelManager: ModelManager, // Kept for signature compatibility
-    private val sharedRecognizer: SpeechRecognizer? = null,
-    private val onWakeWordDetected: (String?) -> Unit
+    private val onWakeWordDetected: () -> Unit
 ) {
 
     companion object {
@@ -94,18 +93,14 @@ class WakeWordDetector(
                 } else {
                     Log.i(TAG, "On-device recognizer unavailable, falling back to standard recognizer")
                     SpeechRecognizer.createSpeechRecognizer(context)
+                }.apply {
+                    setRecognitionListener(buildWakeWordListener())
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to create wake-word speech recognizer", e)
                 mainHandler.postDelayed({ if (isListeningEnabled) startRecognizerInternal() }, 500)
                 return
             }
-        }
-
-        try {
-            speechRecognizer?.setRecognitionListener(buildWakeWordListener())
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to set wake-word recognition listener", e)
         }
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -163,8 +158,7 @@ class WakeWordDetector(
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             if (checkMatchesForWakeWord(matches)) {
                 Log.i(TAG, "Wake word detected in onResults!")
-                val command = extractCommand(matches)
-                triggerWakeWord(command)
+                triggerWakeWord()
             } else {
                 mainHandler.postDelayed({
                     if (isListeningEnabled) startRecognizerInternal()
@@ -176,8 +170,7 @@ class WakeWordDetector(
             val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             if (checkMatchesForWakeWord(matches)) {
                 Log.i(TAG, "Wake word detected in onPartialResults!")
-                val command = extractCommand(matches)
-                triggerWakeWord(command)
+                triggerWakeWord()
             }
         }
 
@@ -187,9 +180,9 @@ class WakeWordDetector(
     private fun checkMatchesForWakeWord(matches: ArrayList<String>?): Boolean {
         if (matches == null) return false
         
-        // Gate: Lowered to prevent ignoring soft wake-word utterances.
-        if (maxRmsSeen < -20.0f) {
-            Log.v(TAG, "Ignoring check: max RMS level indicates absolute silence ($maxRmsSeen)")
+        // Gate: If the max RMS during the capture window was too low, it's silence or low static, so ignore
+        if (maxRmsSeen < 2.5f) {
+            Log.v(TAG, "Ignoring check: max RMS level too low ($maxRmsSeen)")
             return false
         }
 
@@ -234,36 +227,6 @@ class WakeWordDetector(
         return variants
     }
 
-    private fun extractCommand(matches: ArrayList<String>?): String? {
-        if (matches == null) return null
-        val targetVariants = cachedVariants
-        
-        for (match in matches) {
-            val cleanMatch = match.trim()
-            val lowerMatch = cleanMatch.lowercase()
-            
-            // Find the longest variant that is actually present in the match
-            val bestVariant = targetVariants
-                .filter { lowerMatch.contains(it) }
-                .maxByOrNull { it.length }
-                
-            if (bestVariant != null) {
-                val idx = lowerMatch.indexOf(bestVariant)
-                if (idx != -1) {
-                    val commandStart = idx + bestVariant.length
-                    if (commandStart < cleanMatch.length) {
-                        val command = cleanMatch.substring(commandStart).trim()
-                        val cleanedCommand = command.replace(Regex("^[^a-zA-Z0-9]+"), "").trim()
-                        if (cleanedCommand.isNotEmpty()) {
-                            return cleanedCommand
-                        }
-                    }
-                }
-            }
-        }
-        return null
-    }
-
     private fun levenshteinDistance(s1: String, s2: String): Int {
         // Early exit: length difference alone exceeds max threshold
         if (kotlin.math.abs(s1.length - s2.length) > 2) return 3
@@ -290,24 +253,20 @@ class WakeWordDetector(
         return dpArray[len2]
     }
 
-    private fun triggerWakeWord(command: String? = null) {
+    private fun triggerWakeWord() {
         stopListening()
-        onWakeWordDetected(command)
+        onWakeWordDetected()
     }
 
     private fun destroyRecognizer() {
         try {
             speechRecognizer?.setRecognitionListener(null)
             speechRecognizer?.cancel()
-            if (sharedRecognizer == null) {
-                speechRecognizer?.destroy()
-            }
+            speechRecognizer?.destroy()
         } catch (e: Exception) {
             Log.e(TAG, "Error destroying wake-word recognizer", e)
         }
-        if (sharedRecognizer == null) {
-            speechRecognizer = null
-        }
+        speechRecognizer = null
     }
 
     private fun getErrorMessage(error: Int): String {

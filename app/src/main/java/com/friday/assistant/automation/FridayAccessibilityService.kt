@@ -129,21 +129,15 @@ class FridayAccessibilityService : AccessibilityService() {
                     return@Thread
                 }
 
-                val target = if (label.lowercase() == "wifi" || label.lowercase() == "wi-fi" || label.lowercase() == "bluetooth") {
-                    getToggleNodeForSamsung(tile, label)
-                } else {
-                    findClickableNode(tile) ?: tile
-                }
-
-                // Determine current state — check both tile and target
+                // Determine current state — avoid double-toggle
                 val isCurrentlyEnabled = tile.isChecked || tile.isSelected ||
-                    target.isChecked || target.isSelected ||
-                    tile.contentDescription?.toString()?.lowercase()?.let { (it.contains("on") || it.contains("connected")) && !it.contains("off") } ?: false ||
-                    target.contentDescription?.toString()?.lowercase()?.let { (it.contains("on") || it.contains("connected")) && !it.contains("off") } ?: false
+                    tile.contentDescription?.toString()?.lowercase()
+                        ?.let { it.contains("on") && !it.contains("off") } ?: false
 
                 val needsClick = (enable && !isCurrentlyEnabled) || (!enable && isCurrentlyEnabled)
                 var clicked = false
                 if (needsClick) {
+                    val target = findClickableNode(tile) ?: tile
                     mainHandler.post { target.performAction(AccessibilityNodeInfo.ACTION_CLICK) }
                     Thread.sleep(400)
                     clicked = true
@@ -161,36 +155,6 @@ class FridayAccessibilityService : AccessibilityService() {
             }
         }.start()
     }
-
-    private fun getToggleNodeForSamsung(tile: AccessibilityNodeInfo, label: String): AccessibilityNodeInfo {
-        val lowerLabel = label.lowercase()
-        if (lowerLabel != "wifi" && lowerLabel != "wi-fi" && lowerLabel != "bluetooth") {
-            return tile
-        }
-        val parent = tile.parent ?: return tile
-        for (i in 0 until parent.childCount) {
-            val child = parent.getChild(i) ?: continue
-            if (child != tile) {
-                val clickable = findClickableDescendant(child)
-                if (clickable != null) {
-                    Log.i(TAG, "Found sibling clickable node for $lowerLabel toggle: ${clickable.className}")
-                    return clickable
-                }
-            }
-        }
-        return tile
-    }
-
-    private fun findClickableDescendant(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.isClickable) return node
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = findClickableDescendant(child)
-            if (found != null) return found
-        }
-        return null
-    }
-
 
     /**
      * Finds a Quick Settings tile node using multiple search strategies:
