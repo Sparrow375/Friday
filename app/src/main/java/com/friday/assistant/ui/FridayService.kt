@@ -72,6 +72,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     private lateinit var audioManager: AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
     private var hasAudioFocus = false
+    private var ttsSafetyTimeoutJob: kotlinx.coroutines.Job? = null
 
     val pipelineState = MutableStateFlow(PipelineState.IDLE)
 
@@ -192,6 +193,9 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         responseText: String = "",
         transcriptText: String = ""
     ) {
+        if (newState != PipelineState.SPEAKING) {
+            cancelTtsSafetyTimeout()
+        }
         val oldState = pipelineState.value
         if (oldState != newState) {
             com.friday.assistant.core.FridayLogger.d(TAG, "Transitioning state from $oldState to $newState")
@@ -380,13 +384,22 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         val textToSpeak = cleanTextForTts(cleanedChunk)
         if (textToSpeak.isEmpty()) return
 
-        if (isFirst) {
+        val result = if (isFirst) {
             transitionToState(PipelineState.SPEAKING, responseText = fullResponseText)
             requestAudioFocus(exclusive = true)  // Full exclusive focus while TTS is speaking
             tts?.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, "${UTTERANCE_ID}_0")
         } else {
             overlayManager?.updateState(PipelineState.SPEAKING, "Speaking...", resp = fullResponseText)
             tts?.speak(textToSpeak, TextToSpeech.QUEUE_ADD, null, "${UTTERANCE_ID}_${System.currentTimeMillis()}")
+        }
+
+        if (result == TextToSpeech.ERROR) {
+            com.friday.assistant.core.FridayLogger.e(TAG, "tts.speak returned ERROR in speakStreamChunk")
+            serviceScope.launch {
+                transitionToState(PipelineState.IDLE)
+            }
+        } else {
+            startTtsSafetyTimeout(textToSpeak)
         }
     }
 
@@ -400,7 +413,31 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         transitionToState(PipelineState.SPEAKING, responseText = response)
         requestAudioFocus(exclusive = true)
         val textToSpeak = cleanTextForTts(response)
-        tts?.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID)
+        val result = tts?.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID)
+
+        if (result == TextToSpeech.ERROR) {
+            com.friday.assistant.core.FridayLogger.e(TAG, "tts.speak returned ERROR in speakResponse")
+            transitionToState(PipelineState.IDLE, responseText = response)
+        } else {
+            startTtsSafetyTimeout(textToSpeak)
+        }
+    }
+
+    private fun startTtsSafetyTimeout(text: String) {
+        ttsSafetyTimeoutJob?.cancel()
+        val timeoutMs = (text.length * 60L) + 3000L
+        ttsSafetyTimeoutJob = serviceScope.launch {
+            kotlinx.coroutines.delay(timeoutMs)
+            if (pipelineState.value == PipelineState.SPEAKING) {
+                com.friday.assistant.core.FridayLogger.w(TAG, "TTS safety timeout of ${timeoutMs}ms expired while in SPEAKING state. Forcing to IDLE.")
+                transitionToState(PipelineState.IDLE)
+            }
+        }
+    }
+
+    private fun cancelTtsSafetyTimeout() {
+        ttsSafetyTimeoutJob?.cancel()
+        ttsSafetyTimeoutJob = null
     }
 
     private val UTTERANCE_ID = "friday_tts_utterance"

@@ -1,0 +1,615 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Add cache fields and CACHE_TTL_MS constant": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799924660
+      },
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799937552
+      },
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799976735
+      }
+    ],
+    "1.2 Implement TTL cache in getPreferencesSummary": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799924816
+      },
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799980881
+      },
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800019449
+      }
+    ],
+    "1.3 Implement TTL cache in getMostUsedAppsSummary": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799924951
+      },
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800024545
+      },
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800055140
+      }
+    ],
+    "1.4 Invalidate caches on writes": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799925120
+      },
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800059631
+      },
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800101106
+      }
+    ],
+    "2.1 Add Dispatchers import if missing": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799925243
+      },
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800106251
+      },
+      {
+        "executionId": "c7856332-ccfc-47ca-9a3e-51bd80391aca",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800255287
+      }
+    ],
+    "2.2 Wrap NLU calls in background context": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799925371
+      },
+      {
+        "executionId": "c7856332-ccfc-47ca-9a3e-51bd80391aca",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800259320
+      },
+      {
+        "executionId": "c7856332-ccfc-47ca-9a3e-51bd80391aca",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800335070
+      }
+    ],
+    "3.1 Add hide() method to OverlayManager": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799925490
+      },
+      {
+        "executionId": "c7856332-ccfc-47ca-9a3e-51bd80391aca",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800265190
+      },
+      {
+        "executionId": "c7856332-ccfc-47ca-9a3e-51bd80391aca",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800335753
+      }
+    ],
+    "3.2 Add destroyOverlay() full teardown method to OverlayManager": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799925606
+      },
+      {
+        "executionId": "c7856332-ccfc-47ca-9a3e-51bd80391aca",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800343874
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800666645
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800674635
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800750069
+      }
+    ],
+    "3.3 Make show() reuse existing attached ComposeView": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799925743
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800666790
+      },
+      {
+        "executionId": "6cbb903e-d0eb-4b25-8d0c-9a73bd36f556",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802038489
+      },
+      {
+        "executionId": "6cbb903e-d0eb-4b25-8d0c-9a73bd36f556",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802197680
+      }
+    ],
+    "3.4 Update FridayService dismiss delays": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799925872
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800666954
+      },
+      {
+        "executionId": "6cbb903e-d0eb-4b25-8d0c-9a73bd36f556",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802210425
+      },
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802952542
+      }
+    ],
+    "4.1 Add debounce tracking variable": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799925986
+      },
+      {
+        "executionId": "c7856332-ccfc-47ca-9a3e-51bd80391aca",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800346086
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800667081
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800675037
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800752101
+      }
+    ],
+    "4.2 Gate overlay state updates inside token callback": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799926155
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800667200
+      },
+      {
+        "executionId": "6cbb903e-d0eb-4b25-8d0c-9a73bd36f556",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802211410
+      },
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802953090
+      }
+    ],
+    "4.3 Add final unconditional UI flush after streaming": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799926303
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800667329
+      },
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802967155
+      },
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781803041418
+      }
+    ],
+    "5.1 Add dpArray field and buildVariantSet helper": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799926418
+      },
+      {
+        "executionId": "c7856332-ccfc-47ca-9a3e-51bd80391aca",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800266198
+      },
+      {
+        "executionId": "c7856332-ccfc-47ca-9a3e-51bd80391aca",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800336508
+      }
+    ],
+    "5.2 Add cachedVariants field initialized at construction": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799926531
+      },
+      {
+        "executionId": "c7856332-ccfc-47ca-9a3e-51bd80391aca",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800344765
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800667451
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800675874
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800750902
+      }
+    ],
+    "5.3 Use cachedVariants in checkMatchesForWakeWord": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799926644
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800667588
+      },
+      {
+        "executionId": "6cbb903e-d0eb-4b25-8d0c-9a73bd36f556",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802212432
+      },
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802953675
+      }
+    ],
+    "5.4 Reuse dpArray in levenshteinDistance": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799926758
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800667833
+      },
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802968284
+      },
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781803039937
+      }
+    ],
+    "6.1 Remove delay in onWakeWordTriggered": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799926872
+      },
+      {
+        "executionId": "c7856332-ccfc-47ca-9a3e-51bd80391aca",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800267227
+      },
+      {
+        "executionId": "c7856332-ccfc-47ca-9a3e-51bd80391aca",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800337204
+      }
+    ],
+    "6.2 Remove delay in toggleListening": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799926980
+      },
+      {
+        "executionId": "c7856332-ccfc-47ca-9a3e-51bd80391aca",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800345354
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800667965
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800676388
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800751504
+      }
+    ],
+    "7.1 Add pre-compiled regex constants to companion object": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799927092
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800668084
+      },
+      {
+        "executionId": "6cbb903e-d0eb-4b25-8d0c-9a73bd36f556",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802039107
+      },
+      {
+        "executionId": "6cbb903e-d0eb-4b25-8d0c-9a73bd36f556",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802198292
+      }
+    ],
+    "7.2 Replace inline Regex usage with companion constants": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799927217
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800668217
+      },
+      {
+        "executionId": "6cbb903e-d0eb-4b25-8d0c-9a73bd36f556",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802213374
+      },
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802954246
+      }
+    ],
+    "8.1 Reorder ViewModelStore.clear() call": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799927325
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800668352
+      },
+      {
+        "executionId": "6cbb903e-d0eb-4b25-8d0c-9a73bd36f556",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802039588
+      },
+      {
+        "executionId": "6cbb903e-d0eb-4b25-8d0c-9a73bd36f556",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802199048
+      }
+    ],
+    "8.2 Add explanatory comment on ViewCompositionStrategy": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799927440
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800668484
+      },
+      {
+        "executionId": "6cbb903e-d0eb-4b25-8d0c-9a73bd36f556",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802214401
+      },
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802954915
+      }
+    ],
+    "9.1 Update AudioFrameListener interface": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799927585
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800668694
+      },
+      {
+        "executionId": "6cbb903e-d0eb-4b25-8d0c-9a73bd36f556",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802040971
+      },
+      {
+        "executionId": "6cbb903e-d0eb-4b25-8d0c-9a73bd36f556",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802199915
+      }
+    ],
+    "9.2 Remove per-frame array allocation in capture loop": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799927695
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800668835
+      },
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802969015
+      },
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781803040652
+      }
+    ],
+    "9.3 Update all AudioFrameListener implementations": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781799927818
+      },
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800669004
+      },
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781803053315
+      },
+      {
+        "executionId": "f5edd98f-c1d0-4d77-9f44-afefb69059bd",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781803315509
+      }
+    ],
+    "Task 1: Cache MemoryManager Database Queries": [
+      {
+        "executionId": "cd343e3c-e140-472b-8e3c-e66ca4ae7311",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800101236
+      }
+    ],
+    "Task 2: Offload NLU Classification to Background Thread": [
+      {
+        "executionId": "c7856332-ccfc-47ca-9a3e-51bd80391aca",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800335234
+      }
+    ],
+    "Task 6: Remove Mic Handover Delays": [
+      {
+        "executionId": "16815839-6ca7-4dd9-b5ae-ce7d69c7f569",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781800751634
+      }
+    ],
+    "Task 3: Implement Smart Overlay Visibility Toggle": [
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802952660
+      }
+    ],
+    "Task 7: Pre-compile Regex Patterns in AgentCore": [
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802954363
+      }
+    ],
+    "Task 8: Fix OverlayManager ViewModelStore Memory Leak": [
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781802955061
+      }
+    ],
+    "Task 5: Pre-compute WakeWord Variants and Reuse DP Array": [
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781803040077
+      }
+    ],
+    "Task 4: Batch UI Updates During Token Streaming": [
+      {
+        "executionId": "499c5832-c2d4-423f-ac51-7840b8190e28",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781803041537
+      }
+    ],
+    "Task 9: Reuse Audio Capture Buffers": [
+      {
+        "executionId": "f5edd98f-c1d0-4d77-9f44-afefb69059bd",
+        "chatSessionId": "sess_6946d99f-8e9e-46f1-a4e7-be06cfd9d6e7",
+        "timestamp": 1781803315660
+      }
+    ]
+  }
+}

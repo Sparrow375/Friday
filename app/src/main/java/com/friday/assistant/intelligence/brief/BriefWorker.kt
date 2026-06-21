@@ -20,6 +20,12 @@ class BriefWorker(
         private const val TAG = "BriefWorker"
         private const val MAX_LLM_SUMMARY_PER_CRAWL = 6
         private const val RETENTION_PERIOD_MS = 7 * 24 * 60 * 60 * 1000L // 7 days
+
+        private val blacklistKeywords = listOf(
+            "how to", "how i", "lessons learned", "tutorial", "guide", "learn ", " learning ", "tips", 
+            "course", "enroll", "best of", "top 10", "top 5", "top 15", "review of", "comparison", 
+            "made money", "why you should", "opinion", "advertisement", "introducing class", "my experience"
+        )
     }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
@@ -94,10 +100,18 @@ class BriefWorker(
 
                 // Stage 1 Filtering: Substring keyword match (zero CPU overhead)
                 val candidateArticles = crawledArticles.filter { article ->
-                    keywords.any { kw ->
+                    val matchesKeyword = keywords.any { kw ->
                         article.title.contains(kw, ignoreCase = true) || 
                         article.snippet.contains(kw, ignoreCase = true)
                     }
+                    if (!matchesKeyword) return@filter false
+
+                    val titleLower = article.title.lowercase()
+                    val snippetLower = article.snippet.lowercase()
+                    val isSpamOrBlog = blacklistKeywords.any { bl ->
+                        titleLower.contains(bl) || snippetLower.contains(bl)
+                    }
+                    !isSpamOrBlog
                 }.distinctBy { it.url }
 
                 Log.d(TAG, "Interest '${interest.title}' got ${crawledArticles.size} raw articles, ${candidateArticles.size} passed Stage 1 Filter")
@@ -112,14 +126,28 @@ class BriefWorker(
                             Log.d(TAG, "LLM evaluating article: '${article.title}'")
                             val relevancePrompt = """
                             <|im_start|>system
-                            You are a precise relevance filter. Answer with only YES or NO.
+                            You are an extremely strict AI news and updates curator. Your job is to filter out generic articles, blog posts, opinion pieces, tutorials, listicles, guidebooks, course promotions, and reviews.
+                            You ONLY allow high-priority, factual, time-sensitive UPDATES and ANNOUNCEMENTS.
+                            
+                            Allowed updates:
+                            1. Major Product/Model Releases (e.g., "Claude 3.5 Sonnet released", "OpenAI launches GPT-5").
+                            2. Sports Match Results/Tournament Milestones (e.g., "New Zealand beat England in the second test", "India wins the match").
+                            3. Hackathon/Event Registration/Hosting Announcements (e.g., "ISRO hosts a new national hackathon", "registrations open for Smart India Hackathon").
+                            4. Major Tech Summit announcements (e.g., "Google I/O 2026 dates announced").
+                            
+                            Disallowed content:
+                            1. Listicles, Guides, Tutorials, Opinions, and Tips (e.g., "How I made money...", "10 tips to build a machine learning model").
+                            2. General non-update news or casual discussion/interviews.
+                            3. Educational courses, advertisements, or generic educational articles.
+                            
+                            Answer with only YES if the item is a high-priority, factual update or announcement. Otherwise, answer with only NO.
                             <|im_end|>
                             <|im_start|>user
                             Topic Keywords: ${keywords.joinToString(", ")}
-                            Article Title: ${article.title}
-                            Article Snippet: ${article.snippet}
+                            Item Title: ${article.title}
+                            Item Snippet: ${article.snippet}
                             
-                            Is this article directly relevant and interesting for the topic keywords? Respond with only YES or NO.
+                            Is this item a high-priority, factual, concrete update/announcement? Respond with only YES or NO.
                             <|im_end|>
                             <|im_start|>assistant
                             """.trimIndent()
@@ -154,6 +182,19 @@ class BriefWorker(
                             Log.e(TAG, "Exception running LLM filtering for: ${article.url}", e)
                             // Fallback to simple snippet
                             isVerified = true
+                        }
+                    }
+
+                    if (!isLlmAvailable) {
+                        // Apply stricter offline heuristic rules if LLM is not active to prevent spamming
+                        val titleLower = article.title.lowercase()
+                        val snippetLower = article.snippet.lowercase()
+                        val updateKeywords = listOf(
+                            "released", "launched", "announced", "beat", "wins", "won", "hosts", 
+                            "register", "open", "release", "launch", "unveiled", "dates", "concludes", "schedule"
+                        )
+                        isVerified = updateKeywords.any { uk ->
+                            titleLower.contains(uk) || snippetLower.contains(uk)
                         }
                     }
 

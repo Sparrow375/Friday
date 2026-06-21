@@ -15,11 +15,11 @@ object DefaultInterests {
             category = "sports",
             keywordsJson = Gson().toJson(listOf(
                 "cricket", "test match", "t20", "t20 world cup", "ipl", 
-                "cricinfo", "odi", "kohli", "dhoni", "rohit", "match review"
+                "cricinfo", "odi", "kohli", "dhoni", "rohit", "match review", "won by", "beat"
             )),
             sourcesJson = Gson().toJson(listOf(
-                "https://www.espncricinfo.com/rss/content/story/feeds/index.xml",
-                "https://news.google.com/rss/search?q=international+cricket&hl=en-IN&gl=IN&ceid=IN:en"
+                "https://static.cricinfo.com/rss/livescores.xml",
+                "https://www.reddit.com/r/cricket/hot.rss"
             )),
             isEnabled = true,
             isCustom = false
@@ -33,8 +33,10 @@ object DefaultInterests {
                 "deep learning", "generative ai", "qwen", "llama", "chatgpt", "openai", "claude", "gpu"
             )),
             sourcesJson = Gson().toJson(listOf(
+                "https://openai.com/news/rss.xml",
+                "https://www.anthropic.com/news/feed",
                 "https://techcrunch.com/category/artificial-intelligence/feed/",
-                "https://news.google.com/rss/search?q=large+language+models&hl=en-US&gl=US&ceid=US:en"
+                "https://www.reddit.com/r/MachineLearning/hot.rss"
             )),
             isEnabled = true,
             isCustom = false
@@ -48,8 +50,7 @@ object DefaultInterests {
                 "mlh", "buildathon", "hackathon india", "hackathon bangalore", "major league hacking"
             )),
             sourcesJson = Gson().toJson(listOf(
-                "https://devpost.com/hackathons",
-                "https://news.google.com/rss/search?q=hackathons+india&hl=en-IN&gl=IN&ceid=IN:en"
+                "https://devpost.com/hackathons"
             )),
             isEnabled = true,
             isCustom = false
@@ -64,8 +65,7 @@ object DefaultInterests {
             )),
             sourcesJson = Gson().toJson(listOf(
                 "https://techcrunch.com/tag/google-io/feed/",
-                "https://techcrunch.com/tag/wwdc/feed/",
-                "https://news.google.com/rss/search?q=tech+conference+2026&hl=en-US&gl=US&ceid=US:en"
+                "https://techcrunch.com/tag/wwdc/feed/"
             )),
             isEnabled = true,
             isCustom = false
