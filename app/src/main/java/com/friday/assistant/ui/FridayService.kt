@@ -151,9 +151,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         com.friday.assistant.core.FridayLogger.i(TAG, "VoiceInteractionService is ready")
         instance = this
 
-        serviceScope.launch(Dispatchers.IO) {
-            setupNativeModels()
-        }
+        // Models are loaded on-demand to minimize startup RAM and battery consumption
         startWakeWordListening()
     }
 
@@ -161,11 +159,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         val action = intent?.action
         com.friday.assistant.core.FridayLogger.i(TAG, "onStartCommand received action: $action")
         
-        if (action == ACTION_RELOAD_MODELS) {
-            serviceScope.launch(Dispatchers.IO) {
-                setupNativeModels()
-            }
-        } else if (action == ACTION_SHOW_OVERLAY) {
+        if (action == ACTION_SHOW_OVERLAY) {
             showOverlay()
         } else if (action == ACTION_PAUSE_WAKEWORD) {
             stopWakeWordListening()
@@ -177,14 +171,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     }
 
     private suspend fun setupNativeModels() {
-        val whisperPath = modelManager.getWhisperModelPath()
-        if (File(whisperPath).exists()) {
-            val success = FridayApplication.whisperEngine.loadModel(whisperPath)
-            com.friday.assistant.core.FridayLogger.i(TAG, "Whisper model loaded status: $success")
-        } else {
-            com.friday.assistant.core.FridayLogger.w(TAG, "Whisper model file missing at: $whisperPath")
-        }
-        // GGUF model is loaded lazily inside AgentCore to prevent memory starvation at startup
+        // GGUF model is loaded lazily inside AgentCore on first complex query to prevent memory starvation at startup
     }
 
     private fun transitionToState(

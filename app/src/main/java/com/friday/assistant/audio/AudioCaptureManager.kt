@@ -53,12 +53,24 @@ class AudioCaptureManager(private val context: Context) {
 
         try {
             audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 SAMPLE_RATE,
                 CHANNEL_CONFIG,
                 AUDIO_FORMAT,
                 bufferSize
             )
+
+            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+                Log.w(TAG, "AudioRecord with VOICE_RECOGNITION failed, falling back to MIC source")
+                audioRecord?.release()
+                audioRecord = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    SAMPLE_RATE,
+                    CHANNEL_CONFIG,
+                    AUDIO_FORMAT,
+                    bufferSize
+                )
+            }
 
             if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
                 Log.e(TAG, "AudioRecord initialization failed")
@@ -98,7 +110,7 @@ class AudioCaptureManager(private val context: Context) {
                     }
                 }
             }, "FridayAudioCaptureThread").apply {
-                priority = Thread.MAX_PRIORITY
+                priority = Thread.NORM_PRIORITY + 2
                 start()
             }
             Log.i(TAG, "Audio capture started successfully")

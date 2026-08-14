@@ -12,11 +12,34 @@ object PreferenceExtractor {
     private const val TAG = "PreferenceExtractor"
     private val extractorScope = CoroutineScope(Dispatchers.Default)
 
+    private val PREFERENCE_INDICATORS = listOf(
+        "i like", "i prefer", "i love", "i hate", "my favorite", "my favourite", "my name is",
+        "my sister", "my brother", "my mother", "my father", "my mom", "my dad", "my friend",
+        "my wife", "my husband", "my partner", "my birthday", "my car", "remember that",
+        "remember my", "note that i", "i always", "i usually", "i work as", "i live in",
+        "my email", "my phone", "call me", "my address", "i am a", "i'm a"
+    )
+
+    private fun containsFactIndicator(text: String): Boolean {
+        val lower = text.lowercase()
+        return PREFERENCE_INDICATORS.any { indicator -> lower.contains(indicator) }
+    }
+
     fun extractAndSavePreferences(userInput: String, assistantResponse: String, memoryManager: MemoryManager) {
+        // Fast Gate: Only run extraction if input contains personal fact indicators
+        // and local LLM is already in memory. Avoid waking CPU performance cores for simple commands.
+        if (!containsFactIndicator(userInput)) {
+            return
+        }
+
+        if (!FridayApplication.llamaEngine.isModelLoaded()) {
+            Log.d(TAG, "Skipping preference extraction: LLM model is not resident in memory")
+            return
+        }
+
         extractorScope.launch {
             try {
                 // 1. Build extraction prompt.
-                // We ask the local llama model to act as a background extractor, outputting a simple JSON object of preferences.
                 val prompt = """
                     <|im_start|>system
                     You are a background fact extraction agent. Your job is to extract new personal facts, preferences, habits, or routines about the user from the conversation turn below.

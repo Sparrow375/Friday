@@ -133,8 +133,8 @@ Java_com_friday_assistant_core_native_LlamaEngine_initLlama(JNIEnv *env, jobject
     // Load model
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = 0;     // Vulkan is OFF in CMakeLists.txt; setting 99 caused silent CPU fallback overhead
-    mparams.use_mlock = true;     // Lock model in RAM to prevent OS eviction
-    mparams.use_mmap = false;     // Disable mmap: force full RAM load, eliminate page faults during generation
+    mparams.use_mlock = false;    // Allow Android OS memory manager to page memory naturally without LMK thrashing
+    mparams.use_mmap = true;      // Enable mmap: zero-copy memory mapping reduces startup allocation spike
     llama_model *model = llama_model_load_from_file(path, mparams);
     env->ReleaseStringUTFChars(model_path, path);
     

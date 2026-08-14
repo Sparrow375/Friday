@@ -50,12 +50,21 @@ class BriefWorker(
             val useLlm = applicationContext.getSharedPreferences("friday_model_prefs", Context.MODE_PRIVATE)
                 .getBoolean("use_llm", true)
 
-            // Prepare LLM if available and enabled
-            val isLlmAvailable = useLlm && modelManager.isLlmLoaded()
+            val batteryManager = applicationContext.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+            val isCharging = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                batteryManager?.isCharging == true
+            } else {
+                true
+            }
+
+            // Only use heavy LLM processing in background if device is connected to power
+            val isLlmAvailable = isCharging && useLlm && modelManager.isLlmLoaded()
             if (isLlmAvailable && !FridayApplication.llamaEngine.isModelLoaded()) {
                 val path = modelManager.getLlmModelPath()
-                Log.d(TAG, "Pre-loading LlamaEngine for feed classification & summarization")
+                Log.d(TAG, "Device charging: Pre-loading LlamaEngine for feed classification & summarization")
                 FridayApplication.llamaEngine.loadModel(path)
+            } else if (!isCharging) {
+                Log.d(TAG, "Device on battery: using ultra-fast heuristic rules for briefing filtering (zero LLM overhead)")
             }
 
             var llmInvocations = 0

@@ -17,10 +17,11 @@ object BriefScheduler {
         try {
             Log.i(TAG, "Initializing Daily Brief WorkManager scheduler")
             
-            // Set constraints: Internet required, device must not be low battery
+            // Set constraints: Internet required, device must not be low battery, and require charging for heavy background LLM processing
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .setRequiresBatteryNotLow(true)
+                .setRequiresCharging(true)
                 .build()
 
             // Run every 2 hours

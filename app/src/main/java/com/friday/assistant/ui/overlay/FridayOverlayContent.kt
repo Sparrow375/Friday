@@ -199,15 +199,21 @@ fun FridayOverlayContent(
 }
 @Composable
 fun GlowingOrb(pipelineState: PipelineState) {
-    val infiniteTransition = rememberInfiniteTransition()
-    val glowScale by infiniteTransition.animateFloat(
-        initialValue = 0.8f,
-        targetValue = 1.3f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1400, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
+    val isAnimated = pipelineState != PipelineState.IDLE
+    val infiniteTransition = rememberInfiniteTransition(label = "OrbPulse")
+    val glowScale by if (isAnimated) {
+        infiniteTransition.animateFloat(
+            initialValue = 0.8f,
+            targetValue = 1.3f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1400, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "GlowScale"
         )
-    )
+    } else {
+        remember { mutableStateOf(1.0f) }
+    }
 
     val color = getStatusColor(pipelineState)
 

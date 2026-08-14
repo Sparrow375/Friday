@@ -74,6 +74,7 @@ class OverlayManager(
         if (composeView != null) {
             com.friday.assistant.core.FridayLogger.d(TAG, "show() fast path — restoring hidden ComposeView")
             composeView?.visibility = android.view.View.VISIBLE
+            myLifecycleRegistry.currentState = Lifecycle.State.RESUMED
             isVisible = true
             resetStateFlows()
             return
@@ -168,8 +169,9 @@ class OverlayManager(
      */
     fun hide() {
         if (!isVisible) return
-        com.friday.assistant.core.FridayLogger.d(TAG, "Hiding overlay (keeping ComposeView attached)")
+        com.friday.assistant.core.FridayLogger.d(TAG, "Hiding overlay (pausing Compose animations)")
         composeView?.visibility = android.view.View.GONE
+        myLifecycleRegistry.currentState = Lifecycle.State.CREATED
         isVisible = false
     }
 
