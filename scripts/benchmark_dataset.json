@@ -1,0 +1,272 @@
+[
+  {
+    "query": "send message to mom on whatsapp saying i am coming home",
+    "category": "WhatsApp",
+    "expected_intent": "send_whatsapp",
+    "expected_tool": "whatsapp_send"
+  },
+  {
+    "query": "text dad on whatsapp saying please pick me up",
+    "category": "WhatsApp",
+    "expected_intent": "send_whatsapp",
+    "expected_tool": "whatsapp_send"
+  },
+  {
+    "query": "whatsapp Sarah saying I will be there in 10 minutes",
+    "category": "WhatsApp",
+    "expected_intent": "send_whatsapp",
+    "expected_tool": "whatsapp_send"
+  },
+  {
+    "query": "message John on whatsapp that the meeting is rescheduled",
+    "category": "WhatsApp",
+    "expected_intent": "send_whatsapp",
+    "expected_tool": "whatsapp_send"
+  },
+  {
+    "query": "send whatsapp to Alice hello how are you",
+    "category": "WhatsApp",
+    "expected_intent": "send_whatsapp",
+    "expected_tool": "whatsapp_send"
+  },
+  {
+    "query": "call mom",
+    "category": "Phone Call",
+    "expected_intent": "call_contact",
+    "expected_tool": "phone_control"
+  },
+  {
+    "query": "can you call John",
+    "category": "Phone Call",
+    "expected_intent": "call_contact",
+    "expected_tool": "phone_control"
+  },
+  {
+    "query": "dial dad please",
+    "category": "Phone Call",
+    "expected_intent": "call_contact",
+    "expected_tool": "phone_control"
+  },
+  {
+    "query": "give Alex a call",
+    "category": "Phone Call",
+    "expected_intent": "call_contact",
+    "expected_tool": "phone_control"
+  },
+  {
+    "query": "call 9876543210",
+    "category": "Phone Call",
+    "expected_intent": "call_contact",
+    "expected_tool": "phone_control"
+  },
+  {
+    "query": "text mom saying i will be late for dinner",
+    "category": "SMS",
+    "expected_intent": "send_sms",
+    "expected_tool": "phone_control"
+  },
+  {
+    "query": "send sms to Sarah saying see you soon",
+    "category": "SMS",
+    "expected_intent": "send_sms",
+    "expected_tool": "phone_control"
+  },
+  {
+    "query": "send text message to Dad saying reach home safe",
+    "category": "SMS",
+    "expected_intent": "send_sms",
+    "expected_tool": "phone_control"
+  },
+  {
+    "query": "read my messages",
+    "category": "SMS",
+    "expected_intent": "read_sms",
+    "expected_tool": "phone_control"
+  },
+  {
+    "query": "check recent calls",
+    "category": "Call Log",
+    "expected_intent": "read_call_log",
+    "expected_tool": "phone_control"
+  },
+  {
+    "query": "turn on flashlight",
+    "category": "Torch",
+    "expected_intent": "torch_toggle",
+    "expected_tool": "system_control"
+  },
+  {
+    "query": "turn off the torch",
+    "category": "Torch",
+    "expected_intent": "torch_toggle",
+    "expected_tool": "system_control"
+  },
+  {
+    "query": "set flashlight brightness to maximum",
+    "category": "Torch",
+    "expected_intent": "torch_strength",
+    "expected_tool": "system_control"
+  },
+  {
+    "query": "increase volume",
+    "category": "Volume",
+    "expected_intent": "volume_up",
+    "expected_tool": "system_control"
+  },
+  {
+    "query": "make it louder",
+    "category": "Volume",
+    "expected_intent": "volume_up",
+    "expected_tool": "system_control"
+  },
+  {
+    "query": "lower the volume",
+    "category": "Volume",
+    "expected_intent": "volume_down",
+    "expected_tool": "system_control"
+  },
+  {
+    "query": "turn down the sound",
+    "category": "Volume",
+    "expected_intent": "volume_down",
+    "expected_tool": "system_control"
+  },
+  {
+    "query": "increase screen brightness",
+    "category": "Brightness",
+    "expected_intent": "brightness_up",
+    "expected_tool": "system_control"
+  },
+  {
+    "query": "dim the screen",
+    "category": "Brightness",
+    "expected_intent": "brightness_down",
+    "expected_tool": "system_control"
+  },
+  {
+    "query": "make the screen brighter",
+    "category": "Brightness",
+    "expected_intent": "brightness_up",
+    "expected_tool": "system_control"
+  },
+  {
+    "query": "turn on wifi",
+    "category": "Settings",
+    "expected_intent": "wifi_toggle",
+    "expected_tool": "system_control"
+  },
+  {
+    "query": "disable bluetooth",
+    "category": "Settings",
+    "expected_intent": "bluetooth_toggle",
+    "expected_tool": "system_control"
+  },
+  {
+    "query": "turn on do not disturb",
+    "category": "Settings",
+    "expected_intent": "dnd_toggle",
+    "expected_tool": "system_control"
+  },
+  {
+    "query": "take a screenshot",
+    "category": "Screenshot",
+    "expected_intent": "take_screenshot",
+    "expected_tool": "screenshot"
+  },
+  {
+    "query": "capture the screen",
+    "category": "Screenshot",
+    "expected_intent": "take_screenshot",
+    "expected_tool": "screenshot"
+  },
+  {
+    "query": "play sunflower on spotify",
+    "category": "Media",
+    "expected_intent": "play_spotify",
+    "expected_tool": "media_control"
+  },
+  {
+    "query": "search cats on youtube",
+    "category": "Media",
+    "expected_intent": "play_youtube",
+    "expected_tool": "media_control"
+  },
+  {
+    "query": "pause the music",
+    "category": "Media",
+    "expected_intent": "pause_media",
+    "expected_tool": "media_control"
+  },
+  {
+    "query": "skip to next track",
+    "category": "Media",
+    "expected_intent": "next_track",
+    "expected_tool": "media_control"
+  },
+  {
+    "query": "open spotify",
+    "category": "App Launcher",
+    "expected_intent": "open_app",
+    "expected_tool": "app_launcher"
+  },
+  {
+    "query": "launch instagram",
+    "category": "App Launcher",
+    "expected_intent": "open_app",
+    "expected_tool": "app_launcher"
+  },
+  {
+    "query": "open camera",
+    "category": "App Launcher",
+    "expected_intent": "open_camera",
+    "expected_tool": "app_launcher"
+  },
+  {
+    "query": "set alarm for 7 am",
+    "category": "Alarm",
+    "expected_intent": "set_alarm",
+    "expected_tool": "calendar_control"
+  },
+  {
+    "query": "wake me up at 6:30 am",
+    "category": "Alarm",
+    "expected_intent": "set_alarm",
+    "expected_tool": "calendar_control"
+  },
+  {
+    "query": "set timer for 10 minutes",
+    "category": "Timer",
+    "expected_intent": "set_timer",
+    "expected_tool": "calendar_control"
+  },
+  {
+    "query": "countdown for 5 minutes",
+    "category": "Timer",
+    "expected_intent": "set_timer",
+    "expected_tool": "calendar_control"
+  },
+  {
+    "query": "what is the capital of France",
+    "category": "LLM Brain",
+    "expected_intent": "unknown",
+    "expected_tool": "FALLBACK_LLM_BRAIN"
+  },
+  {
+    "query": "tell me a funny joke",
+    "category": "LLM Brain",
+    "expected_intent": "unknown",
+    "expected_tool": "FALLBACK_LLM_BRAIN"
+  },
+  {
+    "query": "explain quantum computing simply",
+    "category": "LLM Brain",
+    "expected_intent": "unknown",
+    "expected_tool": "FALLBACK_LLM_BRAIN"
+  },
+  {
+    "query": "how do I cook spaghetti carbonara",
+    "category": "LLM Brain",
+    "expected_intent": "unknown",
+    "expected_tool": "FALLBACK_LLM_BRAIN"
+  }
+]

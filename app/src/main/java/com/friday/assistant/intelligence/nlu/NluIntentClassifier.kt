@@ -8,12 +8,20 @@ import ai.onnxruntime.OrtSession
 import java.io.File
 import java.nio.LongBuffer
 
+data class JointNluResult(
+    val intent: String,
+    val confidence: Float,
+    val slots: Map<String, String> = emptyMap()
+)
+
 class NluIntentClassifier(private val context: Context) {
     companion object {
         private const val TAG = "NluIntentClassifier"
-        private const val MODEL_NAME = "nlu_model.onnx"
+        private const val MODEL_NAME = "joint_nlu_model.onnx"
+        private const val LEGACY_MODEL_NAME = "nlu_model.onnx"
         private const val VOCAB_NAME = "vocab.txt"
         private const val LABELS_NAME = "labels.txt"
+        private const val SLOT_LABELS_NAME = "slot_labels.txt"
     }
 
     private var ortEnv: OrtEnvironment? = null
@@ -21,7 +29,7 @@ class NluIntentClassifier(private val context: Context) {
     private var tokenizer: WordpieceTokenizer? = null
     private var isLoaded = false
 
-    // Mapped labels — overridden at runtime from labels.txt when model is loaded
+    // 46 Intent Labels
     private var intentLabels = listOf(
         "volume_up", "volume_down", "brightness_up", "brightness_down",
         "torch_toggle", "torch_strength", "lock_phone", "open_app",
@@ -30,15 +38,31 @@ class NluIntentClassifier(private val context: Context) {
         "pause_media", "next_track", "previous_track",
         "power_saver_toggle", "screencast_toggle",
         "wifi_toggle", "bluetooth_toggle", "hotspot_toggle", "dnd_toggle",
-        "call_contact", "send_sms", "read_sms", "read_call_log",
+        "call_contact", "read_call_log",
         "take_screenshot", "web_search",
         "clipboard_read", "clipboard_write",
         "read_notifications", "get_battery", "get_time",
         "airplane_mode_toggle", "mobile_data_toggle",
-        "open_camera",
+        "open_camera", "open_files",
         "notes_create", "notes_list", "notes_search", "notes_delete",
-        "search_google", "remember_preference", "recall_preference", "open_files",
+        "search_google", "search_reddit", "remember_preference", "recall_preference",
         "unknown"
+    )
+
+    // 23 Slot Labels
+    private var slotLabels = listOf(
+        "O",
+        "B-CONTACT", "I-CONTACT",
+        "B-MESSAGE", "I-MESSAGE",
+        "B-DESTINATION", "I-DESTINATION",
+        "B-APP", "I-APP",
+        "B-QUERY", "I-QUERY",
+        "B-TIME", "I-TIME",
+        "B-VALUE", "I-VALUE",
+        "B-NOTE_CONTENT", "I-NOTE_CONTENT",
+        "B-FACT", "I-FACT",
+        "B-NOTE_ID", "I-NOTE_ID",
+        "B-TEXT", "I-TEXT"
     )
 
     init {
@@ -52,20 +76,20 @@ class NluIntentClassifier(private val context: Context) {
         try {
             val destDir = context.getExternalFilesDir("models") ?: context.filesDir
             val modelFile = File(destDir, MODEL_NAME)
+            val legacyModelFile = File(destDir, LEGACY_MODEL_NAME)
             val vocabFile = File(destDir, VOCAB_NAME)
             val labelsFile = File(destDir, LABELS_NAME)
+            val slotLabelsFile = File(destDir, SLOT_LABELS_NAME)
 
             var modelBytes: ByteArray? = null
             var tokenizerLoaded = false
 
-            // Try loading dynamic labels
+            // 1. Load Intent Labels
             val loadedLabels = mutableListOf<String>()
             if (labelsFile.exists()) {
                 labelsFile.forEachLine { line ->
                     val lbl = line.trim()
-                    if (lbl.isNotEmpty()) {
-                        loadedLabels.add(lbl)
-                    }
+                    if (lbl.isNotEmpty()) loadedLabels.add(lbl)
                 }
             } else {
                 val assetsList = context.assets.list("") ?: emptyArray()
@@ -73,9 +97,7 @@ class NluIntentClassifier(private val context: Context) {
                     context.assets.open(LABELS_NAME).bufferedReader().useLines { lines ->
                         lines.forEach { line ->
                             val lbl = line.trim()
-                            if (lbl.isNotEmpty()) {
-                                loadedLabels.add(lbl)
-                            }
+                            if (lbl.isNotEmpty()) loadedLabels.add(lbl)
                         }
                     }
                 }
@@ -85,8 +107,32 @@ class NluIntentClassifier(private val context: Context) {
                 Log.i(TAG, "Loaded ${loadedLabels.size} intent labels dynamically")
             }
 
+            // 2. Load Slot Labels
+            val loadedSlotLabels = mutableListOf<String>()
+            if (slotLabelsFile.exists()) {
+                slotLabelsFile.forEachLine { line ->
+                    val lbl = line.trim()
+                    if (lbl.isNotEmpty()) loadedSlotLabels.add(lbl)
+                }
+            } else {
+                val assetsList = context.assets.list("") ?: emptyArray()
+                if (assetsList.contains(SLOT_LABELS_NAME)) {
+                    context.assets.open(SLOT_LABELS_NAME).bufferedReader().useLines { lines ->
+                        lines.forEach { line ->
+                            val lbl = line.trim()
+                            if (lbl.isNotEmpty()) loadedSlotLabels.add(lbl)
+                        }
+                    }
+                }
+            }
+            if (loadedSlotLabels.isNotEmpty()) {
+                slotLabels = loadedSlotLabels
+                Log.i(TAG, "Loaded ${loadedSlotLabels.size} slot labels dynamically")
+            }
+
+            // 3. Load Model Bytes & Tokenizer
             if (modelFile.exists() && vocabFile.exists()) {
-                Log.i(TAG, "Loading custom NLU model from: ${modelFile.absolutePath}")
+                Log.i(TAG, "Loading Joint NLU model from files: ${modelFile.absolutePath}")
                 modelBytes = modelFile.readBytes()
                 val vocabMap = mutableMapOf<String, Int>()
                 vocabFile.forEachLine { line ->
@@ -98,11 +144,15 @@ class NluIntentClassifier(private val context: Context) {
                 tokenizer = WordpieceTokenizer(vocabMap)
                 tokenizerLoaded = true
             } else {
-                // Try loading from assets
                 val assetsList = context.assets.list("") ?: emptyArray()
-                if (assetsList.contains(MODEL_NAME) && assetsList.contains(VOCAB_NAME)) {
-                    Log.i(TAG, "Loading NLU model from assets")
-                    context.assets.open(MODEL_NAME).use { input ->
+                val chosenModelName = when {
+                    assetsList.contains(MODEL_NAME) -> MODEL_NAME
+                    assetsList.contains(LEGACY_MODEL_NAME) -> LEGACY_MODEL_NAME
+                    else -> null
+                }
+                if (chosenModelName != null && assetsList.contains(VOCAB_NAME)) {
+                    Log.i(TAG, "Loading Joint NLU model from assets: $chosenModelName")
+                    context.assets.open(chosenModelName).use { input ->
                         modelBytes = input.readBytes()
                     }
                     tokenizer = WordpieceTokenizer.loadFromAssets(context, VOCAB_NAME)
@@ -114,42 +164,48 @@ class NluIntentClassifier(private val context: Context) {
                 ortEnv = OrtEnvironment.getEnvironment()
                 ortSession = ortEnv?.createSession(modelBytes)
                 isLoaded = true
-                Log.i(TAG, "NLU ONNX session successfully initialized")
+                Log.i(TAG, "Joint NLU ONNX session successfully initialized with ${intentLabels.size} intents and ${slotLabels.size} slots")
             } else {
-                Log.w(TAG, "NLU model files ($MODEL_NAME, $VOCAB_NAME) not found. Running in rule-based command matching fallback.")
+                Log.w(TAG, "Joint NLU model files not found. Running in rule-based command matching fallback.")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error loading NLU ONNX model", e)
+            Log.e(TAG, "Error loading Joint NLU ONNX model", e)
             isLoaded = false
         }
     }
 
-    fun classifyIntent(text: String): Pair<String, Float> {
+    fun classifyJoint(text: String): JointNluResult {
         if (!isLoaded || ortSession == null || tokenizer == null || ortEnv == null) {
-            return Pair("unknown", 0f)
+            return JointNluResult("unknown", 0f, emptyMap())
         }
 
         try {
-            val tokenIds = tokenizer!!.tokenize(text)
-            if (tokenIds.isEmpty()) return Pair("unknown", 0f)
+            val (tokenIds, tokenStrings) = tokenizer!!.tokenizeWithTokens(text)
+            if (tokenIds.isEmpty()) return JointNluResult("unknown", 0f, emptyMap())
 
-            // Convert tokens to BERT input format: [CLS] + tokenIds + [SEP]
-            val clsId = 101 // Default BERT/MobileBERT CLS
-            val sepId = 102 // Default BERT/MobileBERT SEP
-            
+            val clsId = 101 // MiniLM / BERT CLS
+            val sepId = 102 // MiniLM / BERT SEP
+
             val inputIdsList = mutableListOf<Long>()
+            val allTokenStrings = mutableListOf<String>()
+
             inputIdsList.add(clsId.toLong())
-            for (id in tokenIds) {
-                inputIdsList.add(id.toLong())
+            allTokenStrings.add("[CLS]")
+
+            for (i in tokenIds.indices) {
+                inputIdsList.add(tokenIds[i].toLong())
+                allTokenStrings.add(tokenStrings[i])
             }
+
             inputIdsList.add(sepId.toLong())
+            allTokenStrings.add("[SEP]")
 
             val seqLen = inputIdsList.size
             val shape = longArrayOf(1, seqLen.toLong())
 
             val inputIdsBuffer = LongBuffer.wrap(inputIdsList.toLongArray())
             val attentionMaskBuffer = LongBuffer.wrap(LongArray(seqLen) { 1L })
-            
+
             val env = ortEnv!!
             val inputIdsTensor = OnnxTensor.createTensor(env, inputIdsBuffer, shape)
             val attentionMaskTensor = OnnxTensor.createTensor(env, attentionMaskBuffer, shape)
@@ -160,38 +216,115 @@ class NluIntentClassifier(private val context: Context) {
             )
 
             ortSession!!.run(inputs).use { results ->
-                val outputValue = results[0].value
-                val logits = when {
-                    outputValue is Array<*> && outputValue[0] is FloatArray -> outputValue[0] as FloatArray
-                    outputValue is FloatArray -> outputValue
-                    else -> return Pair("unknown", 0f)
+                // 1. Decode Intent Logits
+                val intentOutputValue = results[0].value
+                val intentLogits = when {
+                    intentOutputValue is Array<*> && intentOutputValue[0] is FloatArray -> intentOutputValue[0] as FloatArray
+                    intentOutputValue is FloatArray -> intentOutputValue
+                    else -> return JointNluResult("unknown", 0f, emptyMap())
                 }
 
-                val numClasses = logits.size
-
-                // Softmax selection
+                val numClasses = intentLogits.size
                 var maxIdx = 0
-                var maxVal = logits[0]
+                var maxVal = intentLogits[0]
                 for (i in 1 until numClasses) {
-                    if (logits[i] > maxVal) {
-                        maxVal = logits[i]
+                    if (intentLogits[i] > maxVal) {
+                        maxVal = intentLogits[i]
                         maxIdx = i
                     }
                 }
 
                 var sumExp = 0.0
-                for (v in logits) {
+                for (v in intentLogits) {
                     sumExp += Math.exp(v.toDouble())
                 }
                 val confidence = (Math.exp(maxVal.toDouble()) / sumExp).toFloat()
-
                 val intent = if (maxIdx < intentLabels.size) intentLabels[maxIdx] else "unknown"
-                Log.d(TAG, "NLU classification result: intent=$intent, confidence=$confidence")
-                return Pair(intent, confidence)
+
+                // 2. Decode Slot Logits (if dual-head output present)
+                val slotsMap = mutableMapOf<String, String>()
+                if (results.size() > 1) {
+                    val slotOutputValue = results[1].value
+                    val slotLogits: Array<FloatArray>? = when {
+                        slotOutputValue is Array<*> && slotOutputValue.isNotEmpty() && slotOutputValue[0] is Array<*> -> {
+                            @Suppress("UNCHECKED_CAST")
+                            slotOutputValue[0] as Array<FloatArray>
+                        }
+                        slotOutputValue is Array<*> && slotOutputValue.isNotEmpty() && slotOutputValue[0] is FloatArray -> {
+                            @Suppress("UNCHECKED_CAST")
+                            slotOutputValue as Array<FloatArray>
+                        }
+                        else -> null
+                    }
+
+                    if (slotLogits != null && slotLabels.isNotEmpty()) {
+                        val predictedSlotIds = mutableListOf<Int>()
+                        for (tokenLogits in slotLogits) {
+                            var bestSlotIdx = 0
+                            var bestSlotVal = tokenLogits[0]
+                            for (s in 1 until tokenLogits.size) {
+                                if (tokenLogits[s] > bestSlotVal) {
+                                    bestSlotVal = tokenLogits[s]
+                                    bestSlotIdx = s
+                                }
+                            }
+                            predictedSlotIds.add(bestSlotIdx)
+                        }
+
+                        // Reconstruct entities from BIO tags (skip [CLS] at 0 and [SEP] at last)
+                        var currentTag: String? = null
+                        val currentTokens = mutableListOf<String>()
+
+                        val limit = minOf(allTokenStrings.size - 1, predictedSlotIds.size)
+                        for (i in 1 until limit) {
+                            val slotTag = if (predictedSlotIds[i] < slotLabels.size) slotLabels[predictedSlotIds[i]] else "O"
+                            val tokStr = allTokenStrings[i]
+
+                            if (slotTag.startsWith("B-")) {
+                                if (currentTag != null && currentTokens.isNotEmpty()) {
+                                    slotsMap[currentTag] = tokenizer!!.convertTokensToString(currentTokens)
+                                }
+                                currentTag = slotTag.substring(2)
+                                currentTokens.clear()
+                                currentTokens.add(tokStr)
+                            } else if (slotTag.startsWith("I-")) {
+                                val tagType = slotTag.substring(2)
+                                if (currentTag == tagType) {
+                                    currentTokens.add(tokStr)
+                                } else {
+                                    if (currentTag != null && currentTokens.isNotEmpty()) {
+                                        slotsMap[currentTag] = tokenizer!!.convertTokensToString(currentTokens)
+                                    }
+                                    currentTag = tagType
+                                    currentTokens.clear()
+                                    currentTokens.add(tokStr)
+                                }
+                            } else {
+                                if (currentTag != null && currentTokens.isNotEmpty()) {
+                                    slotsMap[currentTag] = tokenizer!!.convertTokensToString(currentTokens)
+                                    currentTag = null
+                                    currentTokens.clear()
+                                }
+                            }
+                        }
+                        if (currentTag != null && currentTokens.isNotEmpty()) {
+                            slotsMap[currentTag] = tokenizer!!.convertTokensToString(currentTokens)
+                        }
+                    }
+                }
+
+                Log.d(TAG, "Joint NLU: intent=$intent ($confidence), slots=$slotsMap")
+                return JointNluResult(intent, confidence, slotsMap)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed running NLU classification", e)
-            return Pair("unknown", 0f)
+            Log.e(TAG, "Failed running Joint NLU classification", e)
+            return JointNluResult("unknown", 0f, emptyMap())
         }
     }
+
+    fun classifyIntent(text: String): Pair<String, Float> {
+        val res = classifyJoint(text)
+        return Pair(res.intent, res.confidence)
+    }
 }
+

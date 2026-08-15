@@ -42,15 +42,9 @@ object PostClassificationValidator {
         if (finalIntent == "search_google" || finalIntent == "web_search") {
             val originalTextLower = preprocessed.originalText.lowercase()
             if (originalTextLower.contains("message") || originalTextLower.contains("whatsapp") || originalTextLower.contains("text")) {
-                if (originalTextLower.contains("whatsapp") || originalTextLower.contains("message")) {
-                    Log.i(TAG, "Suppressed search_google redirection. Forcing send_whatsapp due to presence of message intent keywords.")
-                    finalIntent = "send_whatsapp"
-                    finalConfidence = 0.90f
-                } else if (originalTextLower.contains("sms") || originalTextLower.contains("text")) {
-                    Log.i(TAG, "Suppressed search_google redirection. Forcing send_sms due to presence of sms intent keywords.")
-                    finalIntent = "send_sms"
-                    finalConfidence = 0.90f
-                }
+                Log.i(TAG, "Suppressed search_google redirection. Forcing send_whatsapp due to presence of message intent keywords.")
+                finalIntent = "send_whatsapp"
+                finalConfidence = 0.90f
             }
         }
 

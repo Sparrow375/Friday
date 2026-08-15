@@ -19,4 +19,7 @@ local.properties
 /current_device_logs.txt
 /notebookoutput.md
 /output/
+.kotlin/
+__pycache__/
+*.pyc
 

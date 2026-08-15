@@ -10,12 +10,15 @@ class ModelManager(private val context: Context) {
         private const val TAG = "ModelManager"
         const val SPEAKER_MODEL_NAME = "speaker_verification.onnx"
         const val WAKEWORD_MODEL_NAME = "wakeword.onnx"
-        const val NLU_MODEL_NAME = "nlu_model.onnx"
+        const val NLU_MODEL_NAME = "joint_nlu_model.onnx"
+        const val LEGACY_NLU_MODEL_NAME = "nlu_model.onnx"
         const val NLU_VOCAB_NAME = "vocab.txt"
         const val SEMANTIC_MODEL_NAME = "all-MiniLM-L6-v2.onnx"
         const val PREFS_NAME = "friday_model_prefs"
         const val KEY_LLM_PATH = "llm_model_path"
         const val KEY_WHISPER_PATH = "whisper_model_path"
+        const val DEFAULT_LLM_NAME = "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+        const val DEFAULT_LLM_URL = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
     }
 
     private val sharedPrefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -27,7 +30,7 @@ class ModelManager(private val context: Context) {
         }
         // Fallback default path
         val defaultDir = context.getExternalFilesDir("models")
-        val defaultFile = File(defaultDir, "qwen2.5-1.5b-instruct-q4_k_m.gguf")
+        val defaultFile = File(defaultDir, DEFAULT_LLM_NAME)
         return defaultFile.absolutePath
     }
 
@@ -43,11 +46,11 @@ class ModelManager(private val context: Context) {
         if (!defaultDir.exists()) {
             defaultDir.mkdirs()
         }
-        val targetFile = File(defaultDir, "qwen2.5-1.5b-instruct-q4_k_m.gguf")
-        val tempFile = File(defaultDir, "qwen2.5-1.5b-instruct-q4_k_m.gguf.tmp")
+        val targetFile = File(defaultDir, DEFAULT_LLM_NAME)
+        val tempFile = File(defaultDir, "$DEFAULT_LLM_NAME.tmp")
         
         try {
-            val url = java.net.URL("https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf")
+            val url = java.net.URL(DEFAULT_LLM_URL)
             val connection = url.openConnection() as java.net.HttpURLConnection
             connection.connectTimeout = 15000
             connection.readTimeout = 15000
