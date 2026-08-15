@@ -147,11 +147,10 @@ Java_com_friday_assistant_core_native_LlamaEngine_initLlama(JNIEnv *env, jobject
 
     // Create context
     llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx = 512;   // Voice assistant never needs more than 512 tokens of context
+    cparams.n_ctx = 1024;  // 1024 tokens of context for reliable multi-turn conversations
     cparams.n_batch = 512;
-    cparams.n_threads = 4; // S24 has exactly 4 performance cores (4-7)
+    cparams.n_threads = 4; // S24 performance cores
     cparams.n_threads_batch = 4;
-    // Note: flash_attn was removed from llama_context_params in upstream llama.cpp master
     
     llama_context *ctx = llama_init_from_model(model, cparams);
     if (ctx == nullptr) {
@@ -164,7 +163,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_initLlama(JNIEnv *env, jobject
     state->model = model;
     state->ctx = ctx;
     
-    LOGI("Llama model initialized successfully");
+    LOGI("Llama model initialized successfully (n_ctx=1024)");
     return reinterpret_cast<jlong>(state);
 }
 
@@ -207,7 +206,6 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
         return env->NewStringUTF("Error: Model state is null");
     }
 
-    // Bind generation calling thread to high-performance cores
     set_thread_affinity();
 
     const char *prompt_raw = env->GetStringUTFChars(prompt_str, nullptr);
@@ -216,7 +214,6 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
 
     LOGI("generateLlama started. Prompt length: %d", (int)prompt.length());
 
-    // Retrieve vocabulary from model
     const struct llama_vocab * vocab = llama_model_get_vocab(state->model);
 
     // Tokenize prompt
@@ -228,51 +225,38 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
     }
     LOGI("Tokenization complete. Prompt tokens count: %d", (int)prompt_tokens.size());
 
-    // Context overflow guard: if prompt already fills n_ctx, clear cache and start fresh
+    // Reset KV cache to prevent stale context / desync on back-to-back prompts
+    llama_memory_t kv = llama_get_memory(state->ctx);
+    llama_memory_clear(kv, true);
+    state->history_tokens.clear();
+
     const int n_ctx_max = llama_n_ctx(state->ctx);
-    if ((int)prompt_tokens.size() >= n_ctx_max - 32) {
-        LOGI("Prompt (%d tokens) fills context (%d). Clearing KV cache and resetting history.",
-             (int)prompt_tokens.size(), n_ctx_max);
-        llama_memory_t kv = llama_get_memory(state->ctx);
-        llama_memory_clear(kv, true);
-        state->history_tokens.clear();
+    const int n_prompt = (int)prompt_tokens.size();
+    if (n_prompt >= n_ctx_max - 16) {
+        LOGE("Prompt (%d tokens) exceeds context capacity (%d)", n_prompt, n_ctx_max);
+        return env->NewStringUTF("Error: Prompt exceeds context window");
     }
 
-    // Find longest common prefix between incoming prompt and existing cache
-    size_t n_keep = 0;
-    while (n_keep < state->history_tokens.size() &&
-           n_keep < prompt_tokens.size() &&
-           state->history_tokens[n_keep] == prompt_tokens[n_keep]) {
-        n_keep++;
-    }
+    // Evaluate prompt tokens in batches of up to 512
+    for (int i = 0; i < n_prompt; i += 512) {
+        int n_eval = std::min(n_prompt - i, 512);
+        llama_batch batch = llama_batch_init(n_eval, 0, 1);
+        batch.n_tokens = n_eval;
+        for (int j = 0; j < n_eval; ++j) {
+            batch.token[j] = prompt_tokens[i + j];
+            batch.pos[j] = i + j;
+            batch.n_seq_id[j] = 1;
+            batch.seq_id[j][0] = 0;
+            batch.logits[j] = (i + j == n_prompt - 1); // Logits computed only for final token
+        }
 
-    LOGI("KV cache comparison: n_keep = %d, history_size = %d", (int)n_keep, (int)state->history_tokens.size());
-
-    // Truncate KV Cache to matched prefix length
-    if (n_keep < state->history_tokens.size()) {
-        LOGI("Cache mismatch. Truncating KV cache from position %d to end (-1)", (int)n_keep);
-        llama_memory_t kv = llama_get_memory(state->ctx);
-        llama_memory_seq_rm(kv, 0, n_keep, -1);
-        state->history_tokens.resize(n_keep);
-    }
-
-    size_t n_new = prompt_tokens.size() - n_keep;
-    
-    // Fallback/Correction: If prefix matches completely (n_new == 0), re-evaluate the last token
-    // to calculate its logits for sampling.
-    if (n_new == 0 && n_keep > 0) {
-        n_keep--;
-        llama_memory_t kv = llama_get_memory(state->ctx);
-        llama_memory_seq_rm(kv, 0, n_keep, -1);
-        state->history_tokens.resize(n_keep);
-        n_new = prompt_tokens.size() - n_keep;
-    }
-
-    // Append new suffix tokens to history
-    if (n_new > 0) {
-        state->history_tokens.insert(state->history_tokens.end(),
-                                     prompt_tokens.begin() + n_keep,
-                                     prompt_tokens.end());
+        int decode_res = llama_decode(state->ctx, batch);
+        llama_batch_free(batch);
+        if (decode_res != 0) {
+            LOGE("Llama prompt decode failed with status %d", decode_res);
+            llama_memory_clear(kv, true);
+            return env->NewStringUTF("Error: Decode failed");
+        }
     }
 
     // Setup sampler
@@ -282,63 +266,19 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
     llama_sampler_chain_add(smpl, llama_sampler_init_temp(temp));
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
-    // Track where the prompt ends so we can trim generated tokens after inference
-    size_t prompt_end_pos = state->history_tokens.size();
-
     std::string response = "";
     int n_generated = 0;
-    size_t current_pos = n_keep;
-    size_t total_tokens = state->history_tokens.size();
+    int current_pos = n_prompt;
 
-    // Decode loop
-    while (n_generated < max_tokens) {
-        size_t n_eval = total_tokens - current_pos;
-        if (n_eval == 0) {
-            break;
-        }
-
-        if (n_eval > 512) {
-            n_eval = 512;
-        }
-
-        llama_batch batch = llama_batch_init(n_eval, 0, 1);
-        batch.n_tokens = n_eval;
-        for (size_t i = 0; i < n_eval; ++i) {
-            batch.token[i] = state->history_tokens[current_pos + i];
-            batch.pos[i] = current_pos + i;
-            batch.n_seq_id[i] = 1;
-            batch.seq_id[i][0] = 0;
-            batch.logits[i] = (i == n_eval - 1); // Compute logits only for the last token in batch
-        }
-
-        int decode_res = llama_decode(state->ctx, batch);
-        if (decode_res != 0) {
-            LOGE("Llama decode failed with status %d — resetting KV cache and history for clean next call", decode_res);
-            llama_batch_free(batch);
-            llama_sampler_free(smpl);
-            // Reset state so the next call doesn't inherit a corrupted position
-            state->history_tokens.clear();
-            llama_memory_t kv = llama_get_memory(state->ctx);
-            llama_memory_clear(kv, true);
-            return env->NewStringUTF("Error: Decode failed");
-        }
-
-        current_pos += n_eval;
-        llama_batch_free(batch);
-
-        // Sample next token
+    // Autoregressive token generation loop
+    while (n_generated < max_tokens && current_pos < n_ctx_max - 1) {
         llama_token id = llama_sampler_sample(smpl, state->ctx, -1);
-        
-        state->history_tokens.push_back(id);
-        total_tokens++;
 
-        // Check for End of Generation
         if (llama_vocab_is_eog(vocab, id)) {
             LOGI("EOG token (id=%d) detected, generation stopped", id);
             break;
         }
 
-        // Convert token to char piece
         char buf[128];
         int n_chars = llama_token_to_piece(vocab, id, buf, sizeof(buf), 0, true);
         if (n_chars > 0) {
@@ -346,13 +286,25 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
         }
 
         n_generated++;
-    }
 
-    // Trim history back to prompt-only boundary — generated tokens should NOT be kept
-    // in history_tokens because they were never re-evaluated by the KV cache on the next call.
-    // The KV cache itself retains the positional state; history_tokens is only used for
-    // prefix matching on the NEXT call's prompt, not for tracking generated output.
-    state->history_tokens.resize(prompt_end_pos);
+        // Evaluate next token
+        llama_batch batch = llama_batch_init(1, 0, 1);
+        batch.n_tokens = 1;
+        batch.token[0] = id;
+        batch.pos[0] = current_pos;
+        batch.n_seq_id[0] = 1;
+        batch.seq_id[0][0] = 0;
+        batch.logits[0] = true;
+
+        int decode_res = llama_decode(state->ctx, batch);
+        llama_batch_free(batch);
+        if (decode_res != 0) {
+            LOGE("Llama token decode failed with status %d at pos %d", decode_res, current_pos);
+            break;
+        }
+
+        current_pos++;
+    }
 
     llama_sampler_free(smpl);
     return env->NewStringUTF(response.c_str());
@@ -365,7 +317,6 @@ static std::string extract_complete_utf8(std::string &buffer) {
     size_t len = buffer.length();
     size_t last_start = len;
     
-    // Find the last byte that is not a continuation byte (i.e. not starting with 10xxxxxx)
     for (size_t i = len; i > 0; --i) {
         unsigned char b = static_cast<unsigned char>(buffer[i - 1]);
         if ((b & 0xC0) != 0x80) {
@@ -375,7 +326,6 @@ static std::string extract_complete_utf8(std::string &buffer) {
     }
     
     if (last_start == len) {
-        // All bytes in the buffer are continuation bytes
         std::string res = buffer;
         buffer.clear();
         return res;
@@ -395,12 +345,10 @@ static std::string extract_complete_utf8(std::string &buffer) {
     
     size_t actual_len = len - last_start;
     if (actual_len < expected_len) {
-        // Incomplete character at the end
         std::string complete_prefix = buffer.substr(0, last_start);
         buffer = buffer.substr(last_start);
         return complete_prefix;
     } else {
-        // Complete character at the end
         std::string complete_prefix = buffer;
         buffer.clear();
         return complete_prefix;
@@ -441,90 +389,57 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
         return env->NewStringUTF("Error: Tokenization failed");
     }
 
-    size_t n_keep = 0;
-    while (n_keep < state->history_tokens.size() &&
-           n_keep < prompt_tokens.size() &&
-           state->history_tokens[n_keep] == prompt_tokens[n_keep]) {
-        n_keep++;
+    // Reset KV cache to prevent stale context / desync on back-to-back prompts
+    llama_memory_t kv = llama_get_memory(state->ctx);
+    llama_memory_clear(kv, true);
+    state->history_tokens.clear();
+
+    const int n_ctx_max = llama_n_ctx(state->ctx);
+    const int n_prompt = (int)prompt_tokens.size();
+    if (n_prompt >= n_ctx_max - 16) {
+        LOGE("Prompt (%d tokens) exceeds context capacity (%d)", n_prompt, n_ctx_max);
+        return env->NewStringUTF("Error: Prompt exceeds context window");
     }
 
-    if (n_keep < state->history_tokens.size()) {
-        llama_memory_t kv = llama_get_memory(state->ctx);
-        llama_memory_seq_rm(kv, 0, n_keep, -1);
-        state->history_tokens.resize(n_keep);
+    // Evaluate prompt tokens in batches of up to 512
+    for (int i = 0; i < n_prompt; i += 512) {
+        int n_eval = std::min(n_prompt - i, 512);
+        llama_batch batch = llama_batch_init(n_eval, 0, 1);
+        batch.n_tokens = n_eval;
+        for (int j = 0; j < n_eval; ++j) {
+            batch.token[j] = prompt_tokens[i + j];
+            batch.pos[j] = i + j;
+            batch.n_seq_id[j] = 1;
+            batch.seq_id[j][0] = 0;
+            batch.logits[j] = (i + j == n_prompt - 1);
+        }
+
+        int decode_res = llama_decode(state->ctx, batch);
+        llama_batch_free(batch);
+        if (decode_res != 0) {
+            LOGE("Llama prompt decode failed with status %d", decode_res);
+            llama_memory_clear(kv, true);
+            return env->NewStringUTF("Error: Decode failed");
+        }
     }
 
-    size_t n_new = prompt_tokens.size() - n_keep;
-    if (n_new == 0 && n_keep > 0) {
-        n_keep--;
-        llama_memory_t kv = llama_get_memory(state->ctx);
-        llama_memory_seq_rm(kv, 0, n_keep, -1);
-        state->history_tokens.resize(n_keep);
-        n_new = prompt_tokens.size() - n_keep;
-    }
-
-    if (n_new > 0) {
-        state->history_tokens.insert(state->history_tokens.end(),
-                                     prompt_tokens.begin() + n_keep,
-                                     prompt_tokens.end());
-    }
-
+    // Setup sampler
     struct llama_sampler * smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
     llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
     llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.95f, 1));
     llama_sampler_chain_add(smpl, llama_sampler_init_temp(temp));
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
-    // Track where the prompt ends so we can trim generated tokens after inference
-    size_t prompt_end_pos = state->history_tokens.size();
-
     std::string response = "";
     std::string utf8_buffer = "";
     int n_generated = 0;
-    size_t current_pos = n_keep;
-    size_t total_tokens = state->history_tokens.size();
+    int current_pos = n_prompt;
 
-    while (n_generated < max_tokens) {
-        size_t n_eval = total_tokens - current_pos;
-        if (n_eval == 0) {
-            break;
-        }
-
-        if (n_eval > 512) {
-            n_eval = 512;
-        }
-
-        llama_batch batch = llama_batch_init(n_eval, 0, 1);
-        batch.n_tokens = n_eval;
-        for (size_t i = 0; i < n_eval; ++i) {
-            batch.token[i] = state->history_tokens[current_pos + i];
-            batch.pos[i] = current_pos + i;
-            batch.n_seq_id[i] = 1;
-            batch.seq_id[i][0] = 0;
-            batch.logits[i] = (i == n_eval - 1);
-        }
-
-        int decode_res = llama_decode(state->ctx, batch);
-        if (decode_res != 0) {
-            LOGE("Llama decode failed with status %d — resetting KV cache and history for clean next call", decode_res);
-            llama_batch_free(batch);
-            llama_sampler_free(smpl);
-            // Reset state so the next call doesn't inherit a corrupted position
-            state->history_tokens.clear();
-            llama_memory_t kv = llama_get_memory(state->ctx);
-            llama_memory_clear(kv, true);
-            return env->NewStringUTF("Error: Decode failed");
-        }
-
-        current_pos += n_eval;
-        llama_batch_free(batch);
-
+    while (n_generated < max_tokens && current_pos < n_ctx_max - 1) {
         llama_token id = llama_sampler_sample(smpl, state->ctx, -1);
-        
-        state->history_tokens.push_back(id);
-        total_tokens++;
 
         if (llama_vocab_is_eog(vocab, id)) {
+            LOGI("EOG token (id=%d) detected, generation stopped", id);
             break;
         }
 
@@ -543,6 +458,24 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
         }
 
         n_generated++;
+
+        // Evaluate next token
+        llama_batch batch = llama_batch_init(1, 0, 1);
+        batch.n_tokens = 1;
+        batch.token[0] = id;
+        batch.pos[0] = current_pos;
+        batch.n_seq_id[0] = 1;
+        batch.seq_id[0][0] = 0;
+        batch.logits[0] = true;
+
+        int decode_res = llama_decode(state->ctx, batch);
+        llama_batch_free(batch);
+        if (decode_res != 0) {
+            LOGE("Llama token decode failed with status %d at pos %d", decode_res, current_pos);
+            break;
+        }
+
+        current_pos++;
     }
 
     // Flush any remaining trailing bytes
@@ -551,12 +484,6 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
         env->CallVoidMethod(callback, onTokenMethod, jpiece);
         env->DeleteLocalRef(jpiece);
     }
-
-    // Trim history back to prompt-only boundary — generated tokens should NOT be kept
-    // in history_tokens because they were never re-evaluated by the KV cache on the next call.
-    // The KV cache itself retains the positional state; history_tokens is only used for
-    // prefix matching on the NEXT call's prompt, not for tracking generated output.
-    state->history_tokens.resize(prompt_end_pos);
 
     llama_sampler_free(smpl);
     return env->NewStringUTF(response.c_str());

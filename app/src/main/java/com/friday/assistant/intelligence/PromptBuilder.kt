@@ -63,8 +63,10 @@ $memorySummary
         prompt.append(SYSTEM_INSTRUCTION.trim())
         prompt.append("<|im_end|>\n")
 
-        // Only include last 4 turns of history (8 messages: 4 user + 4 assistant)
-        val history = memoryManager.getWorkingMemory().takeLast(8)
+        // Only include last 4 valid turns of history (up to 8 messages), filtering out error messages
+        val history = memoryManager.getWorkingMemory().takeLast(8).filter { msg ->
+            !msg.content.startsWith("Error:") && !msg.content.startsWith("Failed to load")
+        }
         history.forEach { msg ->
             prompt.append("<|im_start|>").append(msg.role).append("\n")
                 .append(msg.content).append("<|im_end|>\n")
