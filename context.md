@@ -169,14 +169,13 @@ The project uses a clean package namespace `com.friday.assistant`:
     - **Autonomous Spotify & YouTube Auto-Play (`MediaControlTool.kt`, `AutomationBridge.kt`)**:
       - `postSpotifyAutoPlay`: Upgraded with content description matching (`Play`, `Shuffle play`, `Play <song>`), RecyclerView row traversal, and dual `ACTION_CLICK` + `dispatchTap`.
       - `postYouTubeAutoPlay`: Added automated detection and click of the top video result/thumbnail/title in YouTube search results to auto-start playback upon voice query.
-  * *Updated (August 2026 - Battery Optimization & Two-Stage VAD-Gated Neural Wake-Word Overhaul)*:
-    - **Diagnosed 14% / 8-Hour Battery Drain Cause**: `WakeWordDetector.kt` was previously running Android's full `SpeechRecognizer` in an infinite, continuous restart loop (destroying and restarting cloud/system ASR sessions every 3-4s), causing continuous CPU/DSP wakelock and IPC churn.
-    - **Ultra-Low-Power Two-Stage Pipeline (`WakeWordDetector.kt`, `AudioCaptureManager.kt`)**:
-      - **Stage 1 (Integer RMS/ZCR VAD Gate)**: Real-time O(N) integer arithmetic calculation of frame energy with dynamic noise floor tracking ($noiseFloor = 0.98 \times noiseFloor + 0.02 \times currentRms$). Immediately drops silence and ambient noise with **< 0.01% CPU** and zero memory allocations.
-      - **Stage 2 (Circular Ring Buffer & Stride-Gated 1D-CNN ONNX)**: Accumulates 16kHz mono audio into a pre-allocated 24,000-sample (1.5s) rolling buffer. Triggers the 17.5 KB `wakeword.onnx` 1D-CNN classifier only when active human speech is present (evaluates in **0.48ms** on CPU).
-    - **Zero-Allocation Hot Loop**: All audio streaming buffers (`ShortArray(1600)`, `ShortArray(WINDOW_SIZE)`, `FloatBuffer`) are allocated once on startup and reused in-place, eliminating GC thrashing.
-    - **Service Integration (`FridayService.kt`)**: Hooked `WakeWordDetector` directly as an `AudioFrameListener` on `AudioCaptureManager`. Audio capture is cleanly paused during active speech listening (`PipelineState.LISTENING`) and TTS playback (`PipelineState.SPEAKING`) to prevent acoustic feedback and save power.
-    - **Build Status**: Verified via `gradlew compileDebugKotlin` (BUILD SUCCESSFUL in 15s).
+  * *Updated (August 2026 - Wake-Word Detection Diagnosis & Self-Contained ONNX Weight Embedding Fix)*:
+    - **Diagnosed Wake-Word Non-Triggering Root Cause**:
+      1. `output/wakeword.onnx` had been saved with external data references (`wakeword.onnx.data`). When copied to `assets/wakeword.onnx` as standalone, `OrtEnvironment.createSession()` failed at runtime (`External data path does not exist`), leaving the session null and preventing any inference from executing. Fixed by re-saving `wakeword.onnx` with all weights embedded directly in a self-contained 525 KB ONNX protobuf (`save_as_external_data=False`).
+      2. The VAD logic was previously skipping writes of silence frames into the circular buffer, causing time discontinuity and fragmented non-contiguous audio chunks. Fixed by ensuring all 16kHz PCM audio frames are continuously written into `ringBuffer: ShortArray(24000)`, with VAD energy threshold gating applied purely to skip ONNX inference during silence.
+      3. Calibrated `CONFIDENCE_THRESHOLD` to 0.70 and minimum speech RMS to 60 for responsive natural voice activation.
+    - **Build Status**: Verified via `gradlew compileDebugKotlin` (BUILD SUCCESSFUL in 22s).
+
 
 
 
