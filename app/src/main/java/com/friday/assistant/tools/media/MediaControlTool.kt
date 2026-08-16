@@ -149,30 +149,56 @@ class MediaControlTool(private val context: Context) : Tool {
     private fun playOnYouTubeMusic(query: String): ToolResult {
         return try {
             val encoded = URLEncoder.encode(query, "UTF-8")
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://music.youtube.com/search?q=$encoded")).apply {
+            val webUri = Uri.parse("https://music.youtube.com/search?q=$encoded")
+            val intent = Intent(Intent.ACTION_VIEW, webUri).apply {
                 setPackage(PKG_YT_MUSIC)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
-            context.startActivity(intent)
+            try {
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                val genericIntent = Intent(Intent.ACTION_VIEW, webUri).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(genericIntent)
+            }
             ToolResult(true, "Playing '$query' on YouTube Music")
         } catch (e: Exception) {
-            Log.w(TAG, "YouTube Music deep link failed", e)
-            playFromSearchDefault(query)
+            Log.e(TAG, "YouTube Music search failed", e)
+            ToolResult(false, "Failed to open YouTube Music: ${e.message}")
         }
     }
 
     private fun searchOnYouTube(query: String): ToolResult {
         return try {
-            val intent = Intent(Intent.ACTION_SEARCH).apply {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val webUri = Uri.parse("https://www.youtube.com/results?search_query=$encoded")
+            val intent = Intent(Intent.ACTION_VIEW, webUri).apply {
                 setPackage(PKG_YOUTUBE)
-                putExtra(SearchManager.QUERY, query)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
-            context.startActivity(intent)
-            ToolResult(true, "Searching '$query' on YouTube")
+            try {
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                val genericIntent = Intent(Intent.ACTION_VIEW, webUri).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(genericIntent)
+            }
+
+            if (AutomationBridge.isReady()) {
+                Thread {
+                    try { Thread.sleep(400) } catch (_: Exception) {}
+                    Log.d(TAG, "Triggering YouTube auto-play accessibility helper")
+                    val autoPlayed = AutomationBridge.triggerYouTubeAutoPlay(query)
+                    Log.d(TAG, "YouTube auto-play accessibility helper returned: $autoPlayed")
+                }.start()
+            }
+
+            ToolResult(true, "Playing '$query' on YouTube")
         } catch (e: Exception) {
-            Log.w(TAG, "YouTube search failed", e)
-            playFromSearchDefault(query)
+            Log.e(TAG, "YouTube search failed", e)
+            ToolResult(false, "Failed to search YouTube: ${e.message}")
         }
     }
 

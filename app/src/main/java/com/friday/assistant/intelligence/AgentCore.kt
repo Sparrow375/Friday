@@ -126,10 +126,10 @@ class AgentCore(
 
         // 4. Direct Command Execution (bypassed if routeToLlm is true)
         if (!routeToLlm) {
-            handleBriefingAndAlarms(cleanQuery, matchedIntent, preprocessed, confidence)?.let { return it }
+            handleBriefingAndAlarms(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
             handleMessagingAndCalls(cleanQuery, matchedIntent, preprocessed, nluSlots)?.let { return it }
-            handleSystemControls(cleanQuery, matchedIntent, preprocessed, confidence)?.let { return it }
-            handleMedia(cleanQuery, matchedIntent, preprocessed)?.let { return it }
+            handleSystemControls(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
+            handleMedia(cleanQuery, matchedIntent, preprocessed, nluSlots)?.let { return it }
             handleNotesAndPreferences(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
             handleAppsAndNavigation(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
         }
@@ -180,6 +180,7 @@ class AgentCore(
         cleanQuery: String,
         matchedIntent: String,
         preprocessed: PreprocessedInput,
+        nluSlots: Map<String, String>,
         confidence: Float
     ): QueryResult? {
         val isReadBriefing = cleanQuery.contains("read briefing") ||
@@ -251,7 +252,8 @@ class AgentCore(
             val labelMatch = ALARM_LABEL_REGEX.find(preprocessed.originalText)
             if (labelMatch != null) label = labelMatch.groupValues[1].trim()
             
-            val timeMatch = ALARM_TIME_REGEX.find(preprocessed.originalText)
+            val timeText = nluSlots["TIME"] ?: preprocessed.originalText
+            val timeMatch = ALARM_TIME_REGEX.find(timeText)
             if (timeMatch != null) {
                 var h = timeMatch.groupValues[1].toInt()
                 val m = if (timeMatch.groupValues[2].isNotEmpty()) timeMatch.groupValues[2].toInt() else 0
@@ -287,7 +289,8 @@ class AgentCore(
             val labelMatch = TIMER_LABEL_REGEX.find(preprocessed.originalText)
             if (labelMatch != null) label = labelMatch.groupValues[1].trim()
             
-            val durationMatch = TIMER_DURATION_REGEX.find(preprocessed.originalText)
+            val durText = nluSlots["TIME"] ?: preprocessed.originalText
+            val durationMatch = TIMER_DURATION_REGEX.find(durText)
             if (durationMatch != null) {
                 val value = durationMatch.groupValues[1].toInt()
                 val unit = durationMatch.groupValues[2].lowercase()
@@ -435,6 +438,7 @@ class AgentCore(
         cleanQuery: String,
         matchedIntent: String,
         preprocessed: PreprocessedInput,
+        nluSlots: Map<String, String>,
         confidence: Float
     ): QueryResult? {
         if (EntityExtractor.isScreenshotQuery(cleanQuery) || matchedIntent == "take_screenshot") {
@@ -470,7 +474,7 @@ class AgentCore(
 
         val isVolumeQuery = cleanQuery.contains("volume") || cleanQuery.contains("sound") || cleanQuery.contains("audio") || cleanQuery.contains("mute") || cleanQuery.contains("unmute") || cleanQuery.contains("louder") || cleanQuery.contains("quieter") || matchedIntent == "volume_up" || matchedIntent == "volume_down"
         if (isVolumeQuery) {
-            val actionVal = when {
+            val actionVal = nluSlots["VALUE"] ?: when {
                 cleanQuery.contains("unmute") -> "50%"
                 cleanQuery.contains("mute") || cleanQuery.contains("silent") || cleanQuery.contains("silence") -> "mute"
                 cleanQuery.contains("max") || cleanQuery.contains("full") || cleanQuery.contains("maximum") || cleanQuery.contains("100%") -> "100%"
@@ -498,7 +502,7 @@ class AgentCore(
             cleanQuery.contains("brighter") || cleanQuery.contains("dimmer") ||
             matchedIntent == "brightness_up" || matchedIntent == "brightness_down"
         if (isBrightnessQuery) {
-            val actionVal = when {
+            val actionVal = nluSlots["VALUE"] ?: when {
                 cleanQuery.contains("max") || cleanQuery.contains("full") || cleanQuery.contains("maximum") || cleanQuery.contains("100%") || cleanQuery.contains("brightest") || cleanQuery.contains("highest") -> "100%"
                 cleanQuery.contains("low") || cleanQuery.contains("minimum") || cleanQuery.contains("lowest") || cleanQuery.contains("darkest") || cleanQuery.contains("0%") || cleanQuery.contains("10%") -> "10%"
                 cleanQuery.contains("medium") || cleanQuery.contains("half") || cleanQuery.contains("50%") -> "50%"
@@ -524,7 +528,7 @@ class AgentCore(
         if (isTorchQuery) {
             val isOff = cleanQuery.contains("off") || cleanQuery.contains("disable") || cleanQuery.contains("stop") || cleanQuery.contains("deactivate")
             val isOn = cleanQuery.contains("on") || cleanQuery.contains("enable") || cleanQuery.contains("start") || cleanQuery.contains("activate")
-            val hasStrengthWord = cleanQuery.contains("strength") || cleanQuery.contains("level") || cleanQuery.contains("intensity") || cleanQuery.contains("brightness") || cleanQuery.contains("max") || cleanQuery.contains("full") || cleanQuery.contains("medium") || cleanQuery.contains("half") || cleanQuery.contains("low") || TORCH_DIGIT_REGEX.containsMatchIn(cleanQuery)
+            val hasStrengthWord = cleanQuery.contains("strength") || cleanQuery.contains("level") || cleanQuery.contains("intensity") || cleanQuery.contains("brightness") || cleanQuery.contains("max") || cleanQuery.contains("full") || cleanQuery.contains("medium") || cleanQuery.contains("half") || cleanQuery.contains("low") || TORCH_DIGIT_REGEX.containsMatchIn(cleanQuery) || nluSlots.containsKey("VALUE")
 
             val tool = ToolRegistry.get("system_control")
             if (tool != null) {
@@ -535,8 +539,8 @@ class AgentCore(
                         addProperty("value", "off")
                     })
                     return if (result.success) fast(result.data, "torch", "off") else QueryResult("Failed to toggle flashlight.", true)
-                } else if (hasStrengthWord) {
-                    val pctVal = when {
+                } else if (hasStrengthWord || matchedIntent == "torch_strength") {
+                    val pctVal = nluSlots["VALUE"] ?: when {
                         cleanQuery.contains("max") || cleanQuery.contains("full") || cleanQuery.contains("maximum") || cleanQuery.contains("100%") || cleanQuery.contains("high") -> "100%"
                         cleanQuery.contains("low") || cleanQuery.contains("minimum") || cleanQuery.contains("lowest") || cleanQuery.contains("darkest") || cleanQuery.contains("20%") -> "20%"
                         cleanQuery.contains("medium") || cleanQuery.contains("half") || cleanQuery.contains("50%") -> "50%"
@@ -709,7 +713,8 @@ class AgentCore(
     private suspend fun handleMedia(
         cleanQuery: String,
         matchedIntent: String,
-        preprocessed: PreprocessedInput
+        preprocessed: PreprocessedInput,
+        nluSlots: Map<String, String>
     ): QueryResult? {
         if (cleanQuery.contains("pause") && (cleanQuery.contains("music") || cleanQuery.contains("media") || cleanQuery.contains("playback")) ||
             matchedIntent == "pause_media" || cleanQuery == "pause" || cleanQuery == "pause it") {
@@ -749,13 +754,14 @@ class AgentCore(
             MUSIC_PLAY_REGEX.containsMatchIn(cleanQuery) ||
             MUSIC_LISTEN_REGEX.containsMatchIn(cleanQuery)
         if (isPlayMedia && !EntityExtractor.isScreenshotQuery(cleanQuery)) {
-            val (mediaQuery, targetApp) = EntityExtractor.extractMediaQuery(preprocessed.originalText)
+            val (regexQuery, targetApp) = EntityExtractor.extractMediaQuery(preprocessed.originalText)
+            val mediaQuery = (nluSlots["QUERY"] ?: regexQuery).trim()
+            val app = when (matchedIntent) {
+                "play_spotify" -> "spotify"
+                "play_youtube" -> "youtube"
+                else -> nluSlots["APP"] ?: targetApp
+            }
             if (mediaQuery.isNotEmpty()) {
-                val app = targetApp ?: when (matchedIntent) {
-                    "play_spotify" -> "spotify"
-                    "play_youtube" -> "youtube"
-                    else -> null
-                }
                 _agentStatusFlow.emit("Playing $mediaQuery${if (app != null) " on $app" else ""}...")
                 val mediaTool = ToolRegistry.get("media_control")
                 if (mediaTool != null) {
@@ -969,15 +975,15 @@ class AgentCore(
             }
         }
 
-        val isSearchReddit = matchedIntent == "search_reddit" && confidence > 0.7f ||
+        val isSearchReddit = matchedIntent == "search_reddit" && confidence > 0.6f ||
                 cleanQuery.contains("on reddit") || cleanQuery.contains("reddit search")
         if (isSearchReddit) {
-            var searchPhrase = preprocessed.originalText
-            val match = REDDIT_REGEX.matchEntire(cleanQuery)
-            if (match != null) {
-                searchPhrase = match.groupValues[1].replace("search", "").replace("for", "").trim()
+            var searchPhrase = nluSlots["QUERY"]
+            if (searchPhrase.isNullOrBlank()) {
+                val match = REDDIT_REGEX.matchEntire(cleanQuery)
+                searchPhrase = match?.groupValues?.get(1)?.replace("search", "")?.replace("for", "")?.trim()
             }
-            if (searchPhrase.isEmpty()) searchPhrase = preprocessed.originalText
+            if (searchPhrase.isNullOrBlank()) searchPhrase = preprocessed.originalText
 
             _agentStatusFlow.emit("Searching on Reddit...")
             return try {
@@ -992,12 +998,18 @@ class AgentCore(
             }
         }
 
-        val isSearchGoogle = matchedIntent == "search_google" && confidence > 0.7f ||
+        val isSearchGoogle = matchedIntent == "search_google" || (matchedIntent == "web_search" && confidence > 0.6f) ||
                 cleanQuery.startsWith("google ") || cleanQuery.contains("search google") ||
                 cleanQuery.contains("search the web for") ||
                 (cleanQuery.contains("look this up") && !cleanQuery.contains("reddit"))
         if (isSearchGoogle) {
-            var searchPhrase = cleanQuery.replace(GOOGLE_STRIP_REGEX, "").trim()
+            var searchPhrase = nluSlots["QUERY"]
+            if (searchPhrase.isNullOrBlank()) {
+                searchPhrase = cleanQuery
+                    .replace(Regex("(?i)^(?:google|search google for|search for|search|look up)\\s+"), "")
+                    .replace(Regex("(?i)\\s+on\\s+google$"), "")
+                    .trim()
+            }
             if (searchPhrase.isEmpty()) searchPhrase = preprocessed.originalText
             _agentStatusFlow.emit("Searching Google...")
             val searchTool = ToolRegistry.get("web_search")

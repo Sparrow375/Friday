@@ -6,7 +6,7 @@ package com.friday.assistant.intelligence
  */
 object DialogueStateTracker {
 
-    private const val CONTEXT_TTL_MS = 90_000L // 90 seconds
+    private const val CONTEXT_TTL_MS = 15_000L // 15 seconds active follow-up window
 
     data class ActiveContext(
         val domain: String,
@@ -21,6 +21,10 @@ object DialogueStateTracker {
         activeContext = ActiveContext(domain, action)
     }
 
+    fun clear() {
+        activeContext = null
+    }
+
     fun getActiveDomain(): String? {
         val ctx = activeContext ?: return null
         if (System.currentTimeMillis() - ctx.timestamp > CONTEXT_TTL_MS) {
@@ -31,7 +35,9 @@ object DialogueStateTracker {
     }
 
     fun biasConfidence(intent: String, confidence: Float): Float {
+        // Only apply a subtle bias (+0.05) if confidence is already solid (>0.50) within the short follow-up window
         val domain = getActiveDomain() ?: return confidence
+        if (confidence < 0.50f) return confidence
         val matches = when (domain) {
             "torch" -> intent == "torch_toggle" || intent == "torch_strength"
             "wifi" -> intent == "wifi_toggle"
@@ -48,12 +54,7 @@ object DialogueStateTracker {
             else -> false
         }
         return if (matches) {
-            val biased = (confidence + 0.15f).coerceAtMost(1.0f)
-            com.friday.assistant.core.FridayLogger.d(
-                "DialogueStateTracker",
-                "Biasing intent '$intent' score from $confidence to $biased based on active domain '$domain'"
-            )
-            biased
+            (confidence + 0.05f).coerceAtMost(1.0f)
         } else {
             confidence
         }

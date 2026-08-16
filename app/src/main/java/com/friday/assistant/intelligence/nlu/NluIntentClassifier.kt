@@ -18,7 +18,6 @@ class NluIntentClassifier(private val context: Context) {
     companion object {
         private const val TAG = "NluIntentClassifier"
         private const val MODEL_NAME = "joint_nlu_model.onnx"
-        private const val LEGACY_MODEL_NAME = "nlu_model.onnx"
         private const val VOCAB_NAME = "vocab.txt"
         private const val LABELS_NAME = "labels.txt"
         private const val SLOT_LABELS_NAME = "slot_labels.txt"
@@ -76,7 +75,6 @@ class NluIntentClassifier(private val context: Context) {
         try {
             val destDir = context.getExternalFilesDir("models") ?: context.filesDir
             val modelFile = File(destDir, MODEL_NAME)
-            val legacyModelFile = File(destDir, LEGACY_MODEL_NAME)
             val vocabFile = File(destDir, VOCAB_NAME)
             val labelsFile = File(destDir, LABELS_NAME)
             val slotLabelsFile = File(destDir, SLOT_LABELS_NAME)
@@ -84,54 +82,64 @@ class NluIntentClassifier(private val context: Context) {
             var modelBytes: ByteArray? = null
             var tokenizerLoaded = false
 
-            // 1. Load Intent Labels
+            // 1. Load Intent Labels (Assets prioritized / verified to have 46 classes)
             val loadedLabels = mutableListOf<String>()
-            if (labelsFile.exists()) {
+            val assetsList = context.assets.list("") ?: emptyArray()
+            if (assetsList.contains(LABELS_NAME)) {
+                context.assets.open(LABELS_NAME).bufferedReader().useLines { lines ->
+                    lines.forEach { line ->
+                        val lbl = line.trim()
+                        if (lbl.isNotEmpty()) loadedLabels.add(lbl)
+                    }
+                }
+            }
+            if (loadedLabels.size >= 46) {
+                intentLabels = loadedLabels
+                Log.i(TAG, "Loaded ${loadedLabels.size} intent labels from assets")
+            } else if (labelsFile.exists()) {
                 labelsFile.forEachLine { line ->
                     val lbl = line.trim()
                     if (lbl.isNotEmpty()) loadedLabels.add(lbl)
                 }
-            } else {
-                val assetsList = context.assets.list("") ?: emptyArray()
-                if (assetsList.contains(LABELS_NAME)) {
-                    context.assets.open(LABELS_NAME).bufferedReader().useLines { lines ->
-                        lines.forEach { line ->
-                            val lbl = line.trim()
-                            if (lbl.isNotEmpty()) loadedLabels.add(lbl)
-                        }
+                if (loadedLabels.size >= 46) {
+                    intentLabels = loadedLabels
+                    Log.i(TAG, "Loaded ${loadedLabels.size} intent labels from file")
+                }
+            }
+
+            // 2. Load Slot Labels (Assets prioritized / verified to have 23 tags)
+            val loadedSlotLabels = mutableListOf<String>()
+            if (assetsList.contains(SLOT_LABELS_NAME)) {
+                context.assets.open(SLOT_LABELS_NAME).bufferedReader().useLines { lines ->
+                    lines.forEach { line ->
+                        val lbl = line.trim()
+                        if (lbl.isNotEmpty()) loadedSlotLabels.add(lbl)
                     }
                 }
             }
-            if (loadedLabels.isNotEmpty()) {
-                intentLabels = loadedLabels
-                Log.i(TAG, "Loaded ${loadedLabels.size} intent labels dynamically")
-            }
-
-            // 2. Load Slot Labels
-            val loadedSlotLabels = mutableListOf<String>()
-            if (slotLabelsFile.exists()) {
+            if (loadedSlotLabels.size >= 23) {
+                slotLabels = loadedSlotLabels
+                Log.i(TAG, "Loaded ${loadedSlotLabels.size} slot labels from assets")
+            } else if (slotLabelsFile.exists()) {
                 slotLabelsFile.forEachLine { line ->
                     val lbl = line.trim()
                     if (lbl.isNotEmpty()) loadedSlotLabels.add(lbl)
                 }
-            } else {
-                val assetsList = context.assets.list("") ?: emptyArray()
-                if (assetsList.contains(SLOT_LABELS_NAME)) {
-                    context.assets.open(SLOT_LABELS_NAME).bufferedReader().useLines { lines ->
-                        lines.forEach { line ->
-                            val lbl = line.trim()
-                            if (lbl.isNotEmpty()) loadedSlotLabels.add(lbl)
-                        }
-                    }
+                if (loadedSlotLabels.size >= 23) {
+                    slotLabels = loadedSlotLabels
+                    Log.i(TAG, "Loaded ${loadedSlotLabels.size} slot labels from file")
                 }
             }
-            if (loadedSlotLabels.isNotEmpty()) {
-                slotLabels = loadedSlotLabels
-                Log.i(TAG, "Loaded ${loadedSlotLabels.size} slot labels dynamically")
-            }
 
-            // 3. Load Model Bytes & Tokenizer
-            if (modelFile.exists() && vocabFile.exists()) {
+            // 3. Load Model Bytes & Tokenizer (Canonical Joint NLU from assets)
+            if (assetsList.contains(MODEL_NAME) && assetsList.contains(VOCAB_NAME)) {
+                Log.i(TAG, "Loading canonical Joint NLU model from assets: $MODEL_NAME")
+                context.assets.open(MODEL_NAME).use { input ->
+                    modelBytes = input.readBytes()
+                }
+                tokenizer = WordpieceTokenizer.loadFromAssets(context, VOCAB_NAME)
+                tokenizerLoaded = true
+            } else if (modelFile.exists() && vocabFile.exists()) {
                 Log.i(TAG, "Loading Joint NLU model from files: ${modelFile.absolutePath}")
                 modelBytes = modelFile.readBytes()
                 val vocabMap = mutableMapOf<String, Int>()
@@ -143,21 +151,6 @@ class NluIntentClassifier(private val context: Context) {
                 }
                 tokenizer = WordpieceTokenizer(vocabMap)
                 tokenizerLoaded = true
-            } else {
-                val assetsList = context.assets.list("") ?: emptyArray()
-                val chosenModelName = when {
-                    assetsList.contains(MODEL_NAME) -> MODEL_NAME
-                    assetsList.contains(LEGACY_MODEL_NAME) -> LEGACY_MODEL_NAME
-                    else -> null
-                }
-                if (chosenModelName != null && assetsList.contains(VOCAB_NAME)) {
-                    Log.i(TAG, "Loading Joint NLU model from assets: $chosenModelName")
-                    context.assets.open(chosenModelName).use { input ->
-                        modelBytes = input.readBytes()
-                    }
-                    tokenizer = WordpieceTokenizer.loadFromAssets(context, VOCAB_NAME)
-                    tokenizerLoaded = true
-                }
             }
 
             if (modelBytes != null && tokenizerLoaded) {

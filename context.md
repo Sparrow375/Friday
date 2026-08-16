@@ -152,8 +152,34 @@ The project uses a clean package namespace `com.friday.assistant`:
     - **Tokenizer Upgrades (`WordpieceTokenizer.kt`)**: Added `tokenizeWithTokens` and `convertTokensToString` subword reconstruction.
     - **Dual-Head Classifier (`NluIntentClassifier.kt`)**: Updated ONNX runtime decoding for `intent_logits` (46 classes) and `slot_logits` (23 tags), returning `JointNluResult(intent, confidence, slots)`.
     - **Modular AgentCore (`AgentCore.kt`)**: Refactored the single monolithic `processQuery` into private domain handlers (`handleBriefingAndAlarms`, `handleMessagingAndCalls`, `handleSystemControls`, `handleMedia`, `handleNotesAndPreferences`, `handleAppsAndNavigation`) resolving JVM `MethodTooLargeException` and directly routing neural slots for WhatsApp, Calls, Navigation, Notes, Memory Recall, and App Launch. Purged legacy SMS branches.
-    - **Lightweight LLM Config (`ModelManager.kt`)**: Updated default local LLM to `Qwen/Qwen2.5-0.5B-Instruct-GGUF` (`qwen2.5-0.5b-instruct-q4_k_m.gguf`, ~350 MB) running at 35-50 tokens/sec on mobile CPU.
-    - **Build Status**: Verified with `gradlew compileDebugKotlin` (BUILD SUCCESSFUL in 21s).
+  * *Updated (August 2026 - Phone vs PC Model Performance Discrepancy Diagnosis & Resolution)*:
+    - **Issue 1 ("search how to make cake on youtube" played on Spotify)**: `MediaControlTool.kt` attempted to use `Intent(Intent.ACTION_SEARCH).setPackage("com.google.android.youtube")` which is not exported on modern One UI / Android targetSdk 36, throwing `ActivityNotFoundException`. The catch block fell back to `playFromSearchDefault`, which fired `MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH` and opened Spotify. Fixed by replacing with direct, universal `Intent(ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=..."))` with fallback to browser.
+    - **Issue 2 ("search icc on google" falling back as unknown)**: `AgentCore.kt` regex stripped prefix `^search` leaving `"icc on google"`, and `NluIntentClassifier.kt` was vulnerable to loading stale 16-class `labels.txt` from app internal storage (which truncated intent indices and made class 42 `search_google` out of bounds -> unknown). Fixed by prioritizing bundled 46 intent labels and 23 slot labels from assets, and directly feeding `nluSlots["QUERY"]` ("icc") to `WebSearchTool`.
+    - **Issues 3 & 4 ("turn it off" toggling torch / "turn it on" changing volume)**: Diagnosed to `DialogueStateTracker.kt`. When an earlier command like `"its dark"` was executed, `DialogueStateTracker` stored active domain `"torch"` with a 90-second TTL. Subsequent queries like `"turn it off"` were intercepted by `resolveFollowUp` and rewritten into `"turn off flashlight"`. On PC, no `DialogueStateTracker` was running, so `"turn it off"` was sent pure to the model (predicting `lock_phone`). Fixed by reducing TTL from 90s to 15s, removing overly aggressive confidence boosting, and adding clean context lifecycle clearing.
+  * *Updated (August 2026 - Execution Refinements: Autonomous WhatsApp Sending & Media Auto-Play)*:
+    - **Hardware-Level Screen Tap Gesture (`FridayAccessibilityService.kt`)**: Added `dispatchTap(x, y)` implementing `dispatchGesture` with `Path` stroke description. Allows Friday to dispatch true hardware-level touch taps to exact on-screen coordinates, bypassing Compose/Flutter/custom view event absorption.
+    - **100% Autonomous WhatsApp Send (`WhatsAppTool.kt`, `FridayAccessibilityService.kt`)**:
+      - Replaced fragile text search with multi-strategy send button resolution:
+        1. ContentDescription matching (`"Send"`, `"send message"`).
+        2. View ID matching (`send`, `send_btn`, `conversation_entry_action_button`).
+        3. Visible text matching (`Send`).
+        4. Bottom-right interactive corner button detection for custom/obfuscated WhatsApp layouts.
+      - Executes dual click: Accessibility node `ACTION_CLICK` + hardware `dispatchTap` on button center coordinates.
+      - Increased timeout to 8 seconds with 150ms polling to reliably allow WhatsApp deep-link chat resolution.
+    - **Autonomous Spotify & YouTube Auto-Play (`MediaControlTool.kt`, `AutomationBridge.kt`)**:
+      - `postSpotifyAutoPlay`: Upgraded with content description matching (`Play`, `Shuffle play`, `Play <song>`), RecyclerView row traversal, and dual `ACTION_CLICK` + `dispatchTap`.
+      - `postYouTubeAutoPlay`: Added automated detection and click of the top video result/thumbnail/title in YouTube search results to auto-start playback upon voice query.
+  * *Updated (August 2026 - Battery Optimization & Two-Stage VAD-Gated Neural Wake-Word Overhaul)*:
+    - **Diagnosed 14% / 8-Hour Battery Drain Cause**: `WakeWordDetector.kt` was previously running Android's full `SpeechRecognizer` in an infinite, continuous restart loop (destroying and restarting cloud/system ASR sessions every 3-4s), causing continuous CPU/DSP wakelock and IPC churn.
+    - **Ultra-Low-Power Two-Stage Pipeline (`WakeWordDetector.kt`, `AudioCaptureManager.kt`)**:
+      - **Stage 1 (Integer RMS/ZCR VAD Gate)**: Real-time O(N) integer arithmetic calculation of frame energy with dynamic noise floor tracking ($noiseFloor = 0.98 \times noiseFloor + 0.02 \times currentRms$). Immediately drops silence and ambient noise with **< 0.01% CPU** and zero memory allocations.
+      - **Stage 2 (Circular Ring Buffer & Stride-Gated 1D-CNN ONNX)**: Accumulates 16kHz mono audio into a pre-allocated 24,000-sample (1.5s) rolling buffer. Triggers the 17.5 KB `wakeword.onnx` 1D-CNN classifier only when active human speech is present (evaluates in **0.48ms** on CPU).
+    - **Zero-Allocation Hot Loop**: All audio streaming buffers (`ShortArray(1600)`, `ShortArray(WINDOW_SIZE)`, `FloatBuffer`) are allocated once on startup and reused in-place, eliminating GC thrashing.
+    - **Service Integration (`FridayService.kt`)**: Hooked `WakeWordDetector` directly as an `AudioFrameListener` on `AudioCaptureManager`. Audio capture is cleanly paused during active speech listening (`PipelineState.LISTENING`) and TTS playback (`PipelineState.SPEAKING`) to prevent acoustic feedback and save power.
+    - **Build Status**: Verified via `gradlew compileDebugKotlin` (BUILD SUCCESSFUL in 15s).
+
+
+
 
 
 

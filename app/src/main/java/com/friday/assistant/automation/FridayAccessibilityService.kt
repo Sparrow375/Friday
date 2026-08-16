@@ -230,10 +230,43 @@ class FridayAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Dispatches a real physical screen tap gesture at coordinates (x, y).
+     * Works across standard Views, Jetpack Compose, Flutter, and custom Views.
+     */
+    fun dispatchTap(x: Float, y: Float, callback: ((Boolean) -> Unit)? = null) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val path = android.graphics.Path().apply {
+                moveTo(x, y)
+            }
+            val stroke = android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 100)
+            val gesture = android.accessibilityservice.GestureDescription.Builder()
+                .addStroke(stroke)
+                .build()
+
+            val dispatched = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: android.accessibilityservice.GestureDescription?) {
+                    super.onCompleted(gestureDescription)
+                    Log.d(TAG, "dispatchTap completed at ($x, $y)")
+                    callback?.invoke(true)
+                }
+
+                override fun onCancelled(gestureDescription: android.accessibilityservice.GestureDescription?) {
+                    super.onCancelled(gestureDescription)
+                    Log.w(TAG, "dispatchTap cancelled at ($x, $y)")
+                    callback?.invoke(false)
+                }
+            }, null)
+            if (!dispatched) callback?.invoke(false)
+        } else {
+            callback?.invoke(false)
+        }
+    }
+
+    /**
      * Tries to find and click the play button or first search result in Spotify.
      * Polls rootInActiveWindow for Spotify up to [timeoutMs] ms, then clicks the appropriate play element.
      */
-    fun postSpotifyAutoPlay(query: String, timeoutMs: Long = 4000L, callback: (Boolean) -> Unit) {
+    fun postSpotifyAutoPlay(query: String, timeoutMs: Long = 7000L, callback: (Boolean) -> Unit) {
         Thread {
             val deadline = System.currentTimeMillis() + timeoutMs
             var success = false
@@ -244,36 +277,55 @@ class FridayAccessibilityService : AccessibilityService() {
                     if (root != null) {
                         val pkg = root.packageName?.toString() ?: ""
                         if (pkg.contains("spotify", ignoreCase = true)) {
-                            // Find and click the play element or search result item
                             val playNode = findSpotifyPlayElement(root, query)
                             if (playNode != null) {
-                                var clicked = false
+                                val rect = android.graphics.Rect()
+                                playNode.getBoundsInScreen(rect)
+
                                 val latch = java.util.concurrent.CountDownLatch(1)
                                 mainHandler.post {
-                                    clicked = playNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                                    val target = findClickableNode(playNode) ?: playNode
+                                    target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                                    if (rect.width() > 0 && rect.height() > 0) {
+                                        dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat())
+                                    }
                                     latch.countDown()
                                 }
-                                latch.await(500, java.util.concurrent.TimeUnit.MILLISECONDS)
-                                if (clicked) {
-                                    success = true
-                                    break
-                                }
+                                latch.await(600, java.util.concurrent.TimeUnit.MILLISECONDS)
+                                success = true
+                                Log.i(TAG, "Spotify auto-play element clicked successfully at $rect")
+                                break
                             }
                         }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "postSpotifyAutoPlay poll error", e)
                 }
-                Thread.sleep(250)
+                Thread.sleep(200)
             }
             callback(success)
         }.start()
     }
 
     private fun findSpotifyPlayElement(root: AccessibilityNodeInfo, query: String): AccessibilityNodeInfo? {
-        val playButtons = listOf("play", "shuffle play", "shuffle", "resume")
-        
-        // Strategy 1: Look for "Play" / "Shuffle Play" buttons explicitly
+        val playButtons = listOf("play", "shuffle play", "shuffle", "resume", "play song", "play track")
+
+        // Strategy 1: Look for "Play" in contentDescription
+        val byContentDesc = walkTree(root) { node ->
+            val cd = node.contentDescription?.toString()?.lowercase() ?: ""
+            playButtons.any { cd == it || cd.startsWith("$it ") || cd.contains("play") }
+        }
+        if (byContentDesc != null) return byContentDesc
+
+        // Strategy 2: Look for play button viewIdResourceName
+        val playIds = listOf("play_button", "button_play_and_pause", "play_pause", "btn_play", "row_view", "card_view")
+        val byId = walkTree(root) { node ->
+            val rid = node.viewIdResourceName?.lowercase() ?: ""
+            playIds.any { rid.contains(it) } && node.isClickable
+        }
+        if (byId != null) return byId
+
+        // Strategy 3: Look for "Play" in text explicitly
         for (btnText in playButtons) {
             val nodes = root.findAccessibilityNodeInfosByText(btnText)
             if (!nodes.isNullOrEmpty()) {
@@ -285,35 +337,110 @@ class FridayAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Strategy 2: Search for nodes containing the query text
+        // Strategy 4: Search for nodes containing words from the query text
         if (query.isNotEmpty()) {
-            val nodes = root.findAccessibilityNodeInfosByText(query)
-            if (!nodes.isNullOrEmpty()) {
-                for (node in nodes) {
-                    if (node.isClickable) return node
-                    val clickable = findClickableNode(node)
-                    if (clickable != null) return clickable
+            val queryWords = query.lowercase().split(" ").filter { it.length > 2 }
+            for (w in queryWords) {
+                val nodes = root.findAccessibilityNodeInfosByText(w)
+                if (!nodes.isNullOrEmpty()) {
+                    for (node in nodes) {
+                        val clickable = findClickableNode(node)
+                        if (clickable != null) return clickable
+                    }
                 }
             }
         }
 
-        // Strategy 3: Find a RecyclerView child item to click on
-        val firstResult = walkTree(root) { node ->
-            val className = node.className?.toString() ?: ""
-            val isListItem = className.contains("ViewGroup") || className.contains("LinearLayout") || className.contains("RelativeLayout")
-            isListItem && node.isClickable && node.parent?.className?.toString()?.contains("RecyclerView") == true
-        }
-        if (firstResult != null) return firstResult
-
-        // Strategy 4: fallback to clicking the first clickable node inside a RecyclerView
+        // Strategy 5: Find a list item or card in RecyclerView
         val recyclerView = walkTree(root) { node ->
             node.className?.toString()?.contains("RecyclerView") == true
         }
         if (recyclerView != null && recyclerView.childCount > 0) {
-            val firstChild = recyclerView.getChild(0)
-            if (firstChild != null) {
-                if (firstChild.isClickable) return firstChild
-                val clickable = findClickableNode(firstChild)
+            for (i in 0 until minOf(3, recyclerView.childCount)) {
+                val child = recyclerView.getChild(i) ?: continue
+                val clickable = findClickableNode(child) ?: (if (child.isClickable) child else null)
+                if (clickable != null) return clickable
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Tries to find and click the first video in YouTube search results.
+     */
+    fun postYouTubeAutoPlay(query: String, timeoutMs: Long = 7000L, callback: (Boolean) -> Unit) {
+        Thread {
+            val deadline = System.currentTimeMillis() + timeoutMs
+            var success = false
+
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    val root = rootInActiveWindow
+                    if (root != null) {
+                        val pkg = root.packageName?.toString() ?: ""
+                        if (pkg.contains("youtube", ignoreCase = true)) {
+                            val videoNode = findYouTubeVideoElement(root, query)
+                            if (videoNode != null) {
+                                val rect = android.graphics.Rect()
+                                videoNode.getBoundsInScreen(rect)
+
+                                val latch = java.util.concurrent.CountDownLatch(1)
+                                mainHandler.post {
+                                    val target = findClickableNode(videoNode) ?: videoNode
+                                    target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                                    if (rect.width() > 0 && rect.height() > 0) {
+                                        dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat())
+                                    }
+                                    latch.countDown()
+                                }
+                                latch.await(600, java.util.concurrent.TimeUnit.MILLISECONDS)
+                                success = true
+                                Log.i(TAG, "YouTube video auto-play clicked successfully at $rect")
+                                break
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "postYouTubeAutoPlay poll error", e)
+                }
+                Thread.sleep(200)
+            }
+            callback(success)
+        }.start()
+    }
+
+    private fun findYouTubeVideoElement(root: AccessibilityNodeInfo, query: String): AccessibilityNodeInfo? {
+        // Strategy 1: Find video title/thumbnail matching query keywords
+        if (query.isNotEmpty()) {
+            val queryWords = query.lowercase().split(" ").filter { it.length > 2 }
+            for (w in queryWords) {
+                val nodes = root.findAccessibilityNodeInfosByText(w)
+                if (!nodes.isNullOrEmpty()) {
+                    for (node in nodes) {
+                        val clickable = findClickableNode(node)
+                        if (clickable != null) return clickable
+                    }
+                }
+            }
+        }
+
+        // Strategy 2: Look for viewId containing video/item/thumbnail/result
+        val videoIds = listOf("video_title", "thumbnail", "results", "item_layout", "grid_layout")
+        val byId = walkTree(root) { node ->
+            val rid = node.viewIdResourceName?.lowercase() ?: ""
+            videoIds.any { rid.contains(it) } && (node.isClickable || node.parent?.isClickable == true)
+        }
+        if (byId != null) return findClickableNode(byId) ?: byId
+
+        // Strategy 3: Find first clickable child in RecyclerView
+        val recyclerView = walkTree(root) { node ->
+            node.className?.toString()?.contains("RecyclerView") == true
+        }
+        if (recyclerView != null && recyclerView.childCount > 0) {
+            for (i in 0 until minOf(4, recyclerView.childCount)) {
+                val child = recyclerView.getChild(i) ?: continue
+                val clickable = findClickableNode(child) ?: (if (child.isClickable) child else null)
                 if (clickable != null) return clickable
             }
         }
@@ -337,11 +464,10 @@ class FridayAccessibilityService : AccessibilityService() {
 
     /**
      * After a WhatsApp chat is opened (via deep link), waits for the send button
-     * to appear and taps it. Polls for up to [timeoutMs] ms.
+     * to appear and taps it autonomously using both Accessibility Action and hardware Touch Tap.
+     * Polls for up to [timeoutMs] ms.
      */
-    fun postWhatsAppSend(timeoutMs: Long = 4000L, callback: (Boolean) -> Unit) {
-        // Run on a background thread — polling with Thread.sleep() on the main thread
-        // blocks rootInActiveWindow from seeing the WhatsApp window.
+    fun postWhatsAppSend(timeoutMs: Long = 7000L, callback: (Boolean) -> Unit) {
         Thread {
             val deadline = System.currentTimeMillis() + timeoutMs
             var sent = false
@@ -354,22 +480,29 @@ class FridayAccessibilityService : AccessibilityService() {
                         if (pkg.contains("whatsapp", ignoreCase = true)) {
                             val sendNode = findWhatsAppSendButton(root)
                             if (sendNode != null) {
-                                // Perform click on main thread, then wait for it to register
-                                var clickResult = false
+                                val rect = android.graphics.Rect()
+                                sendNode.getBoundsInScreen(rect)
+
                                 val latch = java.util.concurrent.CountDownLatch(1)
                                 mainHandler.post {
-                                    clickResult = sendNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                                    val target = findClickableNode(sendNode) ?: sendNode
+                                    target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                                    if (rect.width() > 0 && rect.height() > 0) {
+                                        dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat())
+                                    }
                                     latch.countDown()
                                 }
-                                latch.await(500, java.util.concurrent.TimeUnit.MILLISECONDS)
-                                if (clickResult) { sent = true; break }
+                                latch.await(600, java.util.concurrent.TimeUnit.MILLISECONDS)
+                                sent = true
+                                Log.i(TAG, "WhatsApp Send button clicked successfully! (bounds: $rect)")
+                                break
                             }
                         }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "postWhatsAppSend poll error", e)
                 }
-                Thread.sleep(200)
+                Thread.sleep(150)
             }
 
             callback(sent)
@@ -377,18 +510,23 @@ class FridayAccessibilityService : AccessibilityService() {
     }
 
     private fun findWhatsAppSendButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        // WhatsApp send button identifiers across versions
-        val sendIds = listOf("send", "send_btn", "conversation_entry_action_button")
-        val sendLabels = listOf("Send", "send")
+        // Strategy 1: Search by content description (WhatsApp's icon button uses contentDescription="Send")
+        val byContentDesc = walkTree(root) { node ->
+            val cd = node.contentDescription?.toString()?.trim() ?: ""
+            cd.equals("Send", ignoreCase = true) || cd.equals("send", ignoreCase = true) || cd.contains("send message", ignoreCase = true) || cd.contains("send", ignoreCase = true)
+        }
+        if (byContentDesc != null) return byContentDesc
 
-        // viewIdResourceName search
+        // Strategy 2: Search by viewIdResourceName
+        val sendIds = listOf("send", "send_btn", "conversation_entry_action_button", "entry_action", "send_button")
         val byId = walkTree(root) { node ->
             val rid = node.viewIdResourceName?.lowercase() ?: ""
-            sendIds.any { rid.endsWith(it) }
+            sendIds.any { rid.endsWith(it) || rid.contains(it) }
         }
         if (byId != null) return byId
 
-        // contentDescription / text search
+        // Strategy 3: Search by visible text
+        val sendLabels = listOf("Send", "send")
         for (label in sendLabels) {
             val nodes = root.findAccessibilityNodeInfosByText(label)
             if (!nodes.isNullOrEmpty()) {
@@ -399,6 +537,27 @@ class FridayAccessibilityService : AccessibilityService() {
                 }
             }
         }
+
+        // Strategy 4: Find ImageButton / ImageView at bottom-right corner of screen
+        val screenBounds = android.graphics.Rect()
+        root.getBoundsInScreen(screenBounds)
+        val screenWidth = screenBounds.width()
+        val screenHeight = screenBounds.height()
+
+        if (screenWidth > 0 && screenHeight > 0) {
+            val bottomCornerButton = walkTree(root) { node ->
+                val nodeRect = android.graphics.Rect()
+                node.getBoundsInScreen(nodeRect)
+                val isBottom = nodeRect.bottom > screenHeight * 0.50
+                val isRight = nodeRect.right > screenWidth * 0.70
+                val isButton = node.className?.toString()?.contains("Button") == true ||
+                    node.className?.toString()?.contains("Image") == true ||
+                    node.isClickable
+                isBottom && isRight && isButton && nodeRect.width() > 30 && nodeRect.height() > 30
+            }
+            if (bottomCornerButton != null) return bottomCornerButton
+        }
+
         return null
     }
 }

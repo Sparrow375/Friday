@@ -61,6 +61,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     // FridayApplication.memoryManager) — accessed via property delegation to avoid duplicating
     // the heavy NLU ONNX session on every service restart.
     private val agentCore: AgentCore get() = FridayApplication.agentCore
+    private lateinit var audioCaptureManager: com.friday.assistant.audio.AudioCaptureManager
     private lateinit var speechToTextHelper: SpeechToTextHelper
     private var wakeWordDetector: com.friday.assistant.audio.WakeWordDetector? = null
     
@@ -84,9 +85,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         // 1. Initialize core logic components
         modelManager = ModelManager(this)
-        // memoryManager and agentCore are shared singletons held by FridayApplication.
-        // Touching FridayApplication.agentCore here ensures the lazy is initialised on the
-        // main thread (safe — no heavy work happens inside the lazy block itself).
+        audioCaptureManager = com.friday.assistant.audio.AudioCaptureManager(this)
         FridayApplication.agentCore  // warm up singleton
 
         // 2. Register Agentic Tools
@@ -137,9 +136,9 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             overlayManager?.updateState(pipelineState.value, statusText)
         }.launchIn(serviceScope)
 
-        // 7. Setup Wake Word Detector
+        // 7. Setup Two-Stage Neural Wake Word Detector
         wakeWordDetector = com.friday.assistant.audio.WakeWordDetector(this, modelManager) {
-            com.friday.assistant.core.FridayLogger.i(TAG, "Wake word 'friday' detected!")
+            com.friday.assistant.core.FridayLogger.i(TAG, "Neural wake word 'friday' detected!")
             serviceScope.launch {
                 onWakeWordTriggered()
             }
@@ -227,17 +226,24 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         }
 
         if (pipelineState.value == PipelineState.IDLE) {
-            com.friday.assistant.core.FridayLogger.d(TAG, "Starting background wake-word listening")
-            // Note: do NOT request audio focus here — SpeechRecognizer manages its own audio session.
-            // Requesting focus during passive listening causes media apps (YouTube, Spotify) to pause.
-            wakeWordDetector?.startListening()
+            com.friday.assistant.core.FridayLogger.d(TAG, "Starting low-power VAD-gated wake-word listening")
+            val detector = wakeWordDetector
+            if (detector != null) {
+                audioCaptureManager.registerListener(detector)
+                detector.startListening()
+                audioCaptureManager.startCapture()
+            }
         }
     }
 
     private fun stopWakeWordListening() {
         com.friday.assistant.core.FridayLogger.d(TAG, "Stopping background wake-word listening")
-        wakeWordDetector?.stopListening()
-        // Note: no audio focus to abandon — we never requested it for wake-word listening
+        val detector = wakeWordDetector
+        if (detector != null) {
+            detector.stopListening()
+            audioCaptureManager.unregisterListener(detector)
+        }
+        audioCaptureManager.stopCapture()
     }
 
     private suspend fun onWakeWordTriggered() {
@@ -514,6 +520,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         com.friday.assistant.core.FridayLogger.i(TAG, "FridayService destroyed")
         instance = null
 
+        stopWakeWordListening()
         wakeWordDetector?.shutdown()
         speechToTextHelper.destroy()
         overlayManager?.destroyOverlay()

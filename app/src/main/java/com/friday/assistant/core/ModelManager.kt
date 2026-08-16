@@ -11,7 +11,6 @@ class ModelManager(private val context: Context) {
         const val SPEAKER_MODEL_NAME = "speaker_verification.onnx"
         const val WAKEWORD_MODEL_NAME = "wakeword.onnx"
         const val NLU_MODEL_NAME = "joint_nlu_model.onnx"
-        const val LEGACY_NLU_MODEL_NAME = "nlu_model.onnx"
         const val NLU_VOCAB_NAME = "vocab.txt"
         const val SEMANTIC_MODEL_NAME = "all-MiniLM-L6-v2.onnx"
         const val PREFS_NAME = "friday_model_prefs"
@@ -223,6 +222,22 @@ class ModelManager(private val context: Context) {
             return extFile.absolutePath
         }
         return null
+    }
+
+    fun getWakeWordModelBytes(): ByteArray? {
+        return try {
+            val assetsList = context.assets.list("") ?: emptyArray()
+            if (assetsList.contains(WAKEWORD_MODEL_NAME)) {
+                context.assets.open(WAKEWORD_MODEL_NAME).use { it.readBytes() }
+            } else {
+                val destDir = context.getExternalFilesDir("models") ?: context.filesDir
+                val file = File(destDir, WAKEWORD_MODEL_NAME)
+                if (file.exists()) file.readBytes() else null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reading $WAKEWORD_MODEL_NAME bytes", e)
+            null
+        }
     }
 
     private fun copyModelFromAssets(assetName: String, destFile: File) {

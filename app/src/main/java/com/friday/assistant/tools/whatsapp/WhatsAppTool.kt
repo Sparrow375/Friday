@@ -87,13 +87,14 @@ class WhatsAppTool(
                 if (sent) {
                     return ToolResult(true, "Message sent to $recipient on WhatsApp.")
                 }
-                Log.w(TAG, "Accessibility send failed — message pre-filled, user must tap Send.")
+            } else {
+                Log.w(TAG, "Accessibility service not ready. Ensure Friday Accessibility Service is enabled in Settings.")
             }
 
-            // 5. Graceful fallback: message is pre-filled, user taps Send manually
+            // 5. Graceful fallback: message is pre-filled
             ToolResult(
                 true,
-                "Opened WhatsApp for $recipient with your message pre-filled. Tap Send to deliver."
+                "Opened WhatsApp for $recipient with your message pre-filled."
             )
         } catch (e: Exception) {
             Log.e(TAG, "Error launching WhatsApp intent", e)

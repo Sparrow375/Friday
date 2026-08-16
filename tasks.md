@@ -1,9 +1,8 @@
-# Task List: Android Joint NLU Integration & Lightweight LLM Upgrade
+# Task List: Battery Optimization Overhaul (Two-Stage VAD-Gated Neural Wake-Word)
 
-- [x] 1. Copy Joint NLU ONNX model (`joint_nlu_model.onnx`), intent labels (`joint_intent_labels.json`), slot labels (`joint_slot_labels.json`), and vocabulary to Android assets. <!-- id: 0 -->
-- [x] 2. Update `WordpieceTokenizer.kt` to support subword-to-string token decoding (`convertTokensToString`). <!-- id: 1 -->
-- [x] 3. Update `NluIntentClassifier.kt` to load dual-head ONNX outputs (`intent_logits` + `slot_logits`), decode neural BIO slots, and return `JointNluResult`. <!-- id: 2 -->
-- [x] 4. Update `AgentCore.kt` dispatch loop to use neural slot parameters (WhatsApp, Calls, Navigation, Notes, Memory Recall, App Launch) and modularize into domain handlers. <!-- id: 3 -->
-- [x] 5. Update `ModelManager.kt` with `joint_nlu_model.onnx` and Qwen-2.5-0.5B-Instruct-GGUF (Q4_K_M) download configuration. <!-- id: 4 -->
-- [x] 6. Verify Android build and update `context.md`. <!-- id: 5 -->
-
+- [x] 1. Copy 1D-CNN raw PCM `wakeword.onnx` (17.5 KB, input `[1, 1, 24000]`) to `app/src/main/assets/wakeword.onnx`. <!-- id: 0 -->
+- [x] 2. Implement Two-Stage VAD-Gated Neural `WakeWordDetector.kt` using integer RMS/ZCR VAD gating, pre-allocated zero-GC rolling buffer, and 0.4ms ONNX inference. <!-- id: 1 -->
+- [x] 3. Integrate `WakeWordDetector` with `AudioCaptureManager` in `FridayService.kt`, removing the heavy background `SpeechRecognizer` loop. <!-- id: 2 -->
+- [x] 4. Audit buffer allocations in `AudioCaptureManager.kt` and `VoicePipeline.kt` ensuring zero-allocation audio streaming in 16kHz mono. <!-- id: 3 -->
+- [x] 5. Compile and verify with `gradlew compileDebugKotlin`. <!-- id: 4 -->
+- [x] 6. Update `context.md` with the low-power audio architecture. <!-- id: 5 -->
