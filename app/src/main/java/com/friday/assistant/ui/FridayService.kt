@@ -33,6 +33,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         private const val TAG = "FridayService"
         const val ACTION_RELOAD_MODELS = "com.friday.assistant.ACTION_RELOAD_MODELS"
         const val ACTION_SHOW_OVERLAY = "com.friday.assistant.ACTION_SHOW_OVERLAY"
+        const val ACTION_TRIGGER_GESTURE = "com.friday.assistant.ACTION_TRIGGER_GESTURE"
         const val ACTION_PAUSE_WAKEWORD = "com.friday.assistant.ACTION_PAUSE_WAKEWORD"
         const val ACTION_RESUME_WAKEWORD = "com.friday.assistant.ACTION_RESUME_WAKEWORD"
 
@@ -50,6 +51,10 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         fun showOverlay() {
             instance?.showOverlay()
+        }
+
+        fun triggerGestureActivation() {
+            instance?.triggerGestureActivationInternal()
         }
     }
 
@@ -113,7 +118,9 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             onStateChanged = { state ->
                 transitionToState(state)
             }
-        )
+        ).apply {
+            warmUp()
+        }
 
         // 5. Initialize UI Overlay Manager
         overlayManager = OverlayManager(
@@ -160,6 +167,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         
         if (action == ACTION_SHOW_OVERLAY) {
             showOverlay()
+        } else if (action == ACTION_TRIGGER_GESTURE) {
+            triggerGestureActivationInternal()
         } else if (action == ACTION_PAUSE_WAKEWORD) {
             stopWakeWordListening()
         } else if (action == ACTION_RESUME_WAKEWORD) {
@@ -192,7 +201,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             if (newState == PipelineState.IDLE) {
                 abandonAudioFocus()
                 overlayManager?.updateAmplitude(0f)
-                speechToTextHelper.destroy()
+                speechToTextHelper.onIdle()
                 
                 // Auto-dismiss overlay — reduced delays since dismiss() now calls hide() (instant re-show)
                 val dismissDelay = if (oldState == PipelineState.SPEAKING) 400L else 300L
@@ -204,7 +213,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                     }
                 }
 
-                // Restart wake word immediately — no extra delay needed
+                // Restart wake word only if wake_word_enabled is true
                 startWakeWordListening()
             } else {
                 stopWakeWordListening()
@@ -213,9 +222,11 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     }
 
     private fun startWakeWordListening() {
-        val enabled = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("assistant_enabled", true)
-        if (!enabled) {
-            com.friday.assistant.core.FridayLogger.d(TAG, "Assistant is disabled by preference; not starting background listening")
+        val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+        val enabled = prefs.getBoolean("assistant_enabled", true)
+        val wakeWordEnabled = prefs.getBoolean("wake_word_enabled", false)
+        if (!enabled || !wakeWordEnabled) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "Background wake-word listening inactive (assistantEnabled=$enabled, wakeWordEnabled=$wakeWordEnabled)")
             return
         }
 
@@ -244,6 +255,23 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             audioCaptureManager.unregisterListener(detector)
         }
         audioCaptureManager.stopCapture()
+    }
+
+    fun triggerGestureActivationInternal() {
+        val enabled = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("assistant_enabled", true)
+        if (!enabled) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "triggerGestureActivation ignored — assistant is disabled by preference")
+            return
+        }
+        com.friday.assistant.core.FridayLogger.i(TAG, "Triggering instant gesture voice activation")
+        serviceScope.launch {
+            if (pipelineState.value == PipelineState.SPEAKING) {
+                try { tts?.stop() } catch (e: Exception) { Log.e(TAG, "Error stopping TTS", e) }
+            }
+            overlayManager?.show()
+            transitionToState(PipelineState.LISTENING)
+            speechToTextHelper.startListening()
+        }
     }
 
     private suspend fun onWakeWordTriggered() {

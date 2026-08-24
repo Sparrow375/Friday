@@ -2,36 +2,153 @@ package com.friday.assistant.automation
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
+import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.friday.assistant.ui.FridayService
 
 class FridayAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "FridayAccessibility"
+        private const val DOUBLE_CLICK_TIME_DELTA = 380L
     }
 
     // AccessibilityService does not expose a mainHandler — declare one explicitly.
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    private var lastVolumeDownTime = 0L
+    private var lastVolumeUpTime = 0L
+
+    private val vibrator: Vibrator? by lazy {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vibratorManager?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize vibrator", e)
+            null
+        }
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         serviceInfo = serviceInfo.apply {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            flags = flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+            flags = flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
         }
         AutomationBridge.bind(this)
-        Log.i(TAG, "Friday UI automation service connected")
+        Log.i(TAG, "Friday UI automation service connected with key event filtering")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
 
     override fun onInterrupt() {}
+
+    override fun onKeyEvent(event: KeyEvent): Boolean {
+        val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+        val gestureEnabled = prefs.getBoolean("gesture_activation_enabled", true)
+        val assistantEnabled = prefs.getBoolean("assistant_enabled", true)
+
+        if (!gestureEnabled || !assistantEnabled) {
+            return super.onKeyEvent(event)
+        }
+
+        val triggerMode = prefs.getString("gesture_trigger_mode", "volume_down_double") ?: "volume_down_double"
+        val hapticEnabled = prefs.getBoolean("haptic_feedback_enabled", true)
+        val action = event.action
+        val keyCode = event.keyCode
+        val currentTime = SystemClock.uptimeMillis()
+
+        if (action == KeyEvent.ACTION_DOWN) {
+            // Check double-tap triggers (repeatCount must be 0 to avoid false fires on holding the button)
+            if (event.repeatCount == 0) {
+                when (keyCode) {
+                    KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                        val supportsVolumeDown = triggerMode == "volume_down_double" || triggerMode == "volume_any_double"
+                        if (supportsVolumeDown) {
+                            if (currentTime - lastVolumeDownTime < DOUBLE_CLICK_TIME_DELTA && currentTime - lastVolumeDownTime > 50L) {
+                                Log.i(TAG, "Volume Down double-tap gesture detected!")
+                                lastVolumeDownTime = 0L
+                                performHapticFeedback(hapticEnabled)
+                                triggerAssistantActivation()
+                                return true
+                            }
+                            lastVolumeDownTime = currentTime
+                        }
+                    }
+                    KeyEvent.KEYCODE_VOLUME_UP -> {
+                        val supportsVolumeUp = triggerMode == "volume_up_double" || triggerMode == "volume_any_double"
+                        if (supportsVolumeUp) {
+                            if (currentTime - lastVolumeUpTime < DOUBLE_CLICK_TIME_DELTA && currentTime - lastVolumeUpTime > 50L) {
+                                Log.i(TAG, "Volume Up double-tap gesture detected!")
+                                lastVolumeUpTime = 0L
+                                performHapticFeedback(hapticEnabled)
+                                triggerAssistantActivation()
+                                return true
+                            }
+                            lastVolumeUpTime = currentTime
+                        }
+                    }
+                }
+            } else if (triggerMode == "volume_down_long" && keyCode == KeyEvent.KEYCODE_VOLUME_DOWN && event.repeatCount == 1) {
+                // Long-press detection on repeatCount == 1 (triggered after ~500ms continuous hold)
+                Log.i(TAG, "Volume Down long-press gesture detected!")
+                performHapticFeedback(hapticEnabled)
+                triggerAssistantActivation()
+                return true
+            }
+        }
+
+        return super.onKeyEvent(event)
+    }
+
+    private fun performHapticFeedback(enabled: Boolean) {
+        if (!enabled) return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                vibrator?.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(35L)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Haptic vibration failed", e)
+        }
+    }
+
+    private fun triggerAssistantActivation() {
+        mainHandler.post {
+            val service = FridayService.instance
+            if (service != null) {
+                FridayService.triggerGestureActivation()
+            } else {
+                try {
+                    val intent = Intent(this, FridayService::class.java).apply {
+                        action = FridayService.ACTION_TRIGGER_GESTURE
+                    }
+                    startService(intent)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to start FridayService from gesture", e)
+                }
+            }
+        }
+    }
 
     override fun onDestroy() {
         AutomationBridge.unbind()

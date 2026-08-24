@@ -15,4 +15,11 @@ class FridaySession(context: Context) : VoiceInteractionSession(context) {
     override fun onCreateContentView(): android.view.View {
         return android.view.View(context)
     }
+
+    override fun onShow(args: Bundle?, flags: Int) {
+        super.onShow(args, flags)
+        com.friday.assistant.core.FridayLogger.i("FridaySession", "Assistant invoked via Android System Gesture (Power Hold / Home Swipe)")
+        FridayService.triggerGestureActivation()
+        hide()
+    }
 }

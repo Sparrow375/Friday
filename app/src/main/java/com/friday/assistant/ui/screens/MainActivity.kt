@@ -29,7 +29,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -130,6 +132,21 @@ class MainActivity : ComponentActivity() {
         var hasWriteSettingsPermission by remember { mutableStateOf(Settings.System.canWrite(context)) }
         var assistantEnabled by remember {
             mutableStateOf(context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("assistant_enabled", true))
+        }
+        var gestureActivationEnabled by remember {
+            mutableStateOf(context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("gesture_activation_enabled", true))
+        }
+        var gestureTriggerMode by remember {
+            mutableStateOf(context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getString("gesture_trigger_mode", "volume_down_double") ?: "volume_down_double")
+        }
+        var wakeWordEnabled by remember {
+            mutableStateOf(context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("wake_word_enabled", false))
+        }
+        var hapticFeedbackEnabled by remember {
+            mutableStateOf(context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("haptic_feedback_enabled", true))
+        }
+        var audioChimeEnabled by remember {
+            mutableStateOf(context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("audio_chime_enabled", true))
         }
 
         var useLlm by remember { 
@@ -237,7 +254,13 @@ class MainActivity : ComponentActivity() {
                 hasDndPermission = nm.isNotificationPolicyAccessGranted
                 hasAccessibility = com.friday.assistant.core.AccessibilityHelper.isFridayAccessibilityEnabled(context)
                 
-                assistantEnabled = context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("assistant_enabled", true)
+                val aPrefs = context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                assistantEnabled = aPrefs.getBoolean("assistant_enabled", true)
+                gestureActivationEnabled = aPrefs.getBoolean("gesture_activation_enabled", true)
+                gestureTriggerMode = aPrefs.getString("gesture_trigger_mode", "volume_down_double") ?: "volume_down_double"
+                wakeWordEnabled = aPrefs.getBoolean("wake_word_enabled", false)
+                hapticFeedbackEnabled = aPrefs.getBoolean("haptic_feedback_enabled", true)
+                audioChimeEnabled = aPrefs.getBoolean("audio_chime_enabled", true)
 
                 // Also update model loading status
                 whisperLoaded = modelManager.isWhisperLoaded()
@@ -412,51 +435,331 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            // Activation & Battery Profile Card
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 12.dp),
+                    .padding(bottom = 16.dp),
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = SlateGray)
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Enable Assistant",
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                        Text(
-                            text = "Toggle background wake-word listening and overlays",
-                            color = SilverText,
-                            style = MaterialTheme.typography.labelMedium
+                Column(modifier = Modifier.padding(16.dp)) {
+                    // Header
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.PowerSettingsNew,
+                                contentDescription = null,
+                                tint = NeonCyan,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Master Assistant Switch",
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                fontSize = 16.sp
+                            )
+                        }
+                        Switch(
+                            checked = assistantEnabled,
+                            onCheckedChange = { checked ->
+                                assistantEnabled = checked
+                                context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                                    .edit().putBoolean("assistant_enabled", checked).apply()
+                                
+                                val action = if (checked) FridayService.ACTION_RESUME_WAKEWORD else FridayService.ACTION_PAUSE_WAKEWORD
+                                context.startService(Intent(context, FridayService::class.java).apply {
+                                    this.action = action
+                                })
+                                
+                                Toast.makeText(context, if (checked) "Assistant Enabled" else "Assistant Disabled", Toast.LENGTH_SHORT).show()
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = NeonCyan,
+                                checkedTrackColor = NeonBlue.copy(alpha = 0.5f)
+                            )
                         )
                     }
-                    Switch(
-                        checked = assistantEnabled,
-                        onCheckedChange = { checked ->
-                            assistantEnabled = checked
-                            context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
-                                .edit().putBoolean("assistant_enabled", checked).apply()
-                            
-                            val action = if (checked) FridayService.ACTION_RESUME_WAKEWORD else FridayService.ACTION_PAUSE_WAKEWORD
-                            context.startService(Intent(context, FridayService::class.java).apply {
-                                this.action = action
-                            })
-                            
-                            Toast.makeText(context, if (checked) "Assistant Enabled" else "Assistant Disabled", Toast.LENGTH_SHORT).show()
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = NeonCyan,
-                            checkedTrackColor = NeonBlue.copy(alpha = 0.5f)
-                        )
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 12.dp),
+                        color = Color.White.copy(alpha = 0.1f)
                     )
+
+                    // Gesture Activation Section
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "Gesture Activation",
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    fontSize = 15.sp
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    color = Color(0xFF10B981).copy(alpha = 0.2f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = "0% Idle Battery",
+                                        color = Color(0xFF10B981),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = "Ultra-low latency physical button trigger",
+                                color = SilverText,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                        Switch(
+                            checked = gestureActivationEnabled,
+                            onCheckedChange = { checked ->
+                                gestureActivationEnabled = checked
+                                context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                                    .edit().putBoolean("gesture_activation_enabled", checked).apply()
+                                Toast.makeText(context, if (checked) "Gesture Activation Enabled" else "Gesture Activation Disabled", Toast.LENGTH_SHORT).show()
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = NeonCyan,
+                                checkedTrackColor = NeonBlue.copy(alpha = 0.5f)
+                            )
+                        )
+                    }
+
+                    if (gestureActivationEnabled) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "Trigger Gesture:",
+                            color = SilverText,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        val modes = listOf(
+                            "volume_down_double" to "Double-Tap Vol Down",
+                            "volume_up_double" to "Double-Tap Vol Up",
+                            "volume_any_double" to "Double-Tap Any Vol",
+                            "volume_down_long" to "Hold Vol Down (0.5s)"
+                        )
+
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            modes.chunked(2).forEach { rowModes ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    rowModes.forEach { (modeKey, modeLabel) ->
+                                        val isSelected = gestureTriggerMode == modeKey
+                                        Surface(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable {
+                                                    gestureTriggerMode = modeKey
+                                                    context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                                                        .edit().putString("gesture_trigger_mode", modeKey).apply()
+                                                },
+                                            color = if (isSelected) NeonBlue.copy(alpha = 0.35f) else Color.DarkGray.copy(alpha = 0.5f),
+                                            shape = RoundedCornerShape(8.dp),
+                                            border = if (isSelected) androidx.compose.foundation.BorderStroke(1.dp, NeonCyan) else null
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                RadioButton(
+                                                    selected = isSelected,
+                                                    onClick = {
+                                                        gestureTriggerMode = modeKey
+                                                        context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                                                            .edit().putString("gesture_trigger_mode", modeKey).apply()
+                                                    },
+                                                    colors = RadioButtonDefaults.colors(
+                                                        selectedColor = NeonCyan,
+                                                        unselectedColor = Color.Gray
+                                                    ),
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    text = modeLabel,
+                                                    color = if (isSelected) Color.White else SilverText,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Feedback options
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Tactile Haptic Click",
+                                color = Color.White,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Switch(
+                                checked = hapticFeedbackEnabled,
+                                onCheckedChange = { checked ->
+                                    hapticFeedbackEnabled = checked
+                                    context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                                        .edit().putBoolean("haptic_feedback_enabled", checked).apply()
+                                },
+                                modifier = Modifier.scale(0.85f),
+                                colors = SwitchDefaults.colors(checkedThumbColor = NeonCyan, checkedTrackColor = NeonBlue.copy(alpha = 0.5f))
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Activation Audio Chime",
+                                color = Color.White,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Switch(
+                                checked = audioChimeEnabled,
+                                onCheckedChange = { checked ->
+                                    audioChimeEnabled = checked
+                                    context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                                        .edit().putBoolean("audio_chime_enabled", checked).apply()
+                                },
+                                modifier = Modifier.scale(0.85f),
+                                colors = SwitchDefaults.colors(checkedThumbColor = NeonCyan, checkedTrackColor = NeonBlue.copy(alpha = 0.5f))
+                            )
+                        }
+
+                        // Accessibility Status Tip
+                        if (!hasAccessibility) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Surface(
+                                color = Color(0xFFEF4444).copy(alpha = 0.15f),
+                                shape = RoundedCornerShape(8.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.4f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.Warning,
+                                            contentDescription = null,
+                                            tint = Color(0xFFEF4444),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Enable Accessibility for button gestures",
+                                            color = Color.White,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                    Button(
+                                        onClick = {
+                                            com.friday.assistant.core.AccessibilityHelper.openAccessibilitySettings(context)
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(28.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444))
+                                    ) {
+                                        Text("Enable", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 12.dp),
+                        color = Color.White.copy(alpha = 0.1f)
+                    )
+
+                    // Wake Word Section
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "Hands-Free Wake Word",
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    fontSize = 15.sp
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    color = Color(0xFFF59E0B).copy(alpha = 0.2f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = "Continuous Mic",
+                                        color = Color(0xFFF59E0B),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = "Listens 24/7 for '$customWakeWord' (~1.8%/hr battery)",
+                                color = SilverText,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                        Switch(
+                            checked = wakeWordEnabled,
+                            onCheckedChange = { checked ->
+                                wakeWordEnabled = checked
+                                context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                                    .edit().putBoolean("wake_word_enabled", checked).apply()
+                                
+                                val action = if (checked) FridayService.ACTION_RESUME_WAKEWORD else FridayService.ACTION_PAUSE_WAKEWORD
+                                context.startService(Intent(context, FridayService::class.java).apply {
+                                    this.action = action
+                                })
+                                
+                                Toast.makeText(context, if (checked) "Wake Word Listening Enabled" else "Wake Word Listening Disabled (Battery Saved)", Toast.LENGTH_SHORT).show()
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFFF59E0B),
+                                checkedTrackColor = Color(0xFFF59E0B).copy(alpha = 0.5f)
+                            )
+                        )
+                    }
                 }
             }
 

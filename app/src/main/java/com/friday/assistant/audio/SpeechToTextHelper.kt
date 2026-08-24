@@ -43,6 +43,49 @@ class SpeechToTextHelper(
     private var earlyCommitFired = false
     private var earlyCommitRunnable: Runnable? = null
 
+    fun warmUp() {
+        mainHandler.post {
+            if (speechRecognizer == null) {
+                try {
+                    speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                        setRecognitionListener(buildRecognitionListener())
+                    }
+                    Log.i(TAG, "SpeechRecognizer pre-warmed successfully")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to pre-warm SpeechRecognizer", e)
+                }
+            }
+        }
+    }
+
+    fun onIdle() {
+        mainHandler.post {
+            isListening = false
+            cancelEarlyCommitTimer()
+            try {
+                speechRecognizer?.cancel()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error cancelling speech recognizer on idle", e)
+            }
+        }
+    }
+
+    private fun playChimeIfEnabled() {
+        try {
+            val prefs = context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+            if (prefs.getBoolean("audio_chime_enabled", true)) {
+                Thread {
+                    try {
+                        val toneGen = android.media.ToneGenerator(android.media.AudioManager.STREAM_NOTIFICATION, 70)
+                        toneGen.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 70)
+                        Thread.sleep(100)
+                        toneGen.release()
+                    } catch (_: Exception) {}
+                }.start()
+            }
+        } catch (_: Exception) {}
+    }
+
     private fun destroyRecognizer() {
         isListening = false
         cancelEarlyCommitTimer()
@@ -104,6 +147,8 @@ class SpeechToTextHelper(
                         setRecognitionListener(buildRecognitionListener())
                     }
                 }
+
+                playChimeIfEnabled()
 
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
