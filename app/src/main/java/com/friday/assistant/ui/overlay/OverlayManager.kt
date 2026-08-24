@@ -69,6 +69,8 @@ class OverlayManager(
     fun show() {
         if (isVisible) return
 
+        wakeScreenIfNecessary()
+
         // Fast path: ComposeView is already attached but hidden — just make it visible again.
         // This avoids the 200-400ms WindowManager.addView() overhead on consecutive commands.
         if (composeView != null) {
@@ -102,7 +104,14 @@ class OverlayManager(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED,
+                @Suppress("DEPRECATION") (
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                ),
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP
@@ -224,5 +233,26 @@ class OverlayManager(
         statusText.value = text
         transcript.value = trans
         assistantResponse.value = resp
+    }
+
+    private fun wakeScreenIfNecessary() {
+        try {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+            val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+            val isScreenOn = pm?.isInteractive == true
+            val isLocked = km?.isKeyguardLocked == true
+            if (!isScreenOn || isLocked) {
+                @Suppress("DEPRECATION")
+                val wakeLock = pm?.newWakeLock(
+                    android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                    android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                    android.os.PowerManager.ON_AFTER_RELEASE,
+                    "Friday:OverlayWakeLock"
+                )
+                wakeLock?.acquire(3000L)
+            }
+        } catch (e: Exception) {
+            com.friday.assistant.core.FridayLogger.e(TAG, "Failed to wake screen in OverlayManager", e)
+        }
     }
 }

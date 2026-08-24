@@ -158,8 +158,24 @@ class FridayAccessibilityService : AccessibilityService() {
 
     private fun triggerAssistantActivation() {
         mainHandler.post {
+            val km = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+            val isLocked = km?.isKeyguardLocked == true
             val service = FridayService.instance
-            if (service != null) {
+
+            if (isLocked) {
+                com.friday.assistant.core.FridayLogger.i(TAG, "Device locked — launching TriggerActivity with lockscreen permissions")
+                try {
+                    val triggerIntent = Intent(this, com.friday.assistant.ui.TriggerActivity::class.java).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                    }
+                    startActivity(triggerIntent)
+                } catch (e: Exception) {
+                    com.friday.assistant.core.FridayLogger.e(TAG, "Failed to launch TriggerActivity on lockscreen", e)
+                }
+                if (service != null) {
+                    FridayService.triggerGestureActivation()
+                }
+            } else if (service != null) {
                 FridayService.triggerGestureActivation()
             } else {
                 com.friday.assistant.core.FridayLogger.w(TAG, "FridayService instance null in gesture; launching TriggerActivity")

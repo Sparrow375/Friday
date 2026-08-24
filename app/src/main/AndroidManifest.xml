@@ -62,6 +62,8 @@
         <activity
             android:name="com.friday.assistant.ui.screens.MainActivity"
             android:exported="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -72,12 +74,16 @@
                 android:resource="@xml/shortcuts" />
         </activity>
 
-        <!-- Instant Voice Assistant Trigger Activity (Side Key, Shortcuts, Widgets) -->
+        <!-- Instant Voice Assistant Trigger Activity (Side Key, Shortcuts, Widgets, Lockscreen) -->
         <activity
             android:name="com.friday.assistant.ui.TriggerActivity"
             android:label="Friday Voice Assistant"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:exported="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:showForAllUsers="true"
+            android:inheritShowWhenLocked="true"
             android:noHistory="true"
             android:excludeFromRecents="true"
             android:launchMode="singleInstance">

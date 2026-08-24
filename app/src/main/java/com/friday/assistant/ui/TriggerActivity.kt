@@ -5,9 +5,11 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.view.WindowManager
 import android.util.Log
 import com.friday.assistant.core.FridayLogger
 
@@ -31,19 +33,56 @@ class TriggerActivity : Activity() {
         super.onCreate(savedInstanceState)
         FridayLogger.i(TAG, "TriggerActivity launched via intent: ${intent?.action}")
 
-        // 1. Perform immediate haptic click
+        // 1. Configure lockscreen visibility & screen turn-on
+        setupLockscreenFlags()
+
+        // 2. Wake screen if dark
+        wakeScreenIfNecessary()
+
+        // 3. Perform immediate haptic click
         performHapticClick()
 
-        // 2. Trigger Assistant
+        // 4. Trigger Assistant
         triggerAssistant()
 
-        // 3. Close immediately without transition animation
+        // 5. Close immediately without transition animation
         finish()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, 0)
         } else {
             @Suppress("DEPRECATION")
             overridePendingTransition(0, 0)
+        }
+    }
+
+    private fun setupLockscreenFlags() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
+        @Suppress("DEPRECATION")
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+            WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        )
+    }
+
+    private fun wakeScreenIfNecessary() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            val isScreenOn = pm?.isInteractive == true
+            if (!isScreenOn) {
+                @Suppress("DEPRECATION")
+                val wakeLock = pm?.newWakeLock(
+                    PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
+                    "Friday:TriggerWakeLock"
+                )
+                wakeLock?.acquire(3000L)
+            }
+        } catch (e: Exception) {
+            FridayLogger.e(TAG, "Failed to acquire wake lock in TriggerActivity", e)
         }
     }
 

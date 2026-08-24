@@ -199,6 +199,14 @@ The project uses a clean package namespace `com.friday.assistant`:
       3. **Side Button & Shortcut Entry Point (`TriggerActivity.kt`, `shortcuts.xml`)**: When users map a physical Side Key (Samsung One UI side button shortcut) or tap a shortcut to Friday, Android launches an Activity. Built a high-speed transparent `TriggerActivity` with `ASSIST`, `VOICE_COMMAND`, `SEARCH_LONG_PRESS`, and `VOICE_SEARCH_HANDS_FREE` intent filters that immediately triggers Friday's voice overlay and closes seamlessly. Added `handleTriggerIntent` in `MainActivity.kt` and created `shortcuts.xml` for static app shortcuts.
       4. **Accessibility Gestures (`onGesture`)**: Overrode `onGesture(gestureId)` in `FridayAccessibilityService` so Android Accessibility shortcuts / Side button combos instantly invoke Friday.
     - **Build Status**: Verified via `./gradlew assembleDebug` (BUILD SUCCESSFUL in 30s).
+  * *Updated (August 2026 - Lockscreen Activation & Screen-Wake Architecture)*:
+    - **Lockscreen & Screen-Wake Support**:
+      1. Added `android:showWhenLocked="true"`, `android:turnScreenOn="true"`, `android:showForAllUsers="true"`, and `android:inheritShowWhenLocked="true"` in `AndroidManifest.xml` to `TriggerActivity` and `MainActivity`.
+      2. Configured `setShowWhenLocked(true)` and `setTurnScreenOn(true)` in `TriggerActivity.kt` and `OverlayManager.kt` alongside `PowerManager.ACQUIRE_CAUSES_WAKEUP` wake locks so invoking Friday turns the display on immediately and layers the animated overlay over Samsung's keyguard.
+      3. Routed `FridayAccessibilityService.triggerAssistantActivation()` to launch `TriggerActivity` with `FLAG_ACTIVITY_NEW_TASK` whenever `KeyguardManager.isKeyguardLocked` is true, ensuring seamless keyguard bypass.
+      4. Configured native `VoiceInteractionSession` (`FridaySessionService.kt`) to support Power/Side button long-press assistant invocation while the phone is locked.
+    - **Build Status**: Verified via `./gradlew assembleDebug` (BUILD SUCCESSFUL in 20s).
+
 
 
 
