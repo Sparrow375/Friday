@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="start_voice_assistant"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_start_voice_short"
+        android:shortcutLongLabel="@string/shortcut_start_voice_long">
+        <intent
+            android:action="com.friday.assistant.ACTION_TRIGGER_ASSISTANT"
+            android:targetPackage="com.friday.assistant"
+            android:targetClass="com.friday.assistant.ui.TriggerActivity" />
+    </shortcut>
+</shortcuts>

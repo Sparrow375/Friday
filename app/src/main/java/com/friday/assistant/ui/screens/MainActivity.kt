@@ -93,6 +93,8 @@ class MainActivity : ComponentActivity() {
             com.friday.assistant.intelligence.brief.BriefScheduler.schedulePeriodicCrawl(applicationContext)
         }
 
+        handleTriggerIntent(intent)
+
         setContent {
             FridayTheme {
                 Surface(
@@ -108,6 +110,24 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        handleTriggerIntent(intent)
+    }
+
+    private fun handleTriggerIntent(intent: Intent?) {
+        if (intent == null) return
+        val action = intent.action
+        val autoStart = intent.getBooleanExtra("EXTRA_AUTO_START_MIC", false)
+        if (action == Intent.ACTION_ASSIST ||
+            action == Intent.ACTION_VOICE_COMMAND ||
+            action == "com.friday.assistant.ACTION_TRIGGER_ASSISTANT" ||
+            autoStart
+        ) {
+            com.friday.assistant.core.FridayLogger.i(TAG, "MainActivity received trigger intent: $action (autoStart=$autoStart)")
+            FridayService.triggerGestureActivation()
+            try {
+                moveTaskToBack(true)
+            } catch (_: Exception) {}
+        }
     }
 
     @OptIn(ExperimentalMaterial3Api::class)

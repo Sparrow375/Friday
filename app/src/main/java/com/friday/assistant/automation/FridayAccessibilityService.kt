@@ -21,7 +21,7 @@ class FridayAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "FridayAccessibility"
-        private const val DOUBLE_CLICK_TIME_DELTA = 380L
+        private const val DOUBLE_CLICK_TIME_DELTA = 500L
     }
 
     // AccessibilityService does not expose a mainHandler — declare one explicitly.
@@ -47,20 +47,44 @@ class FridayAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        serviceInfo = serviceInfo.apply {
-            eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-            feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            flags = flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
-        }
+        val info = serviceInfo ?: AccessibilityServiceInfo()
+        info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or AccessibilityEvent.TYPE_WINDOWS_CHANGED
+        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+        info.flags = info.flags or
+            AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+            AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS or
+            AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+        serviceInfo = info
         AutomationBridge.bind(this)
-        Log.i(TAG, "Friday UI automation service connected with key event filtering")
+        com.friday.assistant.core.FridayLogger.i(TAG, "Friday UI automation service connected with key event filtering (flags=${info.flags})")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
 
     override fun onInterrupt() {}
 
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    override fun onGesture(gestureId: Int): Boolean {
+        com.friday.assistant.core.FridayLogger.i(TAG, "Accessibility gesture detected: $gestureId")
+        val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("gesture_activation_enabled", true) && prefs.getBoolean("assistant_enabled", true)) {
+            performHapticFeedback(prefs.getBoolean("haptic_feedback_enabled", true))
+            triggerAssistantActivation()
+            return true
+        }
+        return super.onGesture(gestureId)
+    }
+
     override fun onKeyEvent(event: KeyEvent): Boolean {
+        val keyCode = event.keyCode
+        val action = event.action
+        val repeatCount = event.repeatCount
+
+        // Log volume key events for diagnostics
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "onKeyEvent: keyCode=$keyCode, action=$action, repeat=$repeatCount")
+        }
+
         val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
         val gestureEnabled = prefs.getBoolean("gesture_activation_enabled", true)
         val assistantEnabled = prefs.getBoolean("assistant_enabled", true)
@@ -71,19 +95,18 @@ class FridayAccessibilityService : AccessibilityService() {
 
         val triggerMode = prefs.getString("gesture_trigger_mode", "volume_down_double") ?: "volume_down_double"
         val hapticEnabled = prefs.getBoolean("haptic_feedback_enabled", true)
-        val action = event.action
-        val keyCode = event.keyCode
         val currentTime = SystemClock.uptimeMillis()
 
         if (action == KeyEvent.ACTION_DOWN) {
             // Check double-tap triggers (repeatCount must be 0 to avoid false fires on holding the button)
-            if (event.repeatCount == 0) {
+            if (repeatCount == 0) {
                 when (keyCode) {
                     KeyEvent.KEYCODE_VOLUME_DOWN -> {
                         val supportsVolumeDown = triggerMode == "volume_down_double" || triggerMode == "volume_any_double"
                         if (supportsVolumeDown) {
-                            if (currentTime - lastVolumeDownTime < DOUBLE_CLICK_TIME_DELTA && currentTime - lastVolumeDownTime > 50L) {
-                                Log.i(TAG, "Volume Down double-tap gesture detected!")
+                            val diff = currentTime - lastVolumeDownTime
+                            if (diff in 40L..DOUBLE_CLICK_TIME_DELTA) {
+                                com.friday.assistant.core.FridayLogger.i(TAG, "Volume Down double-tap gesture detected! (diff=${diff}ms)")
                                 lastVolumeDownTime = 0L
                                 performHapticFeedback(hapticEnabled)
                                 triggerAssistantActivation()
@@ -95,8 +118,9 @@ class FridayAccessibilityService : AccessibilityService() {
                     KeyEvent.KEYCODE_VOLUME_UP -> {
                         val supportsVolumeUp = triggerMode == "volume_up_double" || triggerMode == "volume_any_double"
                         if (supportsVolumeUp) {
-                            if (currentTime - lastVolumeUpTime < DOUBLE_CLICK_TIME_DELTA && currentTime - lastVolumeUpTime > 50L) {
-                                Log.i(TAG, "Volume Up double-tap gesture detected!")
+                            val diff = currentTime - lastVolumeUpTime
+                            if (diff in 40L..DOUBLE_CLICK_TIME_DELTA) {
+                                com.friday.assistant.core.FridayLogger.i(TAG, "Volume Up double-tap gesture detected! (diff=${diff}ms)")
                                 lastVolumeUpTime = 0L
                                 performHapticFeedback(hapticEnabled)
                                 triggerAssistantActivation()
@@ -106,9 +130,9 @@ class FridayAccessibilityService : AccessibilityService() {
                         }
                     }
                 }
-            } else if (triggerMode == "volume_down_long" && keyCode == KeyEvent.KEYCODE_VOLUME_DOWN && event.repeatCount == 1) {
+            } else if (triggerMode == "volume_down_long" && keyCode == KeyEvent.KEYCODE_VOLUME_DOWN && repeatCount == 1) {
                 // Long-press detection on repeatCount == 1 (triggered after ~500ms continuous hold)
-                Log.i(TAG, "Volume Down long-press gesture detected!")
+                com.friday.assistant.core.FridayLogger.i(TAG, "Volume Down long-press gesture detected!")
                 performHapticFeedback(hapticEnabled)
                 triggerAssistantActivation()
                 return true
@@ -138,13 +162,14 @@ class FridayAccessibilityService : AccessibilityService() {
             if (service != null) {
                 FridayService.triggerGestureActivation()
             } else {
+                com.friday.assistant.core.FridayLogger.w(TAG, "FridayService instance null in gesture; launching TriggerActivity")
                 try {
-                    val intent = Intent(this, FridayService::class.java).apply {
-                        action = FridayService.ACTION_TRIGGER_GESTURE
+                    val triggerIntent = Intent(this, com.friday.assistant.ui.TriggerActivity::class.java).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                     }
-                    startService(intent)
+                    startActivity(triggerIntent)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to start FridayService from gesture", e)
+                    com.friday.assistant.core.FridayLogger.e(TAG, "Failed to start TriggerActivity from gesture", e)
                 }
             }
         }

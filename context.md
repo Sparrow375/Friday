@@ -192,6 +192,14 @@ The project uses a clean package namespace `com.friday.assistant`:
     - **Activation & Battery Profile UI (`MainActivity.kt`)**:
       - Built a dedicated dashboard card with a Master Assistant Switch, Toggleable Gesture Activation (with "0% Idle Battery" badge), Trigger Gesture Mode Chips, Haptic & Audio Chime Toggles, Live Accessibility Status Indicator with 1-tap activation button, and an optional Hands-Free Wake Word mode switch.
     - **Build Status**: Verified via `./gradlew assembleDebug` (BUILD SUCCESSFUL in 1m 20s).
+  * *Updated (August 2026 - Gesture & Side Button Trigger Diagnosis & Resolution)*:
+    - **Diagnosed Gesture Non-Triggering Root Causes**:
+      1. **Missing `canRequestFilterKeyEvents="true"` in XML**: Android requires `android:canRequestFilterKeyEvents="true"` inside `friday_accessibility_service.xml`. Without this mandatory XML declaration, Android OS silently strips `FLAG_REQUEST_FILTER_KEY_EVENTS` for security reasons and never delivers `onKeyEvent` to the service. Fixed by adding `android:canRequestFilterKeyEvents="true"` and `android:canPerformGestures="true"`.
+      2. **Double-Tap Timing Calibration**: Expanded `DOUBLE_CLICK_TIME_DELTA` from 380ms to 500ms to comfortably accommodate natural user double-tap physical speed on device hardware buttons.
+      3. **Side Button & Shortcut Entry Point (`TriggerActivity.kt`, `shortcuts.xml`)**: When users map a physical Side Key (Samsung One UI side button shortcut) or tap a shortcut to Friday, Android launches an Activity. Built a high-speed transparent `TriggerActivity` with `ASSIST`, `VOICE_COMMAND`, `SEARCH_LONG_PRESS`, and `VOICE_SEARCH_HANDS_FREE` intent filters that immediately triggers Friday's voice overlay and closes seamlessly. Added `handleTriggerIntent` in `MainActivity.kt` and created `shortcuts.xml` for static app shortcuts.
+      4. **Accessibility Gestures (`onGesture`)**: Overrode `onGesture(gestureId)` in `FridayAccessibilityService` so Android Accessibility shortcuts / Side button combos instantly invoke Friday.
+    - **Build Status**: Verified via `./gradlew assembleDebug` (BUILD SUCCESSFUL in 30s).
+
 
 
 
