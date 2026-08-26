@@ -108,19 +108,78 @@ class NotesTool : Tool {
         return ToolResult(true, sb.toString())
     }
 
-    private suspend fun searchNotes(query: String): ToolResult {
-        val notes = dao.searchNotes(query).first()
-        if (notes.isEmpty()) {
-            return ToolResult(true, "No notes found matching the term '$query'.")
+    private suspend fun searchNotes(rawQuery: String): ToolResult {
+        val stopWords = setOf(
+            "what", "is", "my", "the", "a", "an", "for", "of", "in", "to",
+            "tell", "me", "about", "show", "search", "notes", "note", "check",
+            "do", "you", "remember", "whats", "what's"
+        )
+        val cleanTerms = rawQuery.lowercase(Locale.getDefault())
+            .replace(Regex("[^a-z0-9 ]"), " ")
+            .split(Regex("\\s+"))
+            .filter { it.length > 1 && it !in stopWords }
+
+        val allNotes = dao.getAllNotes().first()
+        if (allNotes.isEmpty()) {
+            return ToolResult(true, "You do not have any saved notes.")
         }
-        
-        val sdf = SimpleDateFormat("MMM d, yyyy HH:mm", Locale.getDefault())
-        val sb = StringBuilder("Search results for '$query':\n")
-        notes.forEach { note ->
+
+        // Rank notes by relevance to keywords
+        val scoredNotes = allNotes.map { note ->
+            val contentLower = note.content.lowercase(Locale.getDefault())
+            val tagsLower = note.tags.lowercase(Locale.getDefault())
+            var score = 0
+
+            // Exact phrase match
+            if (rawQuery.isNotBlank() && contentLower.contains(rawQuery.lowercase(Locale.getDefault()))) {
+                score += 100
+            }
+
+            // Keyword matches
+            for (term in cleanTerms) {
+                if (contentLower.contains(term) || tagsLower.contains(term)) {
+                    score += 30
+                } else {
+                    // Check typo / fuzzy match (Levenshtein distance <= 2 for words >= 5 chars)
+                    val words = contentLower.split(Regex("\\s+"))
+                    if (words.any { w -> w.length >= 4 && kotlin.math.abs(w.length - term.length) <= 2 && isFuzzyMatch(w, term) }) {
+                        score += 20
+                    }
+                }
+            }
+            Pair(note, score)
+        }.filter { it.second > 0 }
+         .sortedByDescending { it.second }
+         .map { it.first }
+
+        if (scoredNotes.isEmpty()) {
+            return ToolResult(true, "No notes found matching '$rawQuery'.")
+        }
+
+        if (scoredNotes.size == 1) {
+            return ToolResult(true, "Your note says: ${scoredNotes.first().content}")
+        }
+
+        val sdf = SimpleDateFormat("MMM d, HH:mm", Locale.getDefault())
+        val sb = StringBuilder("Found ${scoredNotes.size} matching notes:\n")
+        scoredNotes.take(3).forEach { note ->
             val dateStr = sdf.format(Date(note.timestamp))
-            sb.append("- [ID: ${note.id}] ($dateStr): \"${note.content}\"\n")
+            sb.append("- ($dateStr): \"${note.content}\"\n")
         }
-        return ToolResult(true, sb.toString())
+        return ToolResult(true, sb.toString().trim())
+    }
+
+    private fun isFuzzyMatch(s1: String, s2: String): Boolean {
+        if (s1 == s2) return true
+        if (kotlin.math.abs(s1.length - s2.length) > 2) return false
+        var diff = 0
+        val minLen = minOf(s1.length, s2.length)
+        for (i in 0 until minLen) {
+            if (s1[i] != s2[i]) diff++
+            if (diff > 2) return false
+        }
+        diff += kotlin.math.abs(s1.length - s2.length)
+        return diff <= 2
     }
 
     private suspend fun deleteNote(id: Long): ToolResult {

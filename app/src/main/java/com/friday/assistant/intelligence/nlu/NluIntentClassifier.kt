@@ -306,8 +306,17 @@ class NluIntentClassifier(private val context: Context) {
                     }
                 }
 
-                Log.d(TAG, "Joint NLU: intent=$intent ($confidence), slots=$slotsMap")
-                return JointNluResult(intent, confidence, slotsMap)
+                // Sanitize slotsMap: remove single brackets or raw placeholder tokens
+                val cleanedSlotsMap = mutableMapOf<String, String>()
+                for ((k, v) in slotsMap) {
+                    val cleanVal = v.replace(Regex("[\\[\\]]"), "").trim()
+                    if (cleanVal.isNotEmpty() && !cleanVal.equals("quote", ignoreCase = true) && !cleanVal.equals("contact", ignoreCase = true)) {
+                        cleanedSlotsMap[k] = cleanVal
+                    }
+                }
+
+                Log.d(TAG, "Joint NLU: intent=$intent ($confidence), slots=$cleanedSlotsMap")
+                return JointNluResult(intent, confidence, cleanedSlotsMap)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed running Joint NLU classification", e)

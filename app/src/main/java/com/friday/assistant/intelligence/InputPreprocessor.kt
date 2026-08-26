@@ -35,24 +35,28 @@ object InputPreprocessor {
 
         // 2. Message payloads: text after "saying/with/that" in message/whatsapp/sms commands
         val messagePatterns = listOf(
-            "(?i)(?:text|sms|message|whatsapp|send message to|send whatsapp to)\\s+(.+?)\\s+(?:saying|with|that|message|write)\\s*(.+)".toRegex()
+            "(?i)(?:send a message to|send message to|send a whatsapp to|send whatsapp to|send an? (?:sms|text) to|message|text|whatsapp)\\s+(.+?)\\s+(?:saying|with|that|message|write)\\s*(.+)".toRegex(),
+            "(?i)(?:send a message to|send message to|send a whatsapp to|send whatsapp to|send an? (?:sms|text) to)\\s+(.+?)$".toRegex()
         )
         for (pattern in messagePatterns) {
             val match = pattern.find(workingText)
             if (match != null) {
-                val recipient = match.groupValues[1].trim()
-                val body = match.groupValues[2].trim()
+                var recipient = match.groupValues[1].trim()
+                if (recipient.lowercase().startsWith("to ")) {
+                    recipient = recipient.substring(3).trim()
+                }
+                val body = if (match.groupValues.size > 2) match.groupValues[2].trim() else ""
                 
-                if (!body.startsWith("[QUOTE")) {
+                if (body.isNotEmpty() && !body.startsWith("[QUOTE")) {
                     val key = "[QUOTE]"
                     entities[key] = body
                     workingText = workingText.replace(body, key)
                 }
                 
-                if (!recipient.startsWith("[CONTACT") && !recipient.startsWith("[PHONE")) {
+                if (recipient.isNotEmpty() && !recipient.startsWith("[CONTACT") && !recipient.startsWith("[PHONE")) {
                     val key = "[CONTACT]"
                     entities[key] = recipient
-                    workingText = workingText.replace(recipient, key)
+                    workingText = workingText.replace(match.groupValues[1], key)
                 }
                 break
             }

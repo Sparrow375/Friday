@@ -98,7 +98,7 @@ class MediaControlTool(private val context: Context) : Tool {
             app?.contains("youtube music") == true || app == "yt music" -> playOnYouTubeMusic(query)
             app?.contains("youtube") == true || app == "yt" -> searchOnYouTube(query)
             app?.contains("google") == true -> searchOnGoogle(query)
-            else -> playFromSearchDefault(query)
+            else -> searchOnYouTube(query)
         }
     }
 

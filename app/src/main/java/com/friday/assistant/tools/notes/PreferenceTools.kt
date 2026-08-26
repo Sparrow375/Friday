@@ -66,10 +66,22 @@ class RecallPreferenceTool(private val memoryManager: MemoryManager) : Tool {
         val key = args.get("key")?.asString ?: return ToolResult(false, "Missing parameter: key")
         val value = memoryManager.getPreference(key)
         
-        return if (value != null) {
-            ToolResult(true, "Memory recall for '$key': $value")
-        } else {
-            ToolResult(true, "I do not have any memory saved for the key '$key'")
+        if (value != null) {
+            return ToolResult(true, "Memory recall for '$key': $value")
         }
+
+        // Fallback: search notes for the query key
+        val notesTool = com.friday.assistant.tools.ToolRegistry.get("notes_control")
+        if (notesTool != null) {
+            val noteRes = notesTool.execute(JsonObject().apply {
+                addProperty("action", "search")
+                addProperty("query", key)
+            })
+            if (noteRes.success && !noteRes.data.startsWith("No notes found") && !noteRes.data.startsWith("You do not have")) {
+                return noteRes
+            }
+        }
+
+        return ToolResult(true, "I do not have any memory or note saved about '$key'.")
     }
 }

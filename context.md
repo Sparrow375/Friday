@@ -206,6 +206,33 @@ The project uses a clean package namespace `com.friday.assistant`:
       3. Routed `FridayAccessibilityService.triggerAssistantActivation()` to launch `TriggerActivity` with `FLAG_ACTIVITY_NEW_TASK` whenever `KeyguardManager.isKeyguardLocked` is true, ensuring seamless keyguard bypass.
       4. Configured native `VoiceInteractionSession` (`FridaySessionService.kt`) to support Power/Side button long-press assistant invocation while the phone is locked.
     - **Build Status**: Verified via `./gradlew assembleDebug` (BUILD SUCCESSFUL in 20s).
+  * *Updated (August 2026 - Voice, NLU, Overlay, Reminders & YouTube Enhancements)*:
+    - **Contact-Aware Speech Recognition & Phonetic Correction (`ContactHelper.kt`, `SpeechToTextHelper.kt`)**:
+      - Built `ContactHelper` which caches contacts safely and performs phonetic / Levenshtein / consonant skeleton matching against device contacts (e.g. ASR "connecting" correctly resolves to contact "Kanak").
+      - Added common ASR phonetic substitutions in `SpeechToTextHelper` (e.g. "soch"/"surch" -> "search", "banalcne" -> "balance").
+      - Evaluated all candidate recognition hypotheses returned by Android `SpeechRecognizer` to pick the best contact-aligned match.
+    - **Strict Call Mapping & Messaging Conflict Resolution (`AgentCore.kt`, `InputPreprocessor.kt`, `NluIntentClassifier.kt`)**:
+      - Enforced strict call action verification in `handleMessagingAndCalls`: calls are exclusively triggered by call action verbs ("call", "dial", "ring") and strictly reject commands containing messaging words ("message", "text", "whatsapp", "saying", "send").
+      - Reordered command execution so WhatsApp/Messaging is evaluated before Phone Calls, preventing "send message to [name]" from hijacking the phone dialer.
+      - Fixed `InputPreprocessor` message patterns to prioritize full phrases like "send a message to" over the single word "message", preventing "to [Name]" recipient corruption.
+      - Sanitized ONNX slot extraction to strip bracket artifacts (`[` and `]`) and placeholder tokens (`quote`, `contact`), eliminating empty/bracketed contacts like `]`.
+    - **Note Retrieval & Cross-Search (`NotesTool.kt`, `PreferenceTools.kt`, `AgentCore.kt`)**:
+      - Upgraded `NotesTool.searchNotes()` with stop-word filtering, multi-keyword relevance scoring, and typo/fuzzy matching so queries like "what is metro balance" reliably locate notes like "my metro banalcne is 70".
+      - Integrated cross-search fallback in `RecallPreferenceTool` and `handleNotesAndPreferences` so attribute recall queries automatically search notes if not stored in semantic memory.
+    - **Timed Spoken Reminders (`ReminderScheduler.kt`, `ReminderReceiver.kt`, `FridayService.kt`)**:
+      - Differentiated timed reminders (e.g. "remind me to drink water in 10 seconds") from persistent notes using duration pattern detection.
+      - Implemented exact alarm scheduling via `AlarmManager` with `setExactAndAllowWhileIdle()` targeting `ReminderReceiver`.
+      - Fired spoken TTS readout and heads-up notification upon alarm completion through `FridayService.speakReminder()`.
+    - **Assistant Overlay Responsiveness & Visibility (`OverlayManager.kt`, `FridayOverlayContent.kt`, `FridayService.kt`)**:
+      - Eliminated race condition where `resetStateFlows()` reset overlay state to `IDLE` during fast-path showing, ensuring the audio waveform composable displays immediately instead of the mic icon.
+      - Removed artificial restriction that hid assistant response text on `IDLE`, preserving response visibility with a comfortable 3000ms hold delay before auto-dismissal.
+    - **Direct Google Search Command Trigger (`AgentCore.kt`)**:
+      - Added explicit support for "search ... on google" and "on google" in `isSearchGoogle`, stripping search noise and routing directly to the Google search action rather than falling back.
+    - **YouTube Auto-Play & Shorts Filtering (`MediaControlTool.kt`, `FridayAccessibilityService.kt`)**:
+      - Routed unspecified song playback queries ("play [song]") to YouTube by default, enabling automated video playback.
+      - Added `isShortsNode()` inspection in `FridayAccessibilityService` to filter out YouTube Shorts, reel shelves, and `#shorts` videos, ensuring auto-play clicks the first full-length video result.
+    - **Build Status**: Verified via `./gradlew assembleDebug` (BUILD SUCCESSFUL in 26s).
+
 
 
 

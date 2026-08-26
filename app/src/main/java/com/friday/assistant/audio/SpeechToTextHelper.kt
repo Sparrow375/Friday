@@ -224,12 +224,25 @@ class SpeechToTextHelper(
         override fun onResults(results: Bundle?) {
             if (earlyCommitFired) return
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            val finalResultText = matches?.firstOrNull() ?: ""
+            var chosenResult = matches?.firstOrNull() ?: ""
+            // Check all candidates to see if any candidate yields a better contact or phonetic match
+            for (candidate in matches ?: emptyList()) {
+                val corrected = com.friday.assistant.intelligence.ContactHelper.correctTranscript(context, candidate)
+                if (corrected != candidate) {
+                    chosenResult = corrected
+                    break
+                }
+            }
+            if (chosenResult.isBlank() && !matches.isNullOrEmpty()) {
+                chosenResult = matches[0]
+            }
+            val finalResultText = com.friday.assistant.intelligence.ContactHelper.correctTranscript(context, chosenResult)
+
             mainHandler.post {
                 cancelEarlyCommitTimer()
                 isListening = false
                 if (finalResultText.isNotBlank()) {
-                    Log.i(TAG, "Speech recognition final result: '$finalResultText'")
+                    Log.i(TAG, "Speech recognition final result (corrected): '$finalResultText'")
                     onFinalResult(finalResultText)
                 } else {
                     onStateChanged(PipelineState.IDLE)
@@ -241,7 +254,8 @@ class SpeechToTextHelper(
             if (earlyCommitFired) return
             val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             if (!matches.isNullOrEmpty()) {
-                val text = matches[0]
+                val rawText = matches[0]
+                val text = com.friday.assistant.intelligence.ContactHelper.correctTranscript(context, rawText)
                 Log.d(TAG, "Speech recognition partial result: '$text'")
                 onTranscriptUpdate(text)
                 scheduleEarlyCommitCheck(text)

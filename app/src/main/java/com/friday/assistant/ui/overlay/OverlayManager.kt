@@ -66,7 +66,7 @@ class OverlayManager(
 
     private var params: WindowManager.LayoutParams? = null
 
-    fun show() {
+    fun show(initialState: PipelineState = PipelineState.LISTENING) {
         if (isVisible) return
 
         wakeScreenIfNecessary()
@@ -78,15 +78,15 @@ class OverlayManager(
             composeView?.visibility = android.view.View.VISIBLE
             myLifecycleRegistry.currentState = Lifecycle.State.RESUMED
             isVisible = true
-            resetStateFlows()
+            resetStateFlows(initialState)
             return
         }
 
-        com.friday.assistant.core.FridayLogger.i(TAG, "Showing overlay window")
+        com.friday.assistant.core.FridayLogger.i(TAG, "Showing overlay window with initial state: $initialState")
 
-        // Reset state flows to clear any previous responses/transcripts
-        pipelineState.value = PipelineState.IDLE
-        statusText.value = "Active"
+        // Initialize state flows with the active initial state
+        pipelineState.value = initialState
+        statusText.value = if (initialState == PipelineState.LISTENING) "Listening..." else "Active"
         transcript.value = ""
         assistantResponse.value = ""
         audioAmplitude.value = 0f
@@ -184,9 +184,9 @@ class OverlayManager(
         isVisible = false
     }
 
-    private fun resetStateFlows() {
-        pipelineState.value = PipelineState.IDLE
-        statusText.value = "Active"
+    private fun resetStateFlows(initialState: PipelineState = PipelineState.LISTENING) {
+        pipelineState.value = initialState
+        statusText.value = if (initialState == PipelineState.LISTENING) "Listening..." else "Active"
         transcript.value = ""
         assistantResponse.value = ""
         audioAmplitude.value = 0f

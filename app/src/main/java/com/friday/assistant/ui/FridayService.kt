@@ -36,6 +36,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         const val ACTION_TRIGGER_GESTURE = "com.friday.assistant.ACTION_TRIGGER_GESTURE"
         const val ACTION_PAUSE_WAKEWORD = "com.friday.assistant.ACTION_PAUSE_WAKEWORD"
         const val ACTION_RESUME_WAKEWORD = "com.friday.assistant.ACTION_RESUME_WAKEWORD"
+        const val ACTION_SPEAK_REMINDER = "com.friday.assistant.ACTION_SPEAK_REMINDER"
 
         @Volatile
         var instance: FridayService? = null
@@ -173,6 +174,9 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             stopWakeWordListening()
         } else if (action == ACTION_RESUME_WAKEWORD) {
             startWakeWordListening()
+        } else if (action == ACTION_SPEAK_REMINDER) {
+            val text = intent.getStringExtra(ReminderReceiver.EXTRA_REMINDER_TEXT) ?: "You have a reminder."
+            speakReminder(text)
         }
 
         return START_STICKY
@@ -180,6 +184,15 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
     private suspend fun setupNativeModels() {
         // GGUF model is loaded lazily inside AgentCore on first complex query to prevent memory starvation at startup
+    }
+
+    fun speakReminder(reminderText: String) {
+        serviceScope.launch {
+            overlayManager?.show(PipelineState.SPEAKING)
+            val speech = "Reminder: $reminderText"
+            transitionToState(PipelineState.SPEAKING, statusMessage = "Reminder", responseText = speech)
+            speakResponse(speech)
+        }
     }
 
     private fun transitionToState(
@@ -203,8 +216,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 overlayManager?.updateAmplitude(0f)
                 speechToTextHelper.onIdle()
                 
-                // Auto-dismiss overlay — reduced delays since dismiss() now calls hide() (instant re-show)
-                val dismissDelay = if (oldState == PipelineState.SPEAKING) 400L else 300L
+                // Auto-dismiss overlay — hold for 3 seconds after speaking or 1.5s so user can read response
+                val dismissDelay = if (oldState == PipelineState.SPEAKING) 3000L else 1500L
                 serviceScope.launch {
                     kotlinx.coroutines.delay(dismissDelay)
                     if (pipelineState.value == PipelineState.IDLE) {

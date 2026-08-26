@@ -568,38 +568,65 @@ class FridayAccessibilityService : AccessibilityService() {
         }.start()
     }
 
+    private fun isShortsNode(node: AccessibilityNodeInfo): Boolean {
+        val cd = node.contentDescription?.toString()?.lowercase() ?: ""
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val rid = node.viewIdResourceName?.lowercase() ?: ""
+
+        if (rid.contains("shorts") || rid.contains("reel") || rid.contains("short_video")) return true
+        if (cd.contains("#shorts") || cd.contains("shorts") || cd.contains("short video")) return true
+        if (text.contains("#shorts") || text == "shorts") return true
+
+        // Check immediate children for shorts indicators
+        for (i in 0 until minOf(node.childCount, 6)) {
+            val child = node.getChild(i) ?: continue
+            val childCd = child.contentDescription?.toString()?.lowercase() ?: ""
+            val childText = child.text?.toString()?.lowercase() ?: ""
+            val childRid = child.viewIdResourceName?.lowercase() ?: ""
+            if (childRid.contains("shorts") || childRid.contains("reel")) return true
+            if (childCd.contains("#shorts") || childCd.contains("shorts")) return true
+            if (childText.contains("#shorts") || childText == "shorts") return true
+        }
+        return false
+    }
+
     private fun findYouTubeVideoElement(root: AccessibilityNodeInfo, query: String): AccessibilityNodeInfo? {
-        // Strategy 1: Find video title/thumbnail matching query keywords
+        // Strategy 1: Find video title/thumbnail matching query keywords (excluding shorts)
         if (query.isNotEmpty()) {
             val queryWords = query.lowercase().split(" ").filter { it.length > 2 }
             for (w in queryWords) {
                 val nodes = root.findAccessibilityNodeInfosByText(w)
                 if (!nodes.isNullOrEmpty()) {
                     for (node in nodes) {
+                        if (isShortsNode(node) || node.parent?.let { isShortsNode(it) } == true) continue
                         val clickable = findClickableNode(node)
-                        if (clickable != null) return clickable
+                        if (clickable != null && !isShortsNode(clickable)) return clickable
                     }
                 }
             }
         }
 
-        // Strategy 2: Look for viewId containing video/item/thumbnail/result
+        // Strategy 2: Look for viewId containing video/item/thumbnail/result (excluding shorts)
         val videoIds = listOf("video_title", "thumbnail", "results", "item_layout", "grid_layout")
         val byId = walkTree(root) { node ->
             val rid = node.viewIdResourceName?.lowercase() ?: ""
-            videoIds.any { rid.contains(it) } && (node.isClickable || node.parent?.isClickable == true)
+            videoIds.any { rid.contains(it) } && (node.isClickable || node.parent?.isClickable == true) && !isShortsNode(node)
         }
-        if (byId != null) return findClickableNode(byId) ?: byId
+        if (byId != null && !isShortsNode(byId)) return findClickableNode(byId) ?: byId
 
-        // Strategy 3: Find first clickable child in RecyclerView
+        // Strategy 3: Find first clickable child in RecyclerView that is NOT a Short
         val recyclerView = walkTree(root) { node ->
             node.className?.toString()?.contains("RecyclerView") == true
         }
         if (recyclerView != null && recyclerView.childCount > 0) {
-            for (i in 0 until minOf(4, recyclerView.childCount)) {
+            for (i in 0 until minOf(8, recyclerView.childCount)) {
                 val child = recyclerView.getChild(i) ?: continue
+                if (isShortsNode(child)) {
+                    Log.d(TAG, "Skipping YouTube Shorts result at index $i")
+                    continue
+                }
                 val clickable = findClickableNode(child) ?: (if (child.isClickable) child else null)
-                if (clickable != null) return clickable
+                if (clickable != null && !isShortsNode(clickable)) return clickable
             }
         }
 

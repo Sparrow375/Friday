@@ -58,9 +58,11 @@ class AgentCore(
         private val TOOL_ARG_REGEX = Regex("\"([^\"]+)\"\\s*:\\s*\"([^\"]+)\"")
         private val EMOJI_REGEX = Regex("[\\p{So}\\p{Cn}]")
         private val WHATSAPP_PATTERNS = listOf(
-            Regex("(?i)(?:message|text|send message to)\\s+(.+?)\\s+on\\s+whatsapp\\s+(?:saying|text|message)?\\s*(.+)"),
-            Regex("(?i)(?:message|text|send message to)\\s+(.+?)\\s+(?:saying|text|message)?\\s*(.+)\\s+on\\s+whatsapp"),
-            Regex("(?i)whatsapp\\s+(.+?)\\s+(?:saying|text|message)?\\s*(.+)")
+            Regex("(?i)(?:send a message to|send message to|message|text)\\s+(.+?)\\s+on\\s+whatsapp\\s+(?:saying|text|message)?\\s*(.+)"),
+            Regex("(?i)(?:send a message to|send message to|message|text)\\s+(.+?)\\s+(?:saying|text|message)?\\s*(.+)\\s+on\\s+whatsapp"),
+            Regex("(?i)(?:send a message to|send message to|message|text)\\s+(.+?)\\s+(?:saying|that|with|message)\\s*(.+)"),
+            Regex("(?i)whatsapp\\s+(.+?)\\s+(?:saying|text|message)?\\s*(.+)"),
+            Regex("(?i)(?:send a message to|send message to|message|text)\\s+(.+)")
         )
         private val EMAIL_PATTERNS = listOf(
             Regex("(?i)(?:send email|send mail|email|mail)\\s+to\\s+(.+?)\\s+subject\\s+(.+?)\\s+body\\s+(.+)"),
@@ -313,6 +315,40 @@ class AgentCore(
             }
         }
 
+        // Timed Spoken Reminders (e.g. "remind me to drink water in 10 seconds", "remind me in 5 minutes to call dad")
+        val isReminderQuery = cleanQuery.contains("remind me") || cleanQuery.contains("set a reminder") || cleanQuery.contains("remind")
+        val durMatch = TIMER_DURATION_REGEX.find(preprocessed.originalText)
+        if (isReminderQuery && durMatch != null) {
+            val value = durMatch.groupValues[1].toInt()
+            val unit = durMatch.groupValues[2].lowercase()
+            val durationSeconds = when {
+                unit.startsWith("hour") || unit.startsWith("hr") -> value * 3600L
+                unit.startsWith("minute") || unit.startsWith("min") -> value * 60L
+                else -> value.toLong()
+            }
+
+            var reminderMsg = preprocessed.originalText
+                .replace(Regex("(?i)^(?:friday|hey friday)[,\\s]*"), "")
+                .replace(Regex("(?i)\\b(?:please|can you|could you)\\b"), "")
+                .replace(Regex("(?i)remind me (?:to|of|about)?\\s*"), "")
+                .replace(Regex("(?i)set a reminder (?:to|of|about)?\\s*"), "")
+                .replace(Regex("(?i)\\bin\\s+\\d+\\s*(?:hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b"), "")
+                .replace(Regex("(?i)\\bfor\\s+\\d+\\s*(?:hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b"), "")
+                .trim()
+            if (reminderMsg.isEmpty()) reminderMsg = "check your reminder"
+
+            _agentStatusFlow.emit("Setting reminder...")
+            val scheduled = ReminderScheduler.schedule(context, durationSeconds, reminderMsg)
+            if (scheduled) {
+                val timeDesc = when {
+                    durationSeconds >= 3600 -> "${durationSeconds / 3600} hours"
+                    durationSeconds >= 60 -> "${durationSeconds / 60} minutes"
+                    else -> "$durationSeconds seconds"
+                }
+                return fast("I will remind you to $reminderMsg in $timeDesc.")
+            }
+        }
+
         return null
     }
 
@@ -322,13 +358,68 @@ class AgentCore(
         preprocessed: PreprocessedInput,
         nluSlots: Map<String, String>
     ): QueryResult? {
-        val callContact = nluSlots["CONTACT"] 
-            ?: preprocessed.extractedEntities["[CONTACT]"] 
-            ?: EntityExtractor.extractCallContact(preprocessed.originalText)
-        val isCallQuery = matchedIntent == "call_contact" || (callContact != null && !cleanQuery.contains("text") && !cleanQuery.contains("whatsapp") && !cleanQuery.contains("remind"))
+        val hasCallVerb = cleanQuery.contains(Regex("\\b(call|dial|ring|phone)\\b"))
+        val hasMsgVerb = cleanQuery.contains(Regex("\\b(message|text|whatsapp|sms|saying|send)\\b"))
+
+        // 1. WhatsApp & Messaging FIRST (prevents calling collision!)
+        val isWhatsAppQuery = matchedIntent == "send_whatsapp" || hasMsgVerb ||
+            cleanQuery.contains("whatsapp") || cleanQuery.startsWith("send message") || cleanQuery.startsWith("text ")
+        if (isWhatsAppQuery && !hasCallVerb) {
+            var recipient = (nluSlots["CONTACT"] ?: preprocessed.extractedEntities["[CONTACT]"] ?: "")
+                .replace(Regex("[\\[\\]]"), "").trim()
+            if (recipient.lowercase().startsWith("to ")) recipient = recipient.substring(3).trim()
+            var msgText = (nluSlots["MESSAGE"] ?: preprocessed.extractedEntities["[QUOTE]"] ?: "")
+                .replace(Regex("[\\[\\]]"), "").trim()
+
+            if (recipient.isEmpty() || msgText.isEmpty()) {
+                for (pattern in WHATSAPP_PATTERNS) {
+                    val match = pattern.find(preprocessed.originalText)
+                    if (match != null) {
+                        if (recipient.isEmpty()) {
+                            var r = match.groupValues[1].trim()
+                            if (r.lowercase().startsWith("to ")) r = r.substring(3).trim()
+                            recipient = r
+                        }
+                        if (msgText.isEmpty() && match.groupValues.size > 2) {
+                            msgText = match.groupValues[2].removePrefix("\"").removeSuffix("\"").trim()
+                        }
+                        break
+                    }
+                }
+            }
+
+            // Resolve contact through actual device contacts using ContactHelper
+            val matchedContact = ContactHelper.findBestMatchingContact(context, recipient)
+            if (matchedContact != null) {
+                recipient = matchedContact
+            }
+
+            if (recipient.isNotEmpty()) {
+                if (msgText.isEmpty()) msgText = "Hello" // Default message if not specified
+                _agentStatusFlow.emit("Messaging $recipient on WhatsApp...")
+                val whatsappTool = ToolRegistry.get("whatsapp_send")
+                if (whatsappTool != null) {
+                    val result = whatsappTool.execute(JsonObject().apply {
+                        addProperty("recipient", recipient)
+                        addProperty("message", msgText)
+                    })
+                    return fast(result.data)
+                }
+            }
+        }
+
+        // 2. Phone Calls (STRICT: only when explicit call verb is present, and no messaging verb)
+        val isCallQuery = !hasMsgVerb && (matchedIntent == "call_contact" || hasCallVerb)
         if (isCallQuery) {
-            val name = callContact ?: preprocessed.originalText.replace(CALL_STRIP_REGEX, "").trim()
-            if (name.isNotEmpty()) {
+            var rawName = (nluSlots["CONTACT"] 
+                ?: preprocessed.extractedEntities["[CONTACT]"] 
+                ?: EntityExtractor.extractCallContact(preprocessed.originalText)
+                ?: preprocessed.originalText.replace(CALL_STRIP_REGEX, ""))
+                .replace(Regex("[\\[\\]]"), "").trim()
+            if (rawName.lowercase().startsWith("to ")) rawName = rawName.substring(3).trim()
+
+            val name = ContactHelper.findBestMatchingContact(context, rawName) ?: rawName
+            if (name.isNotEmpty() && name != "]" && name != "[") {
                 _agentStatusFlow.emit("Calling $name...")
                 val tool = ToolRegistry.get("phone_control")
                 if (tool != null) {
@@ -347,36 +438,6 @@ class AgentCore(
             if (tool != null) {
                 val result = tool.execute(JsonObject().apply { addProperty("action", "read_call_log") })
                 return toolResult(result)
-            }
-        }
-
-        val isWhatsAppQuery = matchedIntent == "send_whatsapp" ||
-            (cleanQuery.contains("whatsapp") && (cleanQuery.contains("message") || cleanQuery.contains("send") || cleanQuery.contains("text")))
-        if (isWhatsAppQuery) {
-            var recipient = nluSlots["CONTACT"] ?: preprocessed.extractedEntities["[CONTACT]"] ?: ""
-            var msgText = nluSlots["MESSAGE"] ?: preprocessed.extractedEntities["[QUOTE]"] ?: ""
-
-            if (recipient.isEmpty() || msgText.isEmpty()) {
-                for (pattern in WHATSAPP_PATTERNS) {
-                    val match = pattern.find(preprocessed.originalText)
-                    if (match != null) {
-                        if (recipient.isEmpty()) recipient = match.groupValues[1].trim()
-                        if (msgText.isEmpty()) msgText = match.groupValues[2].removePrefix("\"").removeSuffix("\"").trim()
-                        break
-                    }
-                }
-            }
-
-            if (recipient.isNotEmpty() && msgText.isNotEmpty()) {
-                _agentStatusFlow.emit("Messaging $recipient on WhatsApp...")
-                val whatsappTool = ToolRegistry.get("whatsapp_send")
-                if (whatsappTool != null) {
-                    val result = whatsappTool.execute(JsonObject().apply {
-                        addProperty("recipient", recipient)
-                        addProperty("message", msgText)
-                    })
-                    return fast(result.data)
-                }
             }
         }
 
@@ -759,16 +820,16 @@ class AgentCore(
             val app = when (matchedIntent) {
                 "play_spotify" -> "spotify"
                 "play_youtube" -> "youtube"
-                else -> nluSlots["APP"] ?: targetApp
+                else -> (nluSlots["APP"] ?: targetApp) ?: "youtube"
             }
             if (mediaQuery.isNotEmpty()) {
-                _agentStatusFlow.emit("Playing $mediaQuery${if (app != null) " on $app" else ""}...")
+                _agentStatusFlow.emit("Playing $mediaQuery on $app...")
                 val mediaTool = ToolRegistry.get("media_control")
                 if (mediaTool != null) {
                     val result = mediaTool.execute(JsonObject().apply {
                         addProperty("action", "play_search")
                         addProperty("query", mediaQuery)
-                        if (app != null) addProperty("app", app)
+                        addProperty("app", app)
                     })
                     DialogueStateTracker.record("media", "on")
                     return toolResult(result)
@@ -787,8 +848,9 @@ class AgentCore(
         confidence: Float
     ): QueryResult? {
         val isNoteCreate = matchedIntent == "notes_create" && confidence > 0.7f ||
-                cleanQuery.startsWith("note ") || cleanQuery.startsWith("remind me to") ||
-                cleanQuery.contains("save note") || cleanQuery.contains("note down")
+                cleanQuery.startsWith("note ") ||
+                cleanQuery.contains("save note") || cleanQuery.contains("note down") ||
+                (cleanQuery.startsWith("remind me to") && !cleanQuery.contains(Regex("\\b(in|after)\\s+\\d+\\s*(sec|min|hour)")))
         if (isNoteCreate) {
             val content = nluSlots["NOTE_CONTENT"] ?: preprocessed.originalText
                 .replace(Regex("(?i)^(?:remind me to|note down|save note that|take a note that|note my|note that)\\s+"), "")
@@ -820,9 +882,15 @@ class AgentCore(
             }
         }
 
-        val isNoteSearch = matchedIntent == "notes_search" && confidence > 0.7f
+        val isNoteSearch = matchedIntent == "notes_search" && confidence > 0.6f ||
+                cleanQuery.contains("search note") || cleanQuery.contains("find note") ||
+                cleanQuery.contains("check note") || cleanQuery.contains("in my notes") ||
+                cleanQuery.contains("from my notes")
         if (isNoteSearch) {
-            val searchQuery = nluSlots["QUERY"] ?: cleanQuery
+            val searchQuery = (nluSlots["QUERY"] ?: cleanQuery
+                .replace(Regex("(?i)^(?:search|find|check|look up|get)\\s+(?:notes?|my notes?)\\s*(?:for)?\\s*"), "")
+                .replace(Regex("(?i)\\s+in my notes?$"), "")
+                .trim()).takeIf { it.isNotEmpty() } ?: cleanQuery
             _agentStatusFlow.emit("Searching notes for '$searchQuery'...")
             val notesTool = ToolRegistry.get("notes_control")
             if (notesTool != null) {
@@ -870,21 +938,40 @@ class AgentCore(
             }
         }
 
-        val isRecall = matchedIntent == "recall_preference" && confidence > 0.7f ||
+        val isRecall = matchedIntent == "recall_preference" && confidence > 0.6f ||
                 cleanQuery.contains("what do you remember about me") ||
                 cleanQuery.contains("what have i told you") ||
                 cleanQuery.contains("my saved preferences") ||
                 cleanQuery.contains("recall what you know") ||
-                cleanQuery.startsWith("what is my ") || cleanQuery.startsWith("whats my ")
+                cleanQuery.startsWith("what is my ") || cleanQuery.startsWith("whats my ") ||
+                cleanQuery.startsWith("what is ") || cleanQuery.startsWith("whats ")
         if (isRecall) {
             val recallTool = ToolRegistry.get("recall_preference") ?: ToolRegistry.get("recall")
+            val key = (nluSlots["QUERY"] ?: cleanQuery
+                .replace(Regex("(?i)^what(?:'s|s| is)?\\s+(?:my\\s+)?"), "")
+                .replace("?", "")
+                .trim()).takeIf { it.isNotEmpty() } ?: "profile"
+
+            _agentStatusFlow.emit("Recalling...")
             if (recallTool != null) {
-                val key = nluSlots["QUERY"] ?: "profile"
-                _agentStatusFlow.emit("Recalling memory...")
                 val result = recallTool.execute(JsonObject().apply {
                     addProperty("key", key)
                 })
-                return toolResult(result)
+                if (result.success && !result.data.contains("do not have any memory")) {
+                    return toolResult(result)
+                }
+            }
+
+            // Cross-search notes (e.g. for "what is metro balance")
+            val notesTool = ToolRegistry.get("notes_control")
+            if (notesTool != null) {
+                val noteRes = notesTool.execute(JsonObject().apply {
+                    addProperty("action", "search")
+                    addProperty("query", key)
+                })
+                if (noteRes.success && !noteRes.data.startsWith("No notes found") && !noteRes.data.startsWith("You do not have")) {
+                    return toolResult(noteRes)
+                }
             }
         }
 
@@ -1000,7 +1087,8 @@ class AgentCore(
 
         val isSearchGoogle = matchedIntent == "search_google" || (matchedIntent == "web_search" && confidence > 0.6f) ||
                 cleanQuery.startsWith("google ") || cleanQuery.contains("search google") ||
-                cleanQuery.contains("search the web for") ||
+                cleanQuery.contains("search the web for") || cleanQuery.contains("on google") ||
+                (cleanQuery.startsWith("search ") && cleanQuery.contains("google")) ||
                 (cleanQuery.contains("look this up") && !cleanQuery.contains("reddit"))
         if (isSearchGoogle) {
             var searchPhrase = nluSlots["QUERY"]
@@ -1008,6 +1096,7 @@ class AgentCore(
                 searchPhrase = cleanQuery
                     .replace(Regex("(?i)^(?:google|search google for|search for|search|look up)\\s+"), "")
                     .replace(Regex("(?i)\\s+on\\s+google$"), "")
+                    .replace(Regex("(?i)\\s+google$"), "")
                     .trim()
             }
             if (searchPhrase.isEmpty()) searchPhrase = preprocessed.originalText

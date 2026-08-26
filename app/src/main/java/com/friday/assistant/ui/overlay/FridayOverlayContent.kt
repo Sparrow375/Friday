@@ -184,7 +184,7 @@ fun FridayOverlayContent(
                     }
 
                     // Assistant Text Response (with typewriter scroll effect)
-                    if (assistantResponse.isNotEmpty() && (pipelineState == PipelineState.SPEAKING || pipelineState == PipelineState.THINKING)) {
+                    if (assistantResponse.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(12.dp))
                         TypewriterText(
                             text = assistantResponse,
