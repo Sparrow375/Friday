@@ -649,7 +649,9 @@ class FridayAccessibilityService : AccessibilityService() {
 
     /**
      * After a WhatsApp chat is opened (via deep link), waits for the send button
-     * to appear and taps it autonomously using both Accessibility Action and hardware Touch Tap.
+     * to appear and taps it autonomously.
+     * Guards against double-firing and never clicks when the text field is empty
+     * (which would trigger WhatsApp's voice recording / mic button).
      * Polls for up to [timeoutMs] ms.
      */
     fun postWhatsAppSend(timeoutMs: Long = 7000L, callback: (Boolean) -> Unit) {
@@ -671,15 +673,21 @@ class FridayAccessibilityService : AccessibilityService() {
                                 val latch = java.util.concurrent.CountDownLatch(1)
                                 mainHandler.post {
                                     val target = findClickableNode(sendNode) ?: sendNode
-                                    target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                                    if (rect.width() > 0 && rect.height() > 0) {
+                                    val actionClicked = target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                                    // CRITICAL: ONLY fallback to hardware dispatchTap if ACTION_CLICK failed!
+                                    // Never fire both, because after ACTION_CLICK sends the text, WhatsApp replaces
+                                    // the send button with the voice recorder button at the exact same coordinates!
+                                    if (!actionClicked && rect.width() > 0 && rect.height() > 0) {
+                                        Log.d(TAG, "ACTION_CLICK returned false, falling back to dispatchTap")
                                         dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat())
                                     }
                                     latch.countDown()
                                 }
                                 latch.await(600, java.util.concurrent.TimeUnit.MILLISECONDS)
                                 sent = true
-                                Log.i(TAG, "WhatsApp Send button clicked successfully! (bounds: $rect)")
+                                Log.i(TAG, "WhatsApp Send button triggered cleanly! (bounds: $rect)")
+                                // Wait 400ms for WhatsApp to complete send animation and settle UI
+                                Thread.sleep(400)
                                 break
                             }
                         }
@@ -695,16 +703,34 @@ class FridayAccessibilityService : AccessibilityService() {
     }
 
     private fun findWhatsAppSendButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        // Strategy 1: Search by content description (WhatsApp's icon button uses contentDescription="Send")
+        val isVoiceNoteButton = { node: AccessibilityNodeInfo ->
+            val cd = node.contentDescription?.toString()?.lowercase() ?: ""
+            cd.contains("voice") || cd.contains("record") || cd.contains("mic") || cd.contains("ptt")
+        }
+
+        // 1. Mandatory Pre-condition: Check if WhatsApp's message field actually has text
+        // In WhatsApp, the Send button ONLY exists when text is in the message box.
+        // If the message box is empty, WhatsApp displays the Voice Memo button instead!
+        val hasTextMessage = walkTree(root) { node ->
+            node.className?.toString()?.contains("EditText") == true && !node.text.isNullOrBlank()
+        } != null
+        if (!hasTextMessage) {
+            // Text has already been sent (or not entered yet) - NEVER click to avoid voice note!
+            return null
+        }
+
+        // Strategy 1: Search by content description (WhatsApp's send icon uses contentDescription="Send")
         val byContentDesc = walkTree(root) { node ->
+            if (isVoiceNoteButton(node)) return@walkTree false
             val cd = node.contentDescription?.toString()?.trim() ?: ""
-            cd.equals("Send", ignoreCase = true) || cd.equals("send", ignoreCase = true) || cd.contains("send message", ignoreCase = true) || cd.contains("send", ignoreCase = true)
+            cd.equals("Send", ignoreCase = true) || cd.contains("send message", ignoreCase = true)
         }
         if (byContentDesc != null) return byContentDesc
 
         // Strategy 2: Search by viewIdResourceName
         val sendIds = listOf("send", "send_btn", "conversation_entry_action_button", "entry_action", "send_button")
         val byId = walkTree(root) { node ->
+            if (isVoiceNoteButton(node)) return@walkTree false
             val rid = node.viewIdResourceName?.lowercase() ?: ""
             sendIds.any { rid.endsWith(it) || rid.contains(it) }
         }
@@ -716,6 +742,7 @@ class FridayAccessibilityService : AccessibilityService() {
             val nodes = root.findAccessibilityNodeInfosByText(label)
             if (!nodes.isNullOrEmpty()) {
                 for (node in nodes) {
+                    if (isVoiceNoteButton(node)) continue
                     if (node.isClickable) return node
                     val parent = findClickableNode(node)
                     if (parent != null) return parent
@@ -723,7 +750,7 @@ class FridayAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Strategy 4: Find ImageButton / ImageView at bottom-right corner of screen
+        // Strategy 4: Find ImageButton / ImageView at bottom-right corner of screen (ONLY if not a voice button)
         val screenBounds = android.graphics.Rect()
         root.getBoundsInScreen(screenBounds)
         val screenWidth = screenBounds.width()
@@ -731,6 +758,7 @@ class FridayAccessibilityService : AccessibilityService() {
 
         if (screenWidth > 0 && screenHeight > 0) {
             val bottomCornerButton = walkTree(root) { node ->
+                if (isVoiceNoteButton(node)) return@walkTree false
                 val nodeRect = android.graphics.Rect()
                 node.getBoundsInScreen(nodeRect)
                 val isBottom = nodeRect.bottom > screenHeight * 0.50

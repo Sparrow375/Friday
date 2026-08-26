@@ -231,7 +231,46 @@ The project uses a clean package namespace `com.friday.assistant`:
     - **YouTube Auto-Play & Shorts Filtering (`MediaControlTool.kt`, `FridayAccessibilityService.kt`)**:
       - Routed unspecified song playback queries ("play [song]") to YouTube by default, enabling automated video playback.
       - Added `isShortsNode()` inspection in `FridayAccessibilityService` to filter out YouTube Shorts, reel shelves, and `#shorts` videos, ensuring auto-play clicks the first full-length video result.
-    - **Build Status**: Verified via `./gradlew assembleDebug` (BUILD SUCCESSFUL in 26s).
+    - **Voice Assistant Core & Safety Overhaul (August 2026)**:
+      - **Emergency Call Safety & Hazard Prevention**:
+        * Root cause: NLU false-positive on "owe friend" mapped to `call_contact`. In `ContactHelper.kt`, consonant skeleton prefix check (`"frnd".startsWith("fr")`) falsely matched "friend" to "Fire" (101 in India). `PhoneTool.makeCall` dialed 101 via `Intent.ACTION_CALL`.
+        * Fix Layer 1: Enforced strict requirement for explicit call verbs (`\b(call|dial)\b`) in `AgentCore.kt`. Without this verb, no phone call can ever be triggered regardless of NLU intent.
+        * Fix Layer 2: In `PostClassificationValidator.kt`, added safety check: if `finalIntent == "call_contact"` without literal `call` or `dial`, intent is suppressed and reclassified to `unknown`.
+        * Fix Layer 3: In `PhoneTool.kt`, blocked direct auto-calling to emergency numbers (`100`, `101`, `102`, `108`, `112`, `911`, `999`, `119`, `000`), routing to `Intent.ACTION_DIAL` so the user must confirm and press call manually.
+        * Fix Layer 4: In `ContactHelper.kt`, eliminated consonant skeleton prefix matching (`startsWith`), requiring exact consonant skeleton matches with minimum 4 consonants to prevent collisions.
+      - **YouTube Autoplay via Web Scraping (`MediaControlTool.kt`)**:
+        * Replaced broken in-app accessibility tree reliance with HTTP scraping of `https://www.youtube.com/results?search_query=...` using regex matching for `watch?v=...` and `videoId`.
+        * Launches `https://www.youtube.com/watch?v=$vid&autoplay=1` directly in Brave/browser for immediate, seamless video playback.
+      - **Notes CRUD Enhancement (`FridayDao.kt`, `NotesTool.kt`, `AgentCore.kt`)**:
+        * Added `@Update suspend fun updateNote(note: NoteEntity)` and `getNoteById(id: Long)` to `FridayDao.kt`.
+        * Added `"update"` action in `NotesTool.kt` taking `note_id` and `content`.
+        * Added regex matching in `AgentCore.kt` for "update note <id> to <content>", "edit note <id> to say <content>", and improved "delete note <id>" routing.
+      - **Long-Term Reminders with Reboot Persistence (`AgentCore.kt`, `ReminderScheduler.kt`, `BootReceiver.kt`)**:
+        * Expanded `TIMER_DURATION_REGEX` to support `days`, `weeks`, and `months`.
+        * Fixed bug in `AgentCore.kt` where reminders with time units beyond hours were mistakenly matched as notes.
+        * Added persistent JSON storage in `ReminderScheduler.kt` and rescheduling hook in `BootReceiver.kt` on `BOOT_COMPLETED` so multi-day reminders survive device restarts.
+      - **Google Search Direct Execution Guard (`AgentCore.kt`, `PostClassificationValidator.kt`)**:
+        * Prevented search queries ("search on google ...", "look up ...") from falling into the "offline assistant mode" error by bypassing `routeToLlm` for explicit web searches and boosting search confidence in the validator.
+      - **WhatsApp Double-Send & Voice Note Bug (`FridayAccessibilityService.kt`)**:
+        * Root cause: WhatsApp replaces the send button with the microphone button as soon as the text field empties. The service was executing `performAction(ACTION_CLICK)` followed immediately by `dispatchTap`, which landed on the microphone button.
+        * Fix: Only dispatch hardware tap if `ACTION_CLICK` returns false. Added pre-check ensuring the `EditText` contains text before clicking, and filtered out any buttons with `contentDescription` containing "voice", "record", or "mic".
+      - **Contact Recognition & Candidate Scoring Overhaul (`SpeechToTextHelper.kt`, `ContactHelper.kt`)**:
+        * Replaced early-break candidate selection with full multi-hypothesis scoring in `SpeechToTextHelper.kt`, giving highest priority (+150 score) to candidates that match exact contacts.
+        * Added phonetic mappings for Indian names like "srujani" (and variants) in `ContactHelper.kt`.
+        * Tightened Levenshtein edit distance and added ambiguity rejection when two contacts are equally close.
+      - **Local PC Test Field (`scripts/test_voice_contact_harness.py`)**:
+        * Built an offline, zero-dependency Python test tool simulating Android SpeechRecognizer multi-candidate hypotheses, contact matching, and emergency call safety. All 6 verification benchmarks pass.
+      - **Joint NLU Training Pipeline & Model Deployment (`scripts/train_joint_nlu.py`, `scripts/friday_joint_nlu_training.ipynb`, `scripts/deploy_model.py`)**:
+        * Added `notes_update` intent label and synthetic templates.
+        * Added negative call training cases ("owe friend", "owe mom money") to `unknown`.
+        * Added extended timer durations (days, weeks, months) and explicit Google search patterns.
+        * Retrained on GPU via Google Colab / extension (`friday_joint_nlu_training.ipynb`).
+        * Deployed generated INT8 ONNX model (`joint_nlu_model.onnx`, 22.9 MB), `joint_intent_labels.json` (47 classes), `labels.txt`, `joint_slot_labels.json` (23 tags), and `slot_labels.txt` directly to `app/src/main/assets/`.
+        * Verified on PC with ONNX Runtime (`scripts/verify_onnx_model.py`):
+          - `"owe friend"` -> `unknown` (99.49% confidence)
+          - `"call rohit"` -> `call_contact` (99.89% confidence)
+          - `"update note 2 to buy milk"` -> `notes_update` (99.84% confidence)
+          - `"search on google for quantum computing"` -> `search_google` (99.90% confidence)
 
 
 

@@ -116,6 +116,18 @@ class PhoneTool(private val context: Context) : Tool {
         val phoneNumber = findContactNumber(contactName)
             ?: return ToolResult(false, "Could not find a contact named '$contactName'")
 
+        val cleanNumber = phoneNumber.replace(Regex("[^0-9]"), "")
+        val emergencyNumbers = setOf("100", "101", "102", "108", "112", "911", "999", "119", "000")
+        if (cleanNumber in emergencyNumbers) {
+            Log.w(TAG, "EMERGENCY SAFETY GUARD: Direct auto-call to $cleanNumber is blocked. Opening dialer safely.")
+            val dialIntent = Intent(Intent.ACTION_DIAL).apply {
+                data = Uri.parse("tel:${Uri.encode(phoneNumber)}")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(dialIntent)
+            return ToolResult(true, "Opened dialer for emergency number $phoneNumber. Please confirm and tap call manually.")
+        }
+
         val intent = Intent(Intent.ACTION_CALL).apply {
             data = Uri.parse("tel:${Uri.encode(phoneNumber)}")
             flags = Intent.FLAG_ACTIVITY_NEW_TASK

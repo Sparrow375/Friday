@@ -32,7 +32,7 @@ INTENT_LABELS = [
     "read_notifications", "get_battery", "get_time",
     "airplane_mode_toggle", "mobile_data_toggle",
     "open_camera", "open_files",
-    "notes_create", "notes_list", "notes_search", "notes_delete",
+    "notes_create", "notes_list", "notes_search", "notes_delete", "notes_update",
     "search_google", "search_reddit", "remember_preference", "recall_preference",
     "unknown"
 ]
@@ -106,7 +106,8 @@ MEDIA_QUERIES = [
 TIMES = [
     "7 am", "6:30 am", "8:00 pm", "tomorrow morning at 8", "5 am", "6 pm",
     "10 minutes", "5 minutes", "30 seconds", "15 minutes", "1 hour", "45 mins",
-    "20 minutes", "9:45 pm", "noon", "midnight", "tomorrow at 7:30 am"
+    "20 minutes", "9:45 pm", "noon", "midnight", "tomorrow at 7:30 am",
+    "2 days", "3 days", "5 days", "1 week", "2 weeks", "3 weeks", "1 month", "48 hours"
 ]
 
 FACTS = [
@@ -129,7 +130,9 @@ UNKNOWN_QUERIES = [
     "can you explain relativity", "what is the tallest mountain in the world",
     "capital of mumbai", "capital of india", "capital of maharashtra", "capital of texas",
     "whats the capital of india", "whats the capital of maharashtra", "capital of japan",
-    "who won the world cup", "how to tie a tie", "why do we dream", "good", "hello", "hi", "wd", "wdw"
+    "who won the world cup", "how to tie a tie", "why do we dream", "good", "hello", "hi", "wd", "wdw",
+    "owe friend", "owe friend money", "owe 50 dollars to friend", "i owe friend", "owe friend cash",
+    "owe john 20 bucks", "owe mom money", "owe dad 100 rupees", "owe my friend"
 ]
 
 
@@ -365,12 +368,21 @@ def generate_synthetic_dataset(samples_per_intent: int = 120) -> List[Dict[str, 
         dataset.append(create_annotated_sample([("list", "O"), ("all", "O"), ("notes", "O")], "notes_list"))
         dataset.append(create_annotated_sample([("tell", "O"), ("my", "O"), ("notes", "O")], "notes_list"))
         dataset.append(create_annotated_sample([("delete", "O"), ("note", "O"), (f"{random.randint(1,20)}", "B-NOTE_ID")], "notes_delete"))
+        n_id = f"{random.randint(1, 20)}"
+        up_text = random.choice(["buy milk", "meeting at 5 pm", "pick up groceries", "new wifi password"])
+        up_annotated = annotate_span(up_text.split(), "NOTE_CONTENT")
+        dataset.append(create_annotated_sample([("update", "O"), ("note", "O"), (n_id, "B-NOTE_ID"), ("to", "O")] + up_annotated, "notes_update"))
+        dataset.append(create_annotated_sample([("edit", "O"), ("note", "O"), (n_id, "B-NOTE_ID"), ("to", "O"), ("say", "O")] + up_annotated, "notes_update"))
+        dataset.append(create_annotated_sample([("change", "O"), ("note", "O"), (n_id, "B-NOTE_ID"), ("to", "O")] + up_annotated, "notes_update"))
 
         # 14. Web & Reddit Search
         sq = random.choice(["who won the match", "quantum physics", "weather in tokyo", "how to make pasta", "best laptops 2026"])
         sq_annotated = annotate_span(sq.split(), "QUERY")
         dataset.append(create_annotated_sample([("google", "O")] + sq_annotated, "search_google"))
         dataset.append(create_annotated_sample([("search", "O")] + sq_annotated + [("on", "O"), ("google", "O")], "search_google"))
+        dataset.append(create_annotated_sample([("search", "O"), ("on", "O"), ("google", "O"), ("for", "O")] + sq_annotated, "search_google"))
+        dataset.append(create_annotated_sample([("search", "O"), ("on", "O"), ("google", "O")] + sq_annotated, "search_google"))
+        dataset.append(create_annotated_sample([("google", "O"), ("search", "O")] + sq_annotated, "search_google"))
         dataset.append(create_annotated_sample([("search", "O"), ("reddit", "O"), ("for", "O")] + sq_annotated, "search_reddit"))
         dataset.append(create_annotated_sample([("look", "O"), ("up", "O")] + sq_annotated + [("on", "O"), ("reddit", "O")], "search_reddit"))
         dataset.append(create_annotated_sample([("search", "O"), ("the", "O"), ("web", "O"), ("for", "O")] + sq_annotated, "web_search"))

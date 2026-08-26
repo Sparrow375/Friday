@@ -24,6 +24,10 @@ class ReminderReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent?) {
         val reminderText = intent?.getStringExtra(EXTRA_REMINDER_TEXT) ?: "Time for your reminder!"
+        val reminderCode = intent?.getIntExtra("reminder_code", -1) ?: -1
+        if (reminderCode != -1) {
+            com.friday.assistant.intelligence.ReminderScheduler.onReminderTriggered(context, reminderCode)
+        }
         FridayLogger.i(TAG, "Reminder alarm triggered: '$reminderText'")
 
         // 1. Acquire temporary wake lock to keep CPU awake while speaking

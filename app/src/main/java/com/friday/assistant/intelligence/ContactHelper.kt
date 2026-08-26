@@ -32,7 +32,15 @@ object ContactHelper {
         "deep pack" to "deepak",
         "so raj" to "suraj",
         "are on" to "aaron",
-        "are man" to "armaan"
+        "are man" to "armaan",
+        "shrujani" to "srujani",
+        "surjani" to "srujani",
+        "srujan" to "srujani",
+        "srijani" to "srujani",
+        "sreejani" to "srujani",
+        "shreejani" to "srujani",
+        "roojani" to "srujani",
+        "rojani" to "srujani"
     )
 
     fun getContacts(context: Context): List<ContactEntry> {
@@ -95,53 +103,72 @@ object ContactHelper {
         // 1. Exact match
         contacts.firstOrNull { it.normalizedName == trimmed }?.let { return it.name }
 
-        // 2. Direct check in known ASR map (e.g. "connecting" -> "kanak")
+        // 2. Direct check in known ASR map (e.g. "connecting" -> "kanak", "shrujani" -> "srujani")
         val mappedName = KNOWN_ASR_NAME_MAP[trimmed]
         if (mappedName != null) {
             contacts.firstOrNull { it.normalizedName.contains(mappedName) }?.let { return it.name }
         }
 
-        // 3. First name match or starts-with match
-        contacts.firstOrNull { it.normalizedName.startsWith(trimmed) }?.let { return it.name }
+        // 3. First name exact match or starts-with match (minimum 3 chars to prevent prefix collisions)
         contacts.firstOrNull { it.normalizedName.split(" ").firstOrNull() == trimmed }?.let { return it.name }
+        if (trimmed.length >= 3) {
+            contacts.firstOrNull { it.normalizedName.startsWith(trimmed) }?.let { return it.name }
+        }
 
-        // 4. Word-level contains
-        contacts.firstOrNull { it.normalizedName.contains(trimmed) }?.let { return it.name }
+        // 4. Word-level contains (only if candidate has at least 4 characters)
+        if (trimmed.length >= 4) {
+            contacts.firstOrNull { it.normalizedName.contains(trimmed) }?.let { return it.name }
+        }
 
-        // 5. Fuzzy Levenshtein match across first names and full names
+        // 5. Strict Fuzzy Levenshtein match across first names and full names
         var bestMatch: String? = null
         var minDistance = Int.MAX_VALUE
+        var secondMinDistance = Int.MAX_VALUE
 
         val maxAllowedDistance = when {
             trimmed.length <= 4 -> 1
-            trimmed.length <= 7 -> 2
-            else -> 3
+            trimmed.length <= 6 -> 1
+            else -> 2 // Never allow distance > 2 to prevent wrong person matches
         }
 
         for (contact in contacts) {
             val contactFirst = contact.normalizedName.split(" ").firstOrNull() ?: contact.normalizedName
-            val dist = levenshteinDistance(trimmed, contactFirst)
-            if (dist <= maxAllowedDistance && dist < minDistance) {
+            val dist = minOf(
+                levenshteinDistance(trimmed, contactFirst),
+                levenshteinDistance(trimmed, contact.normalizedName)
+            )
+            if (dist < minDistance) {
+                secondMinDistance = minDistance
                 minDistance = dist
                 bestMatch = contact.name
+            } else if (dist < secondMinDistance) {
+                secondMinDistance = dist
             }
         }
 
-        // 6. Consonant skeleton match (e.g. "connecting" -> "cnctng", "kanak" -> "knk")
-        if (bestMatch == null) {
-            val candidateConsonants = getConsonants(trimmed)
+        // Ambiguity guard: If multiple contacts are at the same non-zero edit distance, reject to avoid sending to wrong person
+        if (minDistance in 1..maxAllowedDistance) {
+            if (minDistance == secondMinDistance) {
+                Log.w(TAG, "Ambiguous match for '$candidate': multiple contacts at distance $minDistance. Rejecting.")
+                return null
+            }
+            return bestMatch
+        }
+
+        // 6. Strict Consonant skeleton match:
+        // Must be EXACT consonant match, minimum 4 consonants! NEVER use startsWith prefix matching!
+        val candidateConsonants = getConsonants(trimmed)
+        if (candidateConsonants.length >= 4) {
             for (contact in contacts) {
                 val contactConsonants = getConsonants(contact.normalizedName.split(" ").firstOrNull() ?: "")
-                if (contactConsonants.isNotEmpty() &&
-                    (contactConsonants == candidateConsonants ||
-                     candidateConsonants.startsWith(contactConsonants) ||
-                     contactConsonants.startsWith(candidateConsonants))) {
+                if (contactConsonants.length >= 4 && contactConsonants == candidateConsonants) {
+                    Log.i(TAG, "Consonant skeleton exact match: '$candidate' ($candidateConsonants) -> '${contact.name}'")
                     return contact.name
                 }
             }
         }
 
-        return bestMatch
+        return null
     }
 
     /**

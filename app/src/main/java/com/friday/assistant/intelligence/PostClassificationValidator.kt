@@ -38,17 +38,32 @@ object PostClassificationValidator {
             }
         }
 
-        // 2. Google search trap suppression
+        // 2. Google search trap suppression & priority handling
         if (finalIntent == "search_google" || finalIntent == "web_search") {
             val originalTextLower = preprocessed.originalText.lowercase()
             if (originalTextLower.contains("message") || originalTextLower.contains("whatsapp") || originalTextLower.contains("text")) {
                 Log.i(TAG, "Suppressed search_google redirection. Forcing send_whatsapp due to presence of message intent keywords.")
                 finalIntent = "send_whatsapp"
                 finalConfidence = 0.90f
+            } else if (originalTextLower.contains("google") || originalTextLower.startsWith("search ") || originalTextLower.startsWith("search for ")) {
+                // Ensure search queries are never downgraded to unknown or forced to LLM
+                finalConfidence = maxOf(finalConfidence, 0.90f)
             }
         }
 
-        // 3. Confidence threshold check
+        // 3. Strict Phone Call Safety Guard: ONLY allow call_contact if explicit call verb is present
+        if (finalIntent == "call_contact") {
+            val originalLower = preprocessed.originalText.lowercase()
+            val hasExplicitCallVerb = originalLower.contains(Regex("\\b(call|dial)\\b"))
+            if (!hasExplicitCallVerb) {
+                Log.w(TAG, "SAFETY BLOCK: Suppressing false call_contact intent for '${preprocessed.originalText}' - no explicit 'call' or 'dial' verb detected!")
+                finalIntent = "unknown"
+                finalConfidence = 0.0f
+                routeToLlm = true
+            }
+        }
+
+        // 4. Confidence threshold check
         if (finalIntent == "unknown" || finalConfidence < 0.60f) {
             Log.d(TAG, "Intent is unknown or confidence $finalConfidence is below threshold 0.60. Routing to LLM fallback.")
             routeToLlm = true

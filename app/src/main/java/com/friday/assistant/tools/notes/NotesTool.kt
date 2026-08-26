@@ -31,12 +31,12 @@ class NotesTool : Tool {
           "properties": {
             "action": {
               "type": "string",
-              "enum": ["create", "list", "search", "delete"],
+              "enum": ["create", "list", "search", "delete", "update"],
               "description": "The note action to perform"
             },
             "content": {
               "type": "string",
-              "description": "The text content of the note (required for 'create' action)"
+              "description": "The text content of the note (required for 'create' and 'update' actions)"
             },
             "tags": {
               "type": "string",
@@ -48,7 +48,7 @@ class NotesTool : Tool {
             },
             "note_id": {
               "type": "integer",
-              "description": "The unique numerical ID of the note to delete (required for 'delete' action)"
+              "description": "The unique numerical ID of the note to delete or update"
             }
           },
           "required": ["action"]
@@ -78,6 +78,13 @@ class NotesTool : Tool {
                     val id = args.get("note_id")?.asLong
                         ?: return ToolResult(false, "Missing parameter 'note_id' for action 'delete'")
                     deleteNote(id)
+                }
+                "update" -> {
+                    val id = args.get("note_id")?.asLong
+                        ?: return ToolResult(false, "Missing parameter 'note_id' for action 'update'")
+                    val content = args.get("content")?.asString
+                        ?: return ToolResult(false, "Missing parameter 'content' for action 'update'")
+                    updateNote(id, content)
                 }
                 else -> ToolResult(false, "Unknown note action: $action")
             }
@@ -182,14 +189,29 @@ class NotesTool : Tool {
         return diff <= 2
     }
 
+    private suspend fun updateNote(id: Long, newContent: String): ToolResult {
+        val existingNote = dao.getNoteById(id)
+            ?: dao.getAllNotes().first().find { it.id == id }
+        
+        return if (existingNote != null) {
+            val updated = existingNote.copy(
+                content = newContent,
+                timestamp = System.currentTimeMillis()
+            )
+            dao.updateNote(updated)
+            ToolResult(true, "Updated note $id to: \"$newContent\"")
+        } else {
+            ToolResult(false, "Could not find a note with ID: $id to update.")
+        }
+    }
+
     private suspend fun deleteNote(id: Long): ToolResult {
-        // Find if note exists by listing and filtering (simplest without direct getById query)
-        val notes = dao.getAllNotes().first()
-        val noteToDelete = notes.find { it.id == id }
+        val noteToDelete = dao.getNoteById(id)
+            ?: dao.getAllNotes().first().find { it.id == id }
         
         return if (noteToDelete != null) {
             dao.deleteNote(noteToDelete)
-            ToolResult(true, "Successfully deleted note with ID: $id")
+            ToolResult(true, "Successfully deleted note $id: \"${noteToDelete.content}\"")
         } else {
             ToolResult(false, "Could not find a note with ID: $id")
         }

@@ -224,19 +224,47 @@ class SpeechToTextHelper(
         override fun onResults(results: Bundle?) {
             if (earlyCommitFired) return
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            var chosenResult = matches?.firstOrNull() ?: ""
-            // Check all candidates to see if any candidate yields a better contact or phonetic match
-            for (candidate in matches ?: emptyList()) {
+            val contacts = com.friday.assistant.intelligence.ContactHelper.getContacts(context)
+
+            var bestCandidate = matches?.firstOrNull() ?: ""
+            var bestScore = -1
+
+            for ((index, candidate) in (matches ?: emptyList()).withIndex()) {
                 val corrected = com.friday.assistant.intelligence.ContactHelper.correctTranscript(context, candidate)
-                if (corrected != candidate) {
-                    chosenResult = corrected
-                    break
+                val candidateLower = candidate.lowercase(Locale.getDefault())
+                val correctedLower = corrected.lowercase(Locale.getDefault())
+
+                var score = 100 - (index * 5) // Base score by Google ASR rank
+
+                // Check if any candidate has an EXACT contact name present in device contacts
+                val hasExactContact = contacts.any {
+                    val cName = it.normalizedName
+                    cName.isNotEmpty() && (
+                        candidateLower.contains(cName) || 
+                        candidateLower.contains("to $cName") ||
+                        candidateLower.split(" ").contains(cName)
+                    )
+                }
+
+                if (hasExactContact) {
+                    score += 150 // Exact contact match strongly prioritized!
+                } else if (corrected != candidate) {
+                    val hasCorrectedContact = contacts.any {
+                        val cName = it.normalizedName
+                        cName.isNotEmpty() && correctedLower.contains(cName)
+                    }
+                    if (hasCorrectedContact) {
+                        score += 80 // Phonetic correction aligned with contacts
+                    }
+                }
+
+                if (score > bestScore) {
+                    bestScore = score
+                    bestCandidate = corrected
                 }
             }
-            if (chosenResult.isBlank() && !matches.isNullOrEmpty()) {
-                chosenResult = matches[0]
-            }
-            val finalResultText = com.friday.assistant.intelligence.ContactHelper.correctTranscript(context, chosenResult)
+
+            val finalResultText = if (bestCandidate.isNotBlank()) bestCandidate else (matches?.firstOrNull() ?: "")
 
             mainHandler.post {
                 cancelEarlyCommitTimer()

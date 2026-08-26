@@ -40,6 +40,7 @@
   "notes_list",
   "notes_search",
   "notes_delete",
+  "notes_update",
   "search_google",
   "search_reddit",
   "remember_preference",

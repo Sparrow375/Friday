@@ -15,6 +15,8 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import java.net.URLEncoder
 import com.friday.assistant.automation.AutomationBridge
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class MediaControlTool(private val context: Context) : Tool {
 
@@ -92,13 +94,66 @@ class MediaControlTool(private val context: Context) : Tool {
         return ToolResult(true, "Sent media command: $actionName")
     }
 
-    private fun playFromSearch(query: String, app: String?): ToolResult {
+    private suspend fun playFromSearch(query: String, app: String?): ToolResult {
         return when {
             app?.contains("spotify") == true -> playOnSpotify(query)
             app?.contains("youtube music") == true || app == "yt music" -> playOnYouTubeMusic(query)
             app?.contains("youtube") == true || app == "yt" -> searchOnYouTube(query)
             app?.contains("google") == true -> searchOnGoogle(query)
             else -> searchOnYouTube(query)
+        }
+    }
+
+    private suspend fun scrapeTopYouTubeVideoUrl(query: String): String? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val encoded = URLEncoder.encode(query, "UTF-8")
+                val url = java.net.URL("https://www.youtube.com/results?search_query=$encoded")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "GET"
+                conn.connectTimeout = 4000
+                conn.readTimeout = 4000
+                conn.setRequestProperty(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+
+                if (conn.responseCode == java.net.HttpURLConnection.HTTP_OK) {
+                    val reader = java.io.BufferedReader(java.io.InputStreamReader(conn.inputStream))
+                    val sb = java.lang.StringBuilder()
+                    var line: String?
+                    var bytesRead = 0
+                    // Read up to first 256KB of HTML which contains initial results JSON
+                    while (reader.readLine().also { line = it } != null && bytesRead < 262144) {
+                        sb.append(line)
+                        bytesRead += line!!.length
+                    }
+                    reader.close()
+
+                    val html = sb.toString()
+                    // Try matching watch?v= first (standard video link)
+                    val watchRegex = Regex("/watch\\?v=([a-zA-Z0-9_-]{11})")
+                    val watchMatch = watchRegex.find(html)
+                    if (watchMatch != null) {
+                        val vid = watchMatch.groupValues[1]
+                        Log.i(TAG, "Scraped top YouTube videoId from watch link: $vid for query '$query'")
+                        return@withContext "https://www.youtube.com/watch?v=$vid&autoplay=1"
+                    }
+
+                    // Try matching videoId JSON token
+                    val videoIdRegex = Regex("\"videoId\":\"([a-zA-Z0-9_-]{11})\"")
+                    val vidMatch = videoIdRegex.find(html)
+                    if (vidMatch != null) {
+                        val vid = vidMatch.groupValues[1]
+                        Log.i(TAG, "Scraped top YouTube videoId from JSON: $vid for query '$query'")
+                        return@withContext "https://www.youtube.com/watch?v=$vid&autoplay=1"
+                    }
+                }
+                null
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to scrape top YouTube video URL: ${e.message}")
+                null
+            }
         }
     }
 
@@ -112,7 +167,7 @@ class MediaControlTool(private val context: Context) : Tool {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
             context.startActivity(intent)
-            
+
             if (AutomationBridge.isReady()) {
                 Thread {
                     try { Thread.sleep(500) } catch (_: Exception) {}
@@ -121,7 +176,7 @@ class MediaControlTool(private val context: Context) : Tool {
                     Log.d(TAG, "Spotify auto-play accessibility helper returned: $autoPlayed")
                 }.start()
             }
-            
+
             ToolResult(true, "Launched Spotify to play '$query'")
         } catch (e: Exception) {
             Log.w(TAG, "Spotify INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH failed, falling back to search deep link", e)
@@ -169,24 +224,26 @@ class MediaControlTool(private val context: Context) : Tool {
         }
     }
 
-    private fun searchOnYouTube(query: String): ToolResult {
+    private suspend fun searchOnYouTube(query: String): ToolResult {
         return try {
-            val encoded = URLEncoder.encode(query, "UTF-8")
-            val webUri = Uri.parse("https://www.youtube.com/results?search_query=$encoded")
-            val intent = Intent(Intent.ACTION_VIEW, webUri).apply {
-                setPackage(PKG_YOUTUBE)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            try {
-                context.startActivity(intent)
-            } catch (e: Exception) {
-                val genericIntent = Intent(Intent.ACTION_VIEW, webUri).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                context.startActivity(genericIntent)
+            // Attempt to scrape top video result for direct browser autoplay
+            val directVideoUrl = scrapeTopYouTubeVideoUrl(query)
+            val targetUri = if (!directVideoUrl.isNullOrBlank()) {
+                Log.i(TAG, "Opening direct scraped video URL with autoplay: $directVideoUrl")
+                Uri.parse(directVideoUrl)
+            } else {
+                val encoded = URLEncoder.encode(query, "UTF-8")
+                Log.i(TAG, "Falling back to search results URL for '$query'")
+                Uri.parse("https://www.youtube.com/results?search_query=$encoded")
             }
 
-            if (AutomationBridge.isReady()) {
+            val genericIntent = Intent(Intent.ACTION_VIEW, targetUri).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(genericIntent)
+
+            // If accessibility service is ready and fallback search page was opened, trigger UI automator
+            if (directVideoUrl.isNullOrBlank() && AutomationBridge.isReady()) {
                 Thread {
                     try { Thread.sleep(400) } catch (_: Exception) {}
                     Log.d(TAG, "Triggering YouTube auto-play accessibility helper")

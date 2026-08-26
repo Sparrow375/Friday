@@ -12,7 +12,8 @@ class BootReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
-            Log.i(TAG, "System boot completed. Friday VoiceInteractionService will auto-start if set as default assistant.")
+            Log.i(TAG, "System boot completed. Rescheduling pending reminders and initializing.")
+            com.friday.assistant.intelligence.ReminderScheduler.rescheduleAll(context)
         }
     }
 }
