@@ -111,41 +111,56 @@ class MediaControlTool(private val context: Context) : Tool {
                 val url = java.net.URL("https://www.youtube.com/results?search_query=$encoded")
                 val conn = url.openConnection() as java.net.HttpURLConnection
                 conn.requestMethod = "GET"
-                conn.connectTimeout = 4000
-                conn.readTimeout = 4000
+                conn.connectTimeout = 5000
+                conn.readTimeout = 5000
                 conn.setRequestProperty(
                     "User-Agent",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
                 )
+                conn.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
 
                 if (conn.responseCode == java.net.HttpURLConnection.HTTP_OK) {
                     val reader = java.io.BufferedReader(java.io.InputStreamReader(conn.inputStream))
                     val sb = java.lang.StringBuilder()
                     var line: String?
                     var bytesRead = 0
-                    // Read up to first 256KB of HTML which contains initial results JSON
-                    while (reader.readLine().also { line = it } != null && bytesRead < 262144) {
-                        sb.append(line)
-                        bytesRead += line!!.length
+                    val videoRendererRegex = Regex("\"videoRenderer\":\\{\"videoId\":\"([a-zA-Z0-9_-]{11})\"")
+                    var foundVid: String? = null
+
+                    // Stream lines up to 2MB; YouTube's primary results line typically appears around ~750KB
+                    while (reader.readLine().also { line = it } != null && bytesRead < 2097152) {
+                        val currentLine = line ?: break
+                        bytesRead += currentLine.length
+                        sb.append(currentLine)
+
+                        val match = videoRendererRegex.find(currentLine)
+                        if (match != null) {
+                            foundVid = match.groupValues[1]
+                            Log.i(TAG, "Scraped top YouTube videoId via stream: $foundVid for query '$query'")
+                            break
+                        }
                     }
                     reader.close()
 
+                    if (foundVid != null) {
+                        return@withContext "https://www.youtube.com/watch?v=$foundVid&autoplay=1"
+                    }
+
+                    // Fallback to searching accumulated buffer
                     val html = sb.toString()
-                    // Try matching watch?v= first (standard video link)
+                    val vrMatch = videoRendererRegex.find(html)
+                    if (vrMatch != null) {
+                        val vid = vrMatch.groupValues[1]
+                        Log.i(TAG, "Scraped top YouTube videoId from buffer: $vid for query '$query'")
+                        return@withContext "https://www.youtube.com/watch?v=$vid&autoplay=1"
+                    }
+
+                    // Try matching watch?v= as secondary fallback
                     val watchRegex = Regex("/watch\\?v=([a-zA-Z0-9_-]{11})")
                     val watchMatch = watchRegex.find(html)
                     if (watchMatch != null) {
                         val vid = watchMatch.groupValues[1]
                         Log.i(TAG, "Scraped top YouTube videoId from watch link: $vid for query '$query'")
-                        return@withContext "https://www.youtube.com/watch?v=$vid&autoplay=1"
-                    }
-
-                    // Try matching videoId JSON token
-                    val videoIdRegex = Regex("\"videoId\":\"([a-zA-Z0-9_-]{11})\"")
-                    val vidMatch = videoIdRegex.find(html)
-                    if (vidMatch != null) {
-                        val vid = vidMatch.groupValues[1]
-                        Log.i(TAG, "Scraped top YouTube videoId from JSON: $vid for query '$query'")
                         return@withContext "https://www.youtube.com/watch?v=$vid&autoplay=1"
                     }
                 }

@@ -271,6 +271,17 @@ The project uses a clean package namespace `com.friday.assistant`:
           - `"call rohit"` -> `call_contact` (99.89% confidence)
           - `"update note 2 to buy milk"` -> `notes_update` (99.84% confidence)
           - `"search on google for quantum computing"` -> `search_google` (99.90% confidence)
+      - **YouTube Autoplay Failure Diagnosis & Fix (`MediaControlTool.kt`, `scripts/youtube_search.py`)**:
+        * Root cause: `MediaControlTool.scrapeTopYouTubeVideoUrl` restricted its read buffer to 256KB (`bytesRead < 262144`). Modern YouTube search responses are ~1.25 MB, and search result items (`videoRenderer` and initial JSON) do not appear until around ~750KB on line 20. The 256KB cap prematurely aborted reading before any `videoId` was parsed, causing `scrapeTopYouTubeVideoUrl` to always return `null` and fall back to opening the raw search results page (`https://www.youtube.com/results?search_query=...`) rather than the direct playable video link.
+        * Android Fix (`MediaControlTool.kt`):
+          - Switched to streaming line reader with early exit as soon as `Regex("\"videoRenderer\":\\{\"videoId\":\"([a-zA-Z0-9_-]{11})\"")` matches on the line.
+          - Increased buffer ceiling from 256KB to 2MB, with multi-tier fallback (line stream -> accumulated buffer `videoRenderer` -> accumulated buffer `/watch?v=`).
+          - Added `Accept-Language: en-US,en;q=0.9` and increased network timeouts to 5000ms.
+        * Local Testing Script (`scripts/youtube_search.py`):
+          - Built a standalone CLI tool that takes a query, extracts the top relevant video from `ytInitialData` JSON (or fallback regex), and displays title, channel, duration, views, watch link, and autoplay link.
+          - Added flags: `-u`/`--url-only` (clean URL for piping), `-a`/`--autoplay` (with `&autoplay=1`), `-n`/`--top N` (top N results), `-j`/`--json`, `-o`/`--open` (launch in default browser), and `-t`/`--test` (automated 7-query test suite).
+          - Verified 100% pass rate locally on queries across multiple genres/languages.
+
 
 
 
