@@ -128,7 +128,11 @@ class AgentCore(
 
         // 4. Direct Command Execution (bypassed if routeToLlm is true, EXCEPT for web/google searches)
         val isExplicitSearch = matchedIntent == "search_google" || matchedIntent == "web_search" ||
-            cleanQuery.contains("google") || cleanQuery.startsWith("search ") || cleanQuery.startsWith("search on google")
+            cleanQuery.contains("google") || cleanQuery.startsWith("search ") || cleanQuery.startsWith("search on google") ||
+            cleanQuery.startsWith("what ") || cleanQuery.startsWith("whats ") || cleanQuery.startsWith("what's ") ||
+            cleanQuery.startsWith("who ") || cleanQuery.startsWith("who's ") || cleanQuery.startsWith("where ") ||
+            cleanQuery.startsWith("when ") || cleanQuery.startsWith("why ") || cleanQuery.startsWith("how ") ||
+            cleanQuery.startsWith("explain ") || cleanQuery.startsWith("tell me about ") || cleanQuery.startsWith("look up ")
         if (!routeToLlm || isExplicitSearch) {
             handleBriefingAndAlarms(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
             handleMessagingAndCalls(cleanQuery, matchedIntent, preprocessed, nluSlots)?.let { return it }
@@ -155,7 +159,7 @@ class AgentCore(
             }
             _agentStatusFlow.emit("Thinking...")
             val currentPrompt = promptBuilder.buildMinimalPrompt(resolvedInput)
-            val response = llamaEngine.generateStream(currentPrompt, maxTokens = 128, temp = 0.7f, callback = object : LlamaEngine.TokenCallback {
+            val response = llamaEngine.generateStream(currentPrompt, maxTokens = 256, temp = 0.7f, callback = object : LlamaEngine.TokenCallback {
                 override fun onToken(token: String) {
                     onToken(token)
                 }
@@ -1162,6 +1166,14 @@ class AgentCore(
                 cleanQuery.contains("search on google") || cleanQuery.startsWith("search on google") ||
                 cleanQuery.contains("search the web for") || cleanQuery.contains("on google") ||
                 (cleanQuery.startsWith("search ") && cleanQuery.contains("google")) ||
+                cleanQuery.startsWith("search for ") || cleanQuery.startsWith("look up ") ||
+                cleanQuery.startsWith("what is ") || cleanQuery.startsWith("whats ") || cleanQuery.startsWith("what's ") ||
+                cleanQuery.startsWith("who is ") || cleanQuery.startsWith("who was ") || cleanQuery.startsWith("who's ") ||
+                cleanQuery.startsWith("where is ") || cleanQuery.startsWith("where are ") ||
+                cleanQuery.startsWith("when is ") || cleanQuery.startsWith("when did ") || cleanQuery.startsWith("when was ") ||
+                cleanQuery.startsWith("why is ") || cleanQuery.startsWith("why does ") || cleanQuery.startsWith("why do ") || cleanQuery.startsWith("why are ") ||
+                cleanQuery.startsWith("how to ") || cleanQuery.startsWith("how does ") || cleanQuery.startsWith("how do ") || cleanQuery.startsWith("how is ") || cleanQuery.startsWith("how can ") ||
+                cleanQuery.startsWith("explain ") || cleanQuery.startsWith("tell me about ") ||
                 (cleanQuery.contains("look this up") && !cleanQuery.contains("reddit"))
         if (isSearchGoogle) {
             var searchPhrase = nluSlots["QUERY"]

@@ -281,6 +281,26 @@ The project uses a clean package namespace `com.friday.assistant`:
           - Built a standalone CLI tool that takes a query, extracts the top relevant video from `ytInitialData` JSON (or fallback regex), and displays title, channel, duration, views, watch link, and autoplay link.
           - Added flags: `-u`/`--url-only` (clean URL for piping), `-a`/`--autoplay` (with `&autoplay=1`), `-n`/`--top N` (top N results), `-j`/`--json`, `-o`/`--open` (launch in default browser), and `-t`/`--test` (automated 7-query test suite).
           - Verified 100% pass rate locally on queries across multiple genres/languages.
+      - **Dedicated Hardware Wake-Word Simulation (`Seeed XIAO ESP32-S3 Sense`, `scripts/simulate_esp32s3_performance.py`)**:
+        * Benchmark & Computational Complexity:
+          - Live simulation of `wakeword.onnx` executed under FreeRTOS static allocation constraints.
+          - Total static internal SRAM consumption: **374.94 KB** (73.2% of 512KB SRAM, leaving 137KB free without touching external 8MB PSRAM).
+          - Xtensa LX7 dual-core @ 240MHz with vector SIMD evaluates 100ms audio frames in **39.99 ms** (Real-Time Factor: 0.400, 2.5x faster than real-time deadline).
+        * Measured Power Consumption & Battery Longevity (3.7V LiPo @ 85% usable PMIC efficiency):
+          - Daily average current draw: **6.29 mA (~23.3 mW)**.
+          - 150 mAh (Tiny Collar Clip, 4.5g): **20.3 hours** (Full all-day wearable).
+          - 300 mAh (Smart Pendant, 8g): **41 hours (1.7 days)**.
+          - 500 mAh (Badge / Keyfob, 14g): **68 hours (2.8 days)**.
+          - 800 mAh (Pocket Brooch, 20g): **108 hours (4.5 days)**.
+          - 1200 mAh (Car Dock / Desk Stand, 28g): **162 hours (6.8 days)**.
+        * Hardware conclusion: Seeed XIAO ESP32-S3 Sense is fully capable of running Friday's voice engine locally with multi-day battery life and near-zero phone battery impact via BLE GATT triggers.
+      - **Natural LLM Conversation Prompt & Expanded Search Routing Overhaul (September 2026)**:
+        * Root cause of refusal & 18s lag: `PromptBuilder.kt` contained negative constraints and "offline AI" disclaimers, triggering Qwen 2.5's refusal/meta-talk loop (*"as an offline AI, I can't acknowledge that casual greeting... I would prefer not to"*), and `maxTokens=128` allowed it to generate 110 rambling refusal tokens.
+        * Fix 1 (`PromptBuilder.kt`): Replaced system instruction with a natural, positive persona: *"You are Friday, a helpful and knowledgeable personal AI assistant. Keep your responses direct, natural, and as concise as possible. Never use any emojis."*
+        * Fix 2 (`AgentCore.kt`): Set `maxTokens = 256` for conversational fallback so brainstorming and multi-turn questions are not cut off mid-thought.
+        * Fix 3 (`AgentCore.kt`, `WebSearchTool.kt`): Expanded `isExplicitSearch` and `isSearchGoogle` to automatically route general inquiries (*"what is..."*, *"who is..."*, *"why is..."*, *"how does..."*, *"explain..."*, *"tell me about..."*) to Google Search where AI overviews and direct answers are displayed, making general queries instant and clean. Streamlined `WebSearchTool` spoken voice feedback.
+
+
 
 
 

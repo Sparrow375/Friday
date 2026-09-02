@@ -9,7 +9,7 @@ class PromptBuilder(private val memoryManager: MemoryManager) {
 
     companion object {
         private const val SYSTEM_INSTRUCTION = """
-You are Friday, an offline premium AI assistant. Keep your responses cool, extremely concise (1-2 sentences maximum), and friendly. Do not use any emojis under any circumstances (as it breaks TTS flow).
+You are Friday, a helpful and knowledgeable personal AI assistant. Keep your responses direct, natural, and as concise as possible. Never use any emojis.
         """
     }
 

@@ -89,7 +89,7 @@ class WebSearchTool(private val context: Context) : Tool {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
             context.startActivity(intent)
-            ToolResult(true, "I couldn't find an instant answer, so I opened a Google search for '$query' in your browser.")
+            ToolResult(true, "Searching Google for '$query'.")
         } catch (e: Exception) {
             ToolResult(false, "Failed to launch browser: ${e.message}")
         }
