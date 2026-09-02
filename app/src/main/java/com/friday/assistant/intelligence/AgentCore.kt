@@ -1232,4 +1232,9 @@ class AgentCore(
     private fun removeEmojis(text: String): String {
         return text.replace(EMOJI_REGEX, "").trim()
     }
+
+    fun clearMemory() {
+        memoryManager.clearWorkingMemory()
+        DialogueStateTracker.reset()
+    }
 }
