@@ -45,7 +45,12 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         fun reloadModels() {
             instance?.let { service ->
                 service.serviceScope.launch(Dispatchers.IO) {
-                    service.setupNativeModels()
+                    val modelManager = com.friday.assistant.core.ModelManager(service)
+                    if (modelManager.isLlmLoaded()) {
+                        val path = modelManager.getLlmModelPath()
+                        com.friday.assistant.core.FridayLogger.i(TAG, "Reloading LLM GGUF model: $path")
+                        FridayApplication.llamaEngine.loadModel(path)
+                    }
                 }
             }
         }

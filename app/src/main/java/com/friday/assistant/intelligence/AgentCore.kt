@@ -147,10 +147,10 @@ class AgentCore(
         val useLlm = sharedPrefs.getBoolean("use_llm", true)
 
         if (useLlm && modelManager.isLlmLoaded()) {
-            if (!llamaEngine.isModelLoaded()) {
+            val path = modelManager.getLlmModelPath()
+            if (!llamaEngine.isModelLoaded() || llamaEngine.getLoadedModelPath() != path) {
                 _agentStatusFlow.emit("Loading brain...")
-                val path = modelManager.getLlmModelPath()
-                com.friday.assistant.core.FridayLogger.i(TAG, "Lazy loading LLM GGUF model from: $path")
+                com.friday.assistant.core.FridayLogger.i(TAG, "Loading LLM GGUF model from: $path")
                 val success = llamaEngine.loadModel(path)
                 com.friday.assistant.core.FridayLogger.i(TAG, "LLM GGUF model load success: $success")
                 if (!success) {
@@ -159,7 +159,7 @@ class AgentCore(
             }
             _agentStatusFlow.emit("Thinking...")
             val currentPrompt = promptBuilder.buildMinimalPrompt(resolvedInput)
-            val response = llamaEngine.generateStream(currentPrompt, maxTokens = 256, temp = 0.7f, callback = object : LlamaEngine.TokenCallback {
+            val response = llamaEngine.generateStream(currentPrompt, maxTokens = 128, temp = 0.7f, callback = object : LlamaEngine.TokenCallback {
                 override fun onToken(token: String) {
                     onToken(token)
                 }

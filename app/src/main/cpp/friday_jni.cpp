@@ -216,10 +216,10 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
 
     const struct llama_vocab * vocab = llama_model_get_vocab(state->model);
 
-    // Tokenize prompt
-    int n_tokens_prompt = -llama_tokenize(vocab, prompt.c_str(), prompt.length(), nullptr, 0, true, true);
+    // Tokenize prompt (add_special = false to preserve ChatML format without extra BOS, parse_special = true)
+    int n_tokens_prompt = -llama_tokenize(vocab, prompt.c_str(), prompt.length(), nullptr, 0, false, true);
     std::vector<llama_token> prompt_tokens(n_tokens_prompt);
-    if (llama_tokenize(vocab, prompt.c_str(), prompt.length(), prompt_tokens.data(), prompt_tokens.size(), true, true) < 0) {
+    if (llama_tokenize(vocab, prompt.c_str(), prompt.length(), prompt_tokens.data(), prompt_tokens.size(), false, true) < 0) {
         LOGE("Failed to tokenize prompt");
         return env->NewStringUTF("Error: Tokenization failed");
     }
@@ -273,6 +273,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
     // Autoregressive token generation loop
     while (n_generated < max_tokens && current_pos < n_ctx_max - 1) {
         llama_token id = llama_sampler_sample(smpl, state->ctx, -1);
+        llama_sampler_accept(smpl, id);
 
         if (llama_vocab_is_eog(vocab, id)) {
             LOGI("EOG token (id=%d) detected, generation stopped", id);
@@ -382,9 +383,10 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
 
     const struct llama_vocab * vocab = llama_model_get_vocab(state->model);
 
-    int n_tokens_prompt = -llama_tokenize(vocab, prompt.c_str(), prompt.length(), nullptr, 0, true, true);
+    // Tokenize prompt (add_special = false to preserve ChatML format without extra BOS, parse_special = true)
+    int n_tokens_prompt = -llama_tokenize(vocab, prompt.c_str(), prompt.length(), nullptr, 0, false, true);
     std::vector<llama_token> prompt_tokens(n_tokens_prompt);
-    if (llama_tokenize(vocab, prompt.c_str(), prompt.length(), prompt_tokens.data(), prompt_tokens.size(), true, true) < 0) {
+    if (llama_tokenize(vocab, prompt.c_str(), prompt.length(), prompt_tokens.data(), prompt_tokens.size(), false, true) < 0) {
         LOGE("Failed to tokenize prompt");
         return env->NewStringUTF("Error: Tokenization failed");
     }
@@ -437,6 +439,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
 
     while (n_generated < max_tokens && current_pos < n_ctx_max - 1) {
         llama_token id = llama_sampler_sample(smpl, state->ctx, -1);
+        llama_sampler_accept(smpl, id);
 
         if (llama_vocab_is_eog(vocab, id)) {
             LOGI("EOG token (id=%d) detected, generation stopped", id);

@@ -9,7 +9,7 @@ class PromptBuilder(private val memoryManager: MemoryManager) {
 
     companion object {
         private const val SYSTEM_INSTRUCTION = """
-You are Friday, a helpful, witty, and friendly personal AI assistant. Always answer the user's questions and requests directly and pleasantly without meta-commentary, lectures, or refusals. Keep responses natural and concise. Never use any emojis.
+You are Friday, an offline premium AI assistant. Keep your responses cool, extremely concise (1-2 sentences maximum), and friendly. Do not use any emojis under any circumstances (as it breaks TTS flow).
         """
     }
 
@@ -38,14 +38,8 @@ $memorySummary
         val prompt = StringBuilder()
         prompt.append("<|im_start|>system\n").append(fullSystemInstruction).append("<|im_end|>\n")
 
-        // 4. Append Working Memory Chat History (filtering out any corrupted/refusal turns)
-        val history = memoryManager.getWorkingMemory().takeLast(8).filter { msg ->
-            !msg.content.startsWith("Error:") &&
-            !msg.content.startsWith("Failed to load") &&
-            !msg.content.contains("I would prefer not to") &&
-            !msg.content.contains("as an ethical AI") &&
-            !msg.content.contains("as an offline AI")
-        }
+        // 4. Append Working Memory Chat History
+        val history = memoryManager.getWorkingMemory().takeLast(8)
         history.forEach { msg ->
             prompt.append("<|im_start|>").append(msg.role).append("\n")
                 .append(msg.content).append("<|im_end|>\n")
@@ -69,13 +63,9 @@ $memorySummary
         prompt.append(SYSTEM_INSTRUCTION.trim())
         prompt.append("<|im_end|>\n")
 
-        // Only include last 4 valid turns of history (up to 8 messages), filtering out error messages and refusal turns
+        // Only include last 4 valid turns of history (up to 8 messages), filtering out error messages
         val history = memoryManager.getWorkingMemory().takeLast(8).filter { msg ->
-            !msg.content.startsWith("Error:") &&
-            !msg.content.startsWith("Failed to load") &&
-            !msg.content.contains("I would prefer not to") &&
-            !msg.content.contains("as an ethical AI") &&
-            !msg.content.contains("as an offline AI")
+            !msg.content.startsWith("Error:") && !msg.content.startsWith("Failed to load")
         }
         history.forEach { msg ->
             prompt.append("<|im_start|>").append(msg.role).append("\n")

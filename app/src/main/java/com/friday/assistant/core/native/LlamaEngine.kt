@@ -20,7 +20,10 @@ class LlamaEngine {
     }
 
     private var statePtr: Long = 0
+    private var loadedModelPath: String? = null
     private val mutex = Mutex()
+
+    fun getLoadedModelPath(): String? = loadedModelPath
 
     interface TokenCallback {
         fun onToken(token: String)
@@ -40,9 +43,16 @@ class LlamaEngine {
             }
             try {
                 statePtr = initLlama(modelPath)
-                statePtr != 0L
+                if (statePtr != 0L) {
+                    loadedModelPath = modelPath
+                    true
+                } else {
+                    loadedModelPath = null
+                    false
+                }
             } catch (e: Throwable) {
                 Log.e(TAG, "Exception initializing Llama model", e)
+                loadedModelPath = null
                 false
             }
         }
@@ -62,6 +72,7 @@ class LlamaEngine {
                 Log.e(TAG, "Exception freeing Llama model", e)
             } finally {
                 statePtr = 0L
+                loadedModelPath = null
             }
         }
     }
