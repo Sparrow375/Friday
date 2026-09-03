@@ -25,6 +25,10 @@ object DialogueStateTracker {
         activeContext = null
     }
 
+    fun reset() {
+        clear()
+    }
+
     fun getActiveDomain(): String? {
         val ctx = activeContext ?: return null
         if (System.currentTimeMillis() - ctx.timestamp > CONTEXT_TTL_MS) {

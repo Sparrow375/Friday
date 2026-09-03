@@ -1235,6 +1235,6 @@ class AgentCore(
 
     fun clearMemory() {
         memoryManager.clearWorkingMemory()
-        DialogueStateTracker.reset()
+        DialogueStateTracker.clear()
     }
 }
