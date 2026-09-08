@@ -323,6 +323,7 @@ The project uses a clean package namespace `com.friday.assistant`:
           - Built `FridayBleWearableManager.kt`: Low-latency BLE Central scanner targeting `Friday-Wearable`, requests MTU 512, reassembles chunked packets, and decodes IMA-ADPCM to 16kHz float PCM using a zero-dependency Kotlin decoder (`ImaAdpcmDecoder`).
           - Integrated with `FridayService.kt`: Listens for wake triggers to pop overlay and routes received wearable audio to `FridayApplication.whisperEngine` for local transcription and agent query execution.
           - Dashboard UI (`MainActivity.kt`): Added a toggleable "Wearable Voice Module" card with live connection status pill ("Connected", "Scanning...", "Offline") and Bluetooth runtime permission handling.
+          - CI Compilation Fix: Resolved `SlateSurface` -> `SlateGray` in `MainActivity.kt`, added `Throwable? = null` overload to `FridayLogger.w` in `FridayLogger.kt`, and aligned `FridayBleWearableManager.kt` error logging.
 
 
 
