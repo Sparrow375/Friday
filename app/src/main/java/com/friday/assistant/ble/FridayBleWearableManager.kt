@@ -184,7 +184,7 @@ class FridayBleWearableManager private constructor(private val context: Context)
             try {
                 bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback)
             } catch (e: Exception) {
-                FridayLogger.w(TAG, "Error stopping scan", e)
+                FridayLogger.w(TAG, "Error stopping scan: ${e.message}", e)
             }
         }
     }
@@ -233,7 +233,7 @@ class FridayBleWearableManager private constructor(private val context: Context)
             activeGatt?.disconnect()
             activeGatt?.close()
         } catch (e: Exception) {
-            FridayLogger.w(TAG, "Error closing GATT", e)
+            FridayLogger.w(TAG, "Error closing GATT: ${e.message}", e)
         }
         activeGatt = null
         _connectionState.value = ConnectionState.DISCONNECTED

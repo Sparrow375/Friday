@@ -59,9 +59,9 @@ object FridayLogger {
         logToFile("I", tag, message)
     }
 
-    fun w(tag: String, message: String) {
-        Log.w(tag, message)
-        logToFile("W", tag, message)
+    fun w(tag: String, message: String, tr: Throwable? = null) {
+        Log.w(tag, message, tr)
+        logToFile("W", tag, message, tr)
     }
 
     fun e(tag: String, message: String, tr: Throwable? = null) {

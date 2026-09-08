@@ -831,7 +831,7 @@ class MainActivity : ComponentActivity() {
                                     com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.CONNECTED -> Color(0xFF10B981).copy(alpha = 0.2f)
                                     com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.SCANNING,
                                     com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.CONNECTING -> NeonCyan.copy(alpha = 0.2f)
-                                    com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.DISCONNECTED -> SlateSurface
+                                    com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.DISCONNECTED -> SlateGray
                                 },
                                 shape = RoundedCornerShape(6.dp)
                             ) {
