@@ -185,7 +185,7 @@ class FridayGattService(Service):
             pass
 
 class FridayWearableDaemon:
-    def __init__(self, model_path="wakeword.onnx", record_device="default"):
+    def __init__(self, model_path="wakeword.onnx", record_device="inmp441_raw"):
         self.model_path = model_path
         self.record_device = record_device
         self.running = False
