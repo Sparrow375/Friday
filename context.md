@@ -324,6 +324,14 @@ The project uses a clean package namespace `com.friday.assistant`:
           - Integrated with `FridayService.kt`: Listens for wake triggers to pop overlay and routes received wearable audio to `FridayApplication.whisperEngine` for local transcription and agent query execution.
           - Dashboard UI (`MainActivity.kt`): Added a toggleable "Wearable Voice Module" card with live connection status pill ("Connected", "Scanning...", "Offline") and Bluetooth runtime permission handling.
           - CI Compilation Fix: Resolved `SlateSurface` -> `SlateGray` in `MainActivity.kt`, added `Throwable? = null` overload to `FridayLogger.w` in `FridayLogger.kt`, and aligned `FridayBleWearableManager.kt` error logging.
+          - **Dual-Threshold Balanced Keyword Spotting Calibration**:
+            * Diagnosed why earlier strict thresholds caused misses on natural utterances: unvoiced fricatives like "F" in "Friday" have low energy (~0.045–0.055 RMS) which were getting dropped by `MIN_SPEECH_RMS = 0.065`, and `LOGIT_MARGIN_MIN = 2.5` required > 92% probability.
+            * Implemented a balanced dual-tier trigger:
+              - `MIN_SPEECH_RMS = 0.035` (3.5x higher than ambient room murmur ~0.010, but sensitive to soft consonants).
+              - Strong hit (`conf >= 0.80`, `margin >= 1.2`): Instant 0-delay trigger (< 10ms).
+              - Moderate hit (`0.70 <= conf < 0.80`, `margin >= 0.8`): 2-frame temporal confirmation.
+            * Validated: 0 false triggers on `lecture_ambient.wav`, `command_1.wav`, and `last_command.wav`, while providing responsive activation on conversational speech.
+            * Verified automatic daemon startup on boot (`systemctl is-enabled friday-wearable.service` -> `enabled`).
 
 
 

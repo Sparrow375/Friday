@@ -39,12 +39,11 @@ CHUNK_SAMPLES = 1600         # 100ms chunk at 16kHz
 HW_CHUNK_SAMPLES = CHUNK_SAMPLES * DECIMATION_FACTOR # 4800 samples per channel at 48kHz
 HW_CHUNK_BYTES = HW_CHUNK_SAMPLES * 2 * 4            # 2 channels * 4 bytes (S32_LE) = 38,400 bytes
 
-# Responsive & Robust Detection Tuning
-MIN_SPEECH_RMS = 0.040       # Close-proximity speech floor (ambient room noise is ~0.010)
-SNR_MULTIPLIER = 1.60        # Frame RMS must be 1.6x above ambient baseline
-CONFIDENCE_THRESHOLD = 0.75  # Calibrated probability threshold for 'Friday'
-LOGIT_MARGIN_MIN = 1.0       # pos_logit - neg_logit >= 1.0
-MIN_CONSECUTIVE_HITS = 1     # Instant detection on qualified candidate frame
+# Dual-Threshold Balanced Keyword Spotting
+MIN_SPEECH_RMS = 0.035       # Speech energy floor (ambient room is ~0.010)
+SNR_MULTIPLIER = 1.50        # Frame RMS must be 1.5x above ambient baseline
+STRONG_CONFIDENCE = 0.80     # Immediate trigger threshold (single frame)
+MODERATE_CONFIDENCE = 0.70   # Two-frame confirmation threshold
 WARMUP_CHUNKS = 15           # Discard initial 1.5s until buffer is fully populated
 
 SILENCE_TIMEOUT_SEC = 1.2    # Trailing silence to end command recording
@@ -348,27 +347,34 @@ class FridayWearableDaemon:
                 conf = float(exps[1] / np.sum(exps))
                 margin = pos_logit - neg_logit
 
-                # Tier 2 Quality & Temporal Confirmation Gate
-                if conf >= CONFIDENCE_THRESHOLD and margin >= LOGIT_MARGIN_MIN and pos_logit > 0.0:
+                # Tier 2 Dual-Threshold Confirmation Gate
+                is_wake_word = False
+                if conf >= STRONG_CONFIDENCE and margin >= 1.2:
+                    is_wake_word = True
+                    self.consecutive_hits = 0
+                    print(f"[Detect] 'Friday' STRONG hit (conf: {conf*100:.1f}%, margin: {margin:.1f}, RMS: {rms:.3f})")
+                elif conf >= MODERATE_CONFIDENCE and margin >= 0.8 and pos_logit > 0.0:
                     self.consecutive_hits += 1
-                    print(f"[Detect] 'Friday' candidate frame (conf: {conf*100:.1f}%, margin: {margin:.1f}, RMS: {rms:.3f}) [hit {self.consecutive_hits}/{MIN_CONSECUTIVE_HITS}]")
-                    
-                    if self.consecutive_hits >= MIN_CONSECUTIVE_HITS:
-                        print(f"\n[★] RIGOROUS WAKE-WORD CONFIRMED! 'Friday' (Conf: {conf*100:.1f}%, infer: {infer_ms:.1f}ms)")
-                        print("    --> RECORDING COMMAND... (Listening for user query)")
-
-                        # Notify Phone over BLE: 0x01 (WAKE_TRIGGERED)
-                        if self.gatt_service and self.loop:
-                            self.loop.call_soon_threadsafe(self.gatt_service.set_state, 0x01)
-
-                        state = "RECORDING_COMMAND"
-                        command_buffer = []
-                        speech_started = False
-                        silence_chunks = 0
-                        command_start_time = now
+                    print(f"[Detect] 'Friday' moderate candidate (conf: {conf*100:.1f}%, margin: {margin:.1f}, RMS: {rms:.3f}) [hit {self.consecutive_hits}/2]")
+                    if self.consecutive_hits >= 2:
+                        is_wake_word = True
                         self.consecutive_hits = 0
                 else:
                     self.consecutive_hits = 0
+
+                if is_wake_word:
+                    print(f"\n[★] WAKE-WORD CONFIRMED! 'Friday' (Conf: {conf*100:.1f}%, infer: {infer_ms:.1f}ms)")
+                    print("    --> RECORDING COMMAND... (Listening for user query)")
+
+                    # Notify Phone over BLE: 0x01 (WAKE_TRIGGERED)
+                    if self.gatt_service and self.loop:
+                        self.loop.call_soon_threadsafe(self.gatt_service.set_state, 0x01)
+
+                    state = "RECORDING_COMMAND"
+                    command_buffer = []
+                    speech_started = False
+                    silence_chunks = 0
+                    command_start_time = now
 
             elif state == "RECORDING_COMMAND":
                 command_buffer.append(chunk)
