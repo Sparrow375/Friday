@@ -39,12 +39,12 @@ CHUNK_SAMPLES = 1600         # 100ms chunk at 16kHz
 HW_CHUNK_SAMPLES = CHUNK_SAMPLES * DECIMATION_FACTOR # 4800 samples per channel at 48kHz
 HW_CHUNK_BYTES = HW_CHUNK_SAMPLES * 2 * 4            # 2 channels * 4 bytes (S32_LE) = 38,400 bytes
 
-# Rigorous Detection Tuning
-MIN_SPEECH_RMS = 0.065       # Absolute minimum close-proximity speech RMS floor
-SNR_MULTIPLIER = 1.75        # Frame RMS must be 1.75x above ambient baseline
-CONFIDENCE_THRESHOLD = 0.85  # Probability threshold for 'Friday'
-LOGIT_MARGIN_MIN = 2.5       # pos_logit - neg_logit >= 2.5
-MIN_CONSECUTIVE_HITS = 2     # Temporal confirmation: 2 consecutive frames (~200ms)
+# Responsive & Robust Detection Tuning
+MIN_SPEECH_RMS = 0.040       # Close-proximity speech floor (ambient room noise is ~0.010)
+SNR_MULTIPLIER = 1.60        # Frame RMS must be 1.6x above ambient baseline
+CONFIDENCE_THRESHOLD = 0.75  # Calibrated probability threshold for 'Friday'
+LOGIT_MARGIN_MIN = 1.0       # pos_logit - neg_logit >= 1.0
+MIN_CONSECUTIVE_HITS = 1     # Instant detection on qualified candidate frame
 WARMUP_CHUNKS = 15           # Discard initial 1.5s until buffer is fully populated
 
 SILENCE_TIMEOUT_SEC = 1.2    # Trailing silence to end command recording
@@ -349,7 +349,7 @@ class FridayWearableDaemon:
                 margin = pos_logit - neg_logit
 
                 # Tier 2 Quality & Temporal Confirmation Gate
-                if conf >= CONFIDENCE_THRESHOLD and margin >= LOGIT_MARGIN_MIN and pos_logit > 0.5:
+                if conf >= CONFIDENCE_THRESHOLD and margin >= LOGIT_MARGIN_MIN and pos_logit > 0.0:
                     self.consecutive_hits += 1
                     print(f"[Detect] 'Friday' candidate frame (conf: {conf*100:.1f}%, margin: {margin:.1f}, RMS: {rms:.3f}) [hit {self.consecutive_hits}/{MIN_CONSECUTIVE_HITS}]")
                     
