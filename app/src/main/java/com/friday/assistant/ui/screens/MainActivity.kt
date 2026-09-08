@@ -168,6 +168,12 @@ class MainActivity : ComponentActivity() {
         var audioChimeEnabled by remember {
             mutableStateOf(context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("audio_chime_enabled", true))
         }
+        var bleWearableEnabled by remember {
+            mutableStateOf(context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("ble_wearable_enabled", true))
+        }
+        val bleWearableManager = remember { com.friday.assistant.ble.FridayBleWearableManager.getInstance(context) }
+        val bleConnectionState by bleWearableManager.connectionState.collectAsState()
+        val bleDeviceName by bleWearableManager.deviceName.collectAsState()
 
         var useLlm by remember { 
             mutableStateOf(context.getSharedPreferences("friday_model_prefs", Context.MODE_PRIVATE).getBoolean("use_llm", true)) 
@@ -281,6 +287,7 @@ class MainActivity : ComponentActivity() {
                 wakeWordEnabled = aPrefs.getBoolean("wake_word_enabled", false)
                 hapticFeedbackEnabled = aPrefs.getBoolean("haptic_feedback_enabled", true)
                 audioChimeEnabled = aPrefs.getBoolean("audio_chime_enabled", true)
+                bleWearableEnabled = aPrefs.getBoolean("ble_wearable_enabled", true)
 
                 // Also update model loading status
                 whisperLoaded = modelManager.isWhisperLoaded()
@@ -294,7 +301,25 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        val blePermissionLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestMultiplePermissions()
+        ) { perms ->
+            val allGranted = perms.values.all { it }
+            if (allGranted) {
+                bleWearableManager.setEnabled(true)
+            } else {
+                Toast.makeText(context, "Bluetooth permissions required for Wearable device", Toast.LENGTH_SHORT).show()
+                bleWearableEnabled = false
+                context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                    .edit().putBoolean("ble_wearable_enabled", false).apply()
+            }
+        }
 
+        LaunchedEffect(Unit) {
+            if (bleWearableEnabled && bleWearableManager.hasPermissions()) {
+                bleWearableManager.setEnabled(true)
+            }
+        }
 
         // LLF GGUF File Picker launcher
         val filePickerLauncher = rememberLauncherForActivityResult(
@@ -782,6 +807,109 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // 1.5 Wearable Voice Module Card (Pi Zero 2 W)
+            DashboardCard(title = "Wearable Voice Module") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "Wearable Device (BLE)",
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                fontSize = 15.sp
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                color = when (bleConnectionState) {
+                                    com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.CONNECTED -> Color(0xFF10B981).copy(alpha = 0.2f)
+                                    com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.SCANNING,
+                                    com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.CONNECTING -> NeonCyan.copy(alpha = 0.2f)
+                                    com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.DISCONNECTED -> SlateSurface
+                                },
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = when (bleConnectionState) {
+                                        com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.CONNECTED -> "Connected"
+                                        com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.SCANNING -> "Scanning..."
+                                        com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.CONNECTING -> "Connecting..."
+                                        com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.DISCONNECTED -> "Offline"
+                                    },
+                                    color = when (bleConnectionState) {
+                                        com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.CONNECTED -> Color(0xFF10B981)
+                                        com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.SCANNING,
+                                        com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.CONNECTING -> NeonCyan
+                                        com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.DISCONNECTED -> SilverText
+                                    },
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        Text(
+                            text = if (bleConnectionState == com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.CONNECTED) {
+                                "Paired with ${bleDeviceName ?: "Friday-Wearable"} (Pi Zero 2 W)"
+                            } else {
+                                "Offloads wake-word & speech capture to Pi wearable"
+                            },
+                            color = SilverText,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                    Switch(
+                        checked = bleWearableEnabled,
+                        onCheckedChange = { checked ->
+                            bleWearableEnabled = checked
+                            context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                                .edit().putBoolean("ble_wearable_enabled", checked).apply()
+
+                            if (checked) {
+                                if (bleWearableManager.hasPermissions()) {
+                                    bleWearableManager.setEnabled(true)
+                                } else {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                        blePermissionLauncher.launch(
+                                            arrayOf(
+                                                Manifest.permission.BLUETOOTH_SCAN,
+                                                Manifest.permission.BLUETOOTH_CONNECT
+                                            )
+                                        )
+                                    }
+                                }
+                            } else {
+                                bleWearableManager.setEnabled(false)
+                            }
+
+                            try {
+                                val reloadIntent = Intent(context, FridayService::class.java).apply {
+                                    action = FridayService.ACTION_RELOAD_BLE_WEARABLE
+                                }
+                                context.startService(reloadIntent)
+                            } catch (_: Exception) {}
+
+                            Toast.makeText(
+                                context,
+                                if (checked) "Wearable Device Enabled" else "Wearable Device Disabled",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = NeonCyan,
+                            checkedTrackColor = NeonBlue.copy(alpha = 0.5f)
+                        )
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
 
             // Open Overlay button — visible when core microphone, overlay, and assistant permissions are granted
             if (hasMicPermission && hasOverlayPermission && hasAssistantRole) {

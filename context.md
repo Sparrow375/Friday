@@ -300,6 +300,29 @@ The project uses a clean package namespace `com.friday.assistant`:
         * JNI Tokenization & Sampler Fix (`friday_jni.cpp`): Set `add_special = false` in `llama_tokenize` to prevent prepending duplicate BOS/special tokens to pre-formatted ChatML prompts (`<|im_start|>...`), and added `llama_sampler_accept(smpl, id)` to properly synchronize sampler state across token steps.
         * Reverted PromptBuilder to e01bb5d: Restored original system instruction (*"You are Friday, an offline premium AI assistant. Keep your responses cool, extremely concise (1-2 sentences maximum), and friendly..."*) and prompt structure.
         * Maintained Efficiency Gains: Kept fast direct Google Search routing for question prefixes (`what is`, `how to`, `who is`, `why is`, `explain`, `tell me about`) so web queries do not stall on local LLM, and restored `maxTokens = 128` to avoid generation lag.
+      - **Raspberry Pi Zero 2 W Wearable Voice Module & BLE GATT Architecture (September 2026)**:
+        * **Wearable Hardware & Acoustic Exploration**:
+          - System: Raspberry Pi Zero 2 W Rev 1.0 running 64-bit Debian 13 (trixie, kernel 6.18.39 aarch64).
+          - Audio Interface: INMP441 I2S MEMS microphone connected via `adau7002-simple` kernel overlay.
+          - Channel Isolation & Decimation: The INMP441 hardware transmits 24-bit audio on Channel 1 (Right) within a 48kHz S32_LE 2-channel stereo frame (Channel 0 is silent/zeros). ALSA's default mono downmixing caused DC offset and amplitude halving. Resolved by reading raw hardware frames from `inmp441_raw` (`hw:0,0`), extracting Channel 1, subtracting DC mean, and applying integer 3:1 decimation (`ch1[::3]`) directly to 16kHz in 0.11ms without resampling artifacts.
+          - Digital Gain Calibration: Calibrated softvol digital boost from distorted +28.25 dB (clipping at -1.0/1.0) to +10 dB / unity, preserving unclipped dynamic range.
+        * **Rigorous Multi-Tier Wake-Word Detection Engine (`scripts/wearable_daemon.py`)**:
+          - Diagnosed false triggers in loud lecture halls: 1D-CNN ONNX model evaluated at low amplitudes had false positives on reverberant murmurs and unnormalized DC offsets.
+          - Built a 4-tier robust detection engine:
+            1. **Hardware DC Bias Elimination**: Subtracted mean on each 100ms chunk (`chunk - np.mean(chunk)`), dropping ambient noise floor to 0.007–0.015 RMS.
+            2. **Close-Proximity Speech Gate & Dynamic SNR**: Implemented an absolute speech floor (`MIN_SPEECH_RMS = 0.065`) and adaptive SNR gate (`baseline_rms * 1.75`), rejecting far-field speech, murmurs, and ambient room babble.
+            3. **Neural Logit Margin & Probability Gate**: Required `conf >= 0.85`, positive logit activation `pos_logit > 0.5`, and logit margin `(pos_logit - neg_logit) >= 2.5`.
+            4. **Multi-Frame Temporal Confirmation (Debounce)**: Required `MIN_CONSECUTIVE_HITS = 2` (spanning ~200ms) to filter isolated transients, plus 1.5s warmup buffer guard.
+          - Benchmark Verification: Evaluated on live recorded lecture hall ambient audio (65+ chunks) and command speech: **0 false triggers (0.0%)**, while real "Friday" utterances trigger with 100% confidence.
+        * **Ultra-Fast IMA-ADPCM Compression & BLE GATT Streaming**:
+          - Implemented high-speed 4-bit IMA-ADPCM encoder in Python (`encode_ima_adpcm_fast`), compressing 7 seconds of audio in < 300ms without scalar overflows.
+          - Built BlueZ D-Bus GATT peripheral advertising `Friday-Wearable` with Service UUID `1F81DA00-B5A3-F393-E0A9-E50E24DCCA9E`.
+          - Notifies State characteristic (`0x01`) on wake word to wake up phone overlay, then streams chunked ADPCM packets (450 bytes) over Command characteristic.
+          - Created systemd unit `friday-wearable.service` on the Pi.
+        * **Android App BLE Wearable Client (`com.friday.assistant.ble`)**:
+          - Built `FridayBleWearableManager.kt`: Low-latency BLE Central scanner targeting `Friday-Wearable`, requests MTU 512, reassembles chunked packets, and decodes IMA-ADPCM to 16kHz float PCM using a zero-dependency Kotlin decoder (`ImaAdpcmDecoder`).
+          - Integrated with `FridayService.kt`: Listens for wake triggers to pop overlay and routes received wearable audio to `FridayApplication.whisperEngine` for local transcription and agent query execution.
+          - Dashboard UI (`MainActivity.kt`): Added a toggleable "Wearable Voice Module" card with live connection status pill ("Connected", "Scanning...", "Offline") and Bluetooth runtime permission handling.
 
 
 

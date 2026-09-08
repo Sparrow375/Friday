@@ -42,6 +42,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         var instance: FridayService? = null
             private set
 
+        const val ACTION_RELOAD_BLE_WEARABLE = "com.friday.assistant.ACTION_RELOAD_BLE_WEARABLE"
+
         fun reloadModels() {
             instance?.let { service ->
                 service.serviceScope.launch(Dispatchers.IO) {
@@ -53,6 +55,10 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                     }
                 }
             }
+        }
+
+        fun reloadBleWearable() {
+            instance?.reloadBleWearableInternal()
         }
 
         fun showOverlay() {
@@ -75,6 +81,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     private lateinit var audioCaptureManager: com.friday.assistant.audio.AudioCaptureManager
     private lateinit var speechToTextHelper: SpeechToTextHelper
     private var wakeWordDetector: com.friday.assistant.audio.WakeWordDetector? = null
+    private var bleWearableManager: com.friday.assistant.ble.FridayBleWearableManager? = null
     
     private var overlayManager: OverlayManager? = null
     private var tts: TextToSpeech? = null
@@ -156,6 +163,19 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 onWakeWordTriggered()
             }
         }
+
+        // 8. Setup BLE Wearable Manager (Pi Zero 2 W)
+        bleWearableManager = com.friday.assistant.ble.FridayBleWearableManager.getInstance(this).apply {
+            onWakeWordDetected = {
+                onWearableWakeWordTriggered()
+            }
+            onCommandAudioReceived = { audioSamples ->
+                onWearableAudioCommandReceived(audioSamples)
+            }
+            onCommandTextReceived = { text ->
+                onWearableTextCommandReceived(text)
+            }
+        }
     }
 
     override fun onReady() {
@@ -165,6 +185,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         // Models are loaded on-demand to minimize startup RAM and battery consumption
         startWakeWordListening()
+        reloadBleWearableInternal()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -179,6 +200,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             stopWakeWordListening()
         } else if (action == ACTION_RESUME_WAKEWORD) {
             startWakeWordListening()
+        } else if (action == ACTION_RELOAD_BLE_WEARABLE) {
+            reloadBleWearableInternal()
         } else if (action == ACTION_SPEAK_REMINDER) {
             val text = intent.getStringExtra(ReminderReceiver.EXTRA_REMINDER_TEXT) ?: "You have a reminder."
             speakReminder(text)
@@ -568,6 +591,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         stopWakeWordListening()
         wakeWordDetector?.shutdown()
+        bleWearableManager?.setEnabled(false)
         speechToTextHelper.destroy()
         overlayManager?.destroyOverlay()
         tts?.shutdown()
@@ -575,6 +599,68 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         serviceScope.launch(Dispatchers.IO) {
             FridayApplication.llamaEngine.freeModel()
             FridayApplication.whisperEngine.freeModel()
+        }
+    }
+
+    fun reloadBleWearableInternal() {
+        val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+        val assistantEnabled = prefs.getBoolean("assistant_enabled", true)
+        val bleEnabled = prefs.getBoolean("ble_wearable_enabled", true)
+        val shouldEnable = assistantEnabled && bleEnabled
+        com.friday.assistant.core.FridayLogger.i(TAG, "reloadBleWearable: shouldEnable=$shouldEnable (assistant=$assistantEnabled, ble=$bleEnabled)")
+        bleWearableManager?.setEnabled(shouldEnable)
+    }
+
+    private fun onWearableWakeWordTriggered() {
+        val enabled = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("assistant_enabled", true)
+        if (!enabled) return
+
+        com.friday.assistant.core.FridayLogger.i(TAG, "Wearable wake-word detected — waking screen and showing overlay")
+        serviceScope.launch {
+            if (pipelineState.value == PipelineState.SPEAKING) {
+                try { tts?.stop() } catch (e: Exception) { Log.e(TAG, "Error stopping TTS", e) }
+            }
+            overlayManager?.show()
+            transitionToState(PipelineState.LISTENING, statusMessage = "Listening to Wearable...")
+        }
+    }
+
+    private fun onWearableAudioCommandReceived(audioSamples: FloatArray) {
+        serviceScope.launch {
+            transitionToState(PipelineState.THINKING, statusMessage = "Processing wearable speech...")
+            val whisperEngine = FridayApplication.whisperEngine
+            if (!whisperEngine.isModelLoaded()) {
+                val whisperPath = modelManager.getWhisperModelPath()
+                if (whisperPath != null && java.io.File(whisperPath).exists()) {
+                    whisperEngine.loadModel(whisperPath)
+                }
+            }
+
+            val transcribed = if (whisperEngine.isModelLoaded()) {
+                whisperEngine.transcribe(audioSamples).trim()
+            } else {
+                ""
+            }
+
+            if (transcribed.isNotBlank()) {
+                com.friday.assistant.core.FridayLogger.i(TAG, "Wearable speech transcribed: '$transcribed'")
+                executeAgentQuery(transcribed)
+            } else {
+                com.friday.assistant.core.FridayLogger.w(TAG, "Wearable audio transcription was blank")
+                overlayManager?.updateState(PipelineState.IDLE, "Could not recognize wearable speech")
+                kotlinx.coroutines.delay(2000)
+                transitionToState(PipelineState.IDLE)
+                overlayManager?.dismiss()
+            }
+        }
+    }
+
+    private fun onWearableTextCommandReceived(text: String) {
+        if (text.isNotBlank()) {
+            serviceScope.launch {
+                overlayManager?.show()
+                executeAgentQuery(text)
+            }
         }
     }
 
