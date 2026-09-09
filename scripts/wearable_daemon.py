@@ -21,6 +21,7 @@ import asyncio
 import threading
 import subprocess
 import numpy as np
+import scipy.signal as signal
 import onnxruntime as ort
 
 from dbus_next.aio import MessageBus
@@ -39,16 +40,19 @@ CHUNK_SAMPLES = 1600         # 100ms chunk at 16kHz
 HW_CHUNK_SAMPLES = CHUNK_SAMPLES * DECIMATION_FACTOR # 4800 samples per channel at 48kHz
 HW_CHUNK_BYTES = HW_CHUNK_SAMPLES * 2 * 4            # 2 channels * 4 bytes (S32_LE) = 38,400 bytes
 
-# Dual-Threshold Balanced Keyword Spotting
-MIN_SPEECH_RMS = 0.035       # Speech energy floor (ambient room is ~0.010)
-SNR_MULTIPLIER = 1.50        # Frame RMS must be 1.5x above ambient baseline
-STRONG_CONFIDENCE = 0.80     # Immediate trigger threshold (single frame)
-MODERATE_CONFIDENCE = 0.70   # Two-frame confirmation threshold
+# 2nd-order Butterworth High-Pass Filter at 80Hz (strips sub-audible MEMS DC drift & HVAC rumble)
+HPF_B, HPF_A = signal.butter(2, 80, btype='high', fs=SAMPLE_RATE)
+
+# Continuous Keyword Spotting & Snappy Command Pipeline
+MIN_SPEECH_RMS = 0.010       # Secondary speech floor (ambient room is ~0.008)
+SNR_MULTIPLIER = 1.15        # Minimum SNR ratio over ambient baseline
+STRONG_CONFIDENCE = 0.75     # Immediate trigger threshold (single frame)
+MODERATE_CONFIDENCE = 0.60   # Two-frame confirmation threshold
 WARMUP_CHUNKS = 15           # Discard initial 1.5s until buffer is fully populated
 
-SILENCE_TIMEOUT_SEC = 1.2    # Trailing silence to end command recording
-MAX_COMMAND_SEC = 7.0        # Max command duration limit
-COOLDOWN_SEC = 2.0           # Cooldown to avoid self-retrigger or room echo
+SILENCE_TIMEOUT_SEC = 0.9    # Trailing silence to end command recording (snappy voice-end)
+MAX_COMMAND_SEC = 8.0        # Max command duration limit
+COOLDOWN_SEC = 1.0           # Cooldown to avoid self-retrigger or room echo
 
 # BLE UUIDs
 SERVICE_UUID = "1F81DA00-B5A3-F393-E0A9-E50E24DCCA9E"
@@ -195,9 +199,12 @@ class FridayWearableDaemon:
         self.gatt_service = None
         self.loop = None
         
-        self.baseline_rms = 0.020
+        self.baseline_rms = 0.0025
+        self.hpf_zi = signal.lfilter_zi(HPF_B, HPF_A) * 0.0
         self.chunks_seen = 0
         self.consecutive_hits = 0
+        self.daemon_state = "LISTENING_WAKEWORD"
+        self.cooldown_until = 0.0
 
         self._load_model()
 
@@ -219,6 +226,8 @@ class FridayWearableDaemon:
             "-f", "S32_LE",
             "-c", "2",
             "-t", "raw",
+            "--buffer-time", "1000000",
+            "--period-time", "100000",
             "-q"
         ]
         print(f"[Audio] Starting native hardware capture: {' '.join(cmd)}")
@@ -232,6 +241,10 @@ class FridayWearableDaemon:
         if self.proc.poll() is not None:
             err = self.proc.stderr.read().decode('utf-8', errors='replace')
             raise RuntimeError(f"arecord failed to start: {err}")
+
+        # Drain first 10 chunks (1.0s) to discard analog hardware power-on settling curve
+        for _ in range(10):
+            _ = self.proc.stdout.read(HW_CHUNK_BYTES)
 
     def _stop_audio_stream(self):
         if self.proc:
@@ -275,21 +288,31 @@ class FridayWearableDaemon:
         self.gatt_service.notify_command_packet(bytes([0x03]))
         print(f"[BLE] Successfully transmitted {total_chunks} audio packets over BLE.")
 
-        # Update state back to IDLE (0x00)
+        # Update phone state back to IDLE (0x00)
         await asyncio.sleep(0.1)
         self.gatt_service.set_state(0x00)
+
+        # Allow phone BLE GATT consumer to close cleanly before listening for new wake words
+        await asyncio.sleep(0.8)
+
+        # Safely reset audio buffers and restore wake-word listener
+        self.ring_buffer.fill(0)
+        self.chunks_seen = 0
+        self.consecutive_hits = 0
+        self.hpf_zi = signal.lfilter_zi(HPF_B, HPF_A) * 0.0
+        self.cooldown_until = time.time() + 1.0
+        self.daemon_state = "LISTENING_WAKEWORD"
+        print("[Engine] BLE transmission finished cleanly. Listening for 'Friday'...\n")
 
     def audio_processing_worker(self):
         """Dedicated background thread capturing audio and running rigorous multi-tier detection."""
         self._start_audio_stream()
         print("\n>>> FRIDAY RIGOROUS WEARABLE ENGINE STARTED <<<\n")
 
-        state = "LISTENING_WAKEWORD"
         command_buffer = []
         speech_started = False
         silence_chunks = 0
         command_start_time = 0.0
-        cooldown_until = 0.0
 
         while self.running:
             if self.proc.poll() is not None:
@@ -301,43 +324,49 @@ class FridayWearableDaemon:
                 time.sleep(0.01)
                 continue
 
-            # Extract active INMP441 Right channel (Channel 1) from 32-bit stereo
+            # Extract active INMP441 channel from 32-bit stereo (handles I2S DMA word-clock alignment)
             stereo_i32 = np.frombuffer(raw_bytes, dtype=np.int32).reshape(-1, 2)
+            ch0 = stereo_i32[:, 0].astype(np.float32) / 2147483648.0
             ch1 = stereo_i32[:, 1].astype(np.float32) / 2147483648.0
+            rms0 = float(np.sqrt(np.mean((ch0 - np.mean(ch0)) ** 2)))
+            rms1 = float(np.sqrt(np.mean((ch1 - np.mean(ch1)) ** 2)))
+            active_raw = ch1 if rms1 >= rms0 else ch0
             
             # Integer 3:1 decimation from 48kHz to 16kHz (4800 -> 1600 samples)
-            chunk = ch1[::DECIMATION_FACTOR]
-            # Zero-bias AC high-pass: eliminate hardware DC offset completely
+            chunk = active_raw[::DECIMATION_FACTOR]
+            
+            # 80Hz Butterworth High-Pass Filter: strips sub-audible MEMS DC drift & 1-5Hz air rumble
+            chunk, self.hpf_zi = signal.lfilter(HPF_B, HPF_A, chunk, zi=self.hpf_zi)
             chunk = chunk - np.mean(chunk)
             rms = float(np.sqrt(np.mean(chunk ** 2)))
             now = time.time()
 
-            if state == "LISTENING_WAKEWORD":
+            if self.daemon_state == "LISTENING_WAKEWORD":
                 self.ring_buffer = np.roll(self.ring_buffer, -CHUNK_SAMPLES)
                 self.ring_buffer[-CHUNK_SAMPLES:] = chunk
                 self.chunks_seen += 1
 
-                # Adapt baseline noise floor on ambient/silence frames
-                if rms < MIN_SPEECH_RMS:
+                # Adapt baseline noise floor on ambient/silence frames (true room ambient is ~0.0016)
+                if rms < max(0.004, self.baseline_rms * 1.25):
                     self.baseline_rms = self.baseline_rms * 0.98 + rms * 0.02
 
                 # Enforce warmup guard: do not evaluate until ring buffer is fully populated
                 if self.chunks_seen < WARMUP_CHUNKS:
                     continue
 
-                if now < cooldown_until:
+                if now < self.cooldown_until:
                     self.consecutive_hits = 0
                     continue
 
-                # Tier 0 Close-Proximity VAD Gate & SNR check
-                speech_gate = max(MIN_SPEECH_RMS, self.baseline_rms * SNR_MULTIPLIER)
-                if rms < speech_gate:
+                # Secondary dead-silence sanity check (mic muted or uninitialized)
+                if rms < 0.0006:
                     self.consecutive_hits = 0
                     continue
 
-                # Tier 1 ONNX Neural Evaluation
+                # Tier 1 ONNX Neural Evaluation (Continuous inference on zero-centered sliding buffer)
                 t_inf = time.perf_counter()
-                inp = np.expand_dims(np.expand_dims(self.ring_buffer, axis=0), axis=0).astype(np.float32)
+                eval_buf = self.ring_buffer - np.mean(self.ring_buffer)
+                inp = np.expand_dims(np.expand_dims(eval_buf, axis=0), axis=0).astype(np.float32)
                 logits = self.session.run(None, {self.input_name: inp})[0][0]
                 infer_ms = (time.perf_counter() - t_inf) * 1000
 
@@ -347,13 +376,20 @@ class FridayWearableDaemon:
                 conf = float(exps[1] / np.sum(exps))
                 margin = pos_logit - neg_logit
 
+                # Secondary sanity check: require some acoustic activity above baseline
+                min_energy_met = (rms >= max(0.005, self.baseline_rms * SNR_MULTIPLIER))
+
+                # Diagnostic logging for notable detections or candidates
+                if conf >= 0.50 or (conf >= 0.35 and rms >= 0.020):
+                    print(f"[ONNX] conf: {conf*100:.1f}%, margin: {margin:+.2f}, RMS: {rms:.4f} (base: {self.baseline_rms:.4f}, infer: {infer_ms:.1f}ms)")
+
                 # Tier 2 Dual-Threshold Confirmation Gate
                 is_wake_word = False
-                if conf >= STRONG_CONFIDENCE and margin >= 1.2:
+                if min_energy_met and conf >= STRONG_CONFIDENCE and margin >= 1.0:
                     is_wake_word = True
                     self.consecutive_hits = 0
                     print(f"[Detect] 'Friday' STRONG hit (conf: {conf*100:.1f}%, margin: {margin:.1f}, RMS: {rms:.3f})")
-                elif conf >= MODERATE_CONFIDENCE and margin >= 0.8 and pos_logit > 0.0:
+                elif min_energy_met and conf >= MODERATE_CONFIDENCE and margin >= 0.5 and pos_logit > 0.0:
                     self.consecutive_hits += 1
                     print(f"[Detect] 'Friday' moderate candidate (conf: {conf*100:.1f}%, margin: {margin:.1f}, RMS: {rms:.3f}) [hit {self.consecutive_hits}/2]")
                     if self.consecutive_hits >= 2:
@@ -370,19 +406,22 @@ class FridayWearableDaemon:
                     if self.gatt_service and self.loop:
                         self.loop.call_soon_threadsafe(self.gatt_service.set_state, 0x01)
 
-                    state = "RECORDING_COMMAND"
-                    command_buffer = []
-                    speech_started = False
+                    self.daemon_state = "RECORDING_COMMAND"
+                    # Capture last 0.5s (8000 samples) pre-trigger audio so beginning of command is never cut off
+                    pre_trigger = self.ring_buffer[-8000:].copy()
+                    command_buffer = [pre_trigger, chunk]
+                    speech_started = True  # The wake word itself counts as speech having started
                     silence_chunks = 0
                     command_start_time = now
 
-            elif state == "RECORDING_COMMAND":
+            elif self.daemon_state == "RECORDING_COMMAND":
                 command_buffer.append(chunk)
                 elapsed = now - command_start_time
 
                 # Active speech detection during command recording
-                speech_gate = max(0.04, self.baseline_rms * 1.35)
-                if rms > speech_gate:
+                # Distant speech (30-50cm) has RMS ~0.012-0.020. Ambient room is ~0.0016.
+                command_speech_gate = max(0.004, self.baseline_rms * 1.20)
+                if rms >= command_speech_gate:
                     speech_started = True
                     silence_chunks = 0
                 else:
@@ -392,9 +431,11 @@ class FridayWearableDaemon:
                 # Check silence end-of-speech or timeout
                 silence_duration = silence_chunks * (CHUNK_SAMPLES / SAMPLE_RATE)
                 if (speech_started and silence_duration >= SILENCE_TIMEOUT_SEC) or (elapsed >= MAX_COMMAND_SEC):
-                    print(f"[✔] Command recorded! Duration: {elapsed:.1f}s. Streaming to phone...")
-                    state = "LISTENING_WAKEWORD"
-                    cooldown_until = now + COOLDOWN_SEC
+                    print(f"[✔] Command recorded! Duration: {elapsed:.1f}s (silence: {silence_duration:.1f}s). Streaming to phone...")
+                    self.daemon_state = "TRANSMITTING"
+                    self.ring_buffer.fill(0)
+                    self.chunks_seen = 0
+                    self.consecutive_hits = 0
 
                     full_audio = np.concatenate(command_buffer)
 
@@ -404,6 +445,13 @@ class FridayWearableDaemon:
                     # Stream audio packets to phone over BLE
                     if self.gatt_service and self.loop:
                         asyncio.run_coroutine_threadsafe(self._send_audio_over_ble(full_audio), self.loop)
+
+            elif self.daemon_state == "TRANSMITTING":
+                # While transmitting over BLE, discard incoming audio and keep buffer clean
+                self.ring_buffer.fill(0)
+                self.chunks_seen = 0
+                self.consecutive_hits = 0
+                time.sleep(0.02)
 
         self._stop_audio_stream()
 

@@ -11,11 +11,16 @@ import sys
 import shutil
 import numpy as np
 import scipy.io.wavfile as wavfile
+import scipy.signal as signal
 
 # Feature extraction settings matching the Android client
 SAMPLE_RATE = 16000
 DURATION_SECONDS = 1.5
 INPUT_SIZE = int(SAMPLE_RATE * DURATION_SECONDS)  # 24000 samples
+
+# 2nd-order Butterworth High-Pass Filter at 80Hz (eliminates sub-audible MEMS DC drift & HVAC rumble)
+HPF_B, HPF_A = signal.butter(2, 80, btype='high', fs=SAMPLE_RATE)
+HPF_ZI = signal.lfilter_zi(HPF_B, HPF_A) * 0.0
 
 def resample_wave(y, orig_sr, target_sr):
     if orig_sr == target_sr:
@@ -52,11 +57,12 @@ def train_wakeword():
         return
 
     # 2. Load and preprocess audio files into raw waveforms of fixed size
-    print("Loading and preprocessing audio waveforms...", flush=True)
+    print("Loading and preprocessing audio waveforms (applying 80Hz Butterworth HPF)...", flush=True)
     
     def load_waveforms(directory, target_len=INPUT_SIZE):
-        waveforms = []
-        for file in os.listdir(directory):
+        real_waves = []
+        synth_waves = []
+        for file in sorted(os.listdir(directory)):
             if file.endswith(".wav"):
                 path = os.path.join(directory, file)
                 try:
@@ -68,32 +74,57 @@ def train_wakeword():
                     if sr != SAMPLE_RATE:
                         y = resample_wave(y, sr, SAMPLE_RATE)
                         
-                    # Handle padding or cropping to target_len
+                    # Apply 80Hz Butterworth High-Pass Filter (strips sub-audible DC drift < 80Hz)
+                    y, _ = signal.lfilter(HPF_B, HPF_A, y, zi=HPF_ZI)
+                    y = y - np.mean(y)
+
+                    is_real = file.startswith("pi_real_")
+
+                    # Handle padding or multi-crop to target_len
                     if len(y) > target_len:
-                        start = (len(y) - target_len) // 2
-                        y = y[start:start+target_len]
+                        if is_real:
+                            # Extract sliding window crops every 1600 samples (100ms)
+                            # Exactly matches the 100ms chunk stepping in the daemon!
+                            step = 1600
+                            for start in range(0, len(y) - target_len + 1, step):
+                                real_waves.append(y[start : start + target_len])
+                        else:
+                            if len(y) >= target_len + 3200:
+                                crops = [
+                                    y[:target_len],
+                                    y[(len(y) - target_len) // 2 : (len(y) - target_len) // 2 + target_len],
+                                    y[-target_len:]
+                                ]
+                                synth_waves.extend(crops)
+                            else:
+                                start = (len(y) - target_len) // 2
+                                synth_waves.append(y[start:start+target_len])
                     else:
                         pad_len = target_len - len(y)
                         left = pad_len // 2
                         right = pad_len - left
-                        y = np.pad(y, (left, right), 'constant')
-                    waveforms.append(y)
+                        padded = np.pad(y, (left, right), 'constant')
+                        if is_real:
+                            real_waves.append(padded)
+                        else:
+                            synth_waves.append(padded)
                 except Exception as ex:
                     print(f"Failed to load {file}: {ex}", flush=True)
-        return waveforms
+        return real_waves, synth_waves
 
-    pos_waves = load_waveforms(pos_dir)
-    neg_waves = load_waveforms(neg_dir)
-    print(f"Loaded {len(pos_waves)} positive and {len(neg_waves)} negative waveforms.", flush=True)
+    pos_real, pos_synth = load_waveforms(pos_dir)
+    neg_real, neg_synth = load_waveforms(neg_dir)
+    print(f"Loaded Positives: {len(pos_real)} real 100ms-sliding crops, {len(pos_synth)} synthetic.", flush=True)
+    print(f"Loaded Negatives: {len(neg_real)} real 100ms-sliding crops, {len(neg_synth)} synthetic.", flush=True)
 
     # Data Augmentation & Dataset preparation
     X = []
     y = []
 
     # Augmentation functions
-    def augment(wave):
-        # 1. Random shift
-        shift = np.random.randint(-2400, 2400) # up to 150ms
+    def augment(wave, is_positive=True):
+        # 1. Random subtle time jitter
+        shift = np.random.randint(-1200, 1200) # up to 75ms jitter
         if shift > 0:
             aug_wave = np.pad(wave, (shift, 0), 'constant')[:-shift]
         elif shift < 0:
@@ -101,37 +132,76 @@ def train_wakeword():
         else:
             aug_wave = wave.copy()
         
-        # 2. Random gain
-        gain = np.random.uniform(0.7, 1.3)
+        # 2. Wide dynamic gain (0.2x to 2.0x) to train distance invariance (from 10cm up to 1.5m)
+        gain = np.random.uniform(0.2, 2.0)
         aug_wave = aug_wave * gain
         
-        # 3. Add noise
-        noise = np.random.randn(len(aug_wave)) * np.random.uniform(0.001, 0.01)
-        aug_wave = aug_wave + noise
+        # 3. Add ambient room sensor noise
+        noise_level = np.random.uniform(0.0005, 0.005)
+        aug_wave = aug_wave + np.random.randn(len(aug_wave)) * noise_level
         
         return np.clip(aug_wave, -1.0, 1.0)
 
-    # Balance the dataset by repeating positive examples with augmentation
-    multiplier = max(1, len(neg_waves) // len(pos_waves))
-    
-    for wave in pos_waves:
+    # 1. Add Real Positive samples (augmented 8x per 100ms alignment crop)
+    for wave in pos_real:
         X.append(wave)
         y.append(1)
-        for _ in range(multiplier + 1):
-            X.append(augment(wave))
+        for _ in range(8):
+            X.append(augment(wave, is_positive=True))
             y.append(1)
 
-    for wave in neg_waves:
+    # 2. Add Synthetic Positive samples (2x)
+    for wave in pos_synth:
+        X.append(wave)
+        y.append(1)
+        for _ in range(2):
+            X.append(augment(wave, is_positive=True))
+            y.append(1)
+
+    # 3. Add Real Negative samples (phonetic distractors from user: WhatsApp, Alexa, Siri, etc.) heavily augmented (16x per crop)
+    for wave in neg_real:
         X.append(wave)
         y.append(0)
-        X.append(augment(wave))
-        y.append(0)
+        for _ in range(16):
+            X.append(augment(wave, is_positive=False))
+            y.append(0)
 
-    # Add pure silence and white noise examples
+    # 4. Add Synthetic Negative samples (1x)
+    for wave in neg_synth:
+        X.append(wave)
+        y.append(0)
+        if np.random.rand() < 0.5:
+            X.append(augment(wave, is_positive=False))
+            y.append(0)
+
+    # 5. Add slices of real ambient room noise / background chatter if available
+    ambient_files = [
+        "scripts/calibration_audio/ambient_test1_03_naive_decimated_16k.wav",
+        "scripts/calibration_audio/ambient_check_02_naive_16k.wav"
+    ]
+    for amb_file in ambient_files:
+        if os.path.exists(amb_file):
+            try:
+                sr, amb_data = wavfile.read(amb_file)
+                amb_y = amb_data.astype(np.float32) / 32768.0
+                if len(amb_y.shape) > 1:
+                    amb_y = np.mean(amb_y, axis=1)
+                amb_y, _ = signal.lfilter(HPF_B, HPF_A, amb_y, zi=HPF_ZI)
+                amb_y = amb_y - np.mean(amb_y)
+                if len(amb_y) > INPUT_SIZE:
+                    for _ in range(50):
+                        idx = np.random.randint(0, len(amb_y) - INPUT_SIZE)
+                        slice_y = amb_y[idx:idx + INPUT_SIZE] * np.random.uniform(0.3, 1.2)
+                        X.append(np.clip(slice_y, -1.0, 1.0))
+                        y.append(0)
+            except Exception as e_amb:
+                print(f"Note: Could not load ambient file {amb_file}: {e_amb}")
+
+    # 6. Add pure silence and low-amplitude white noise examples
     for _ in range(100):
         X.append(np.zeros(INPUT_SIZE, dtype=np.float32))
         y.append(0)
-        X.append(np.random.randn(INPUT_SIZE).astype(np.float32) * 0.01)
+        X.append((np.random.randn(INPUT_SIZE).astype(np.float32) * np.random.uniform(0.001, 0.005)))
         y.append(0)
 
     X = np.array(X, dtype=np.float32)
@@ -245,14 +315,26 @@ def train_wakeword():
     model.eval()
     dummy_input = torch.randn(1, 1, INPUT_SIZE, dtype=torch.float32)
     
-    torch.onnx.export(
-        model,
-        dummy_input,
-        onnx_path,
-        input_names=["input_audio"],
-        output_names=["probabilities"],
-        opset_version=15
-    )
+    try:
+        torch.onnx.export(
+            model,
+            dummy_input,
+            onnx_path,
+            input_names=["input_audio"],
+            output_names=["probabilities"],
+            opset_version=15,
+            dynamo=False
+        )
+    except Exception as ex_exp:
+        print(f"Export fallback (dynamo): {ex_exp}", flush=True)
+        torch.onnx.export(
+            model,
+            dummy_input,
+            onnx_path,
+            input_names=["input_audio"],
+            output_names=["probabilities"],
+            opset_version=15
+        )
     print("ONNX model exported.", flush=True)
 
     final_model_path = onnx_path
@@ -267,12 +349,14 @@ def train_wakeword():
         model_proto.ir_version = 8
         convert_model_from_external_data(model_proto)
         
-        # Save self-contained model directly to assets destination
+        # Save self-contained model directly to assets destination and scripts
         assets_dest = os.path.abspath("app/src/main/assets/wakeword.onnx")
+        scripts_dest = os.path.abspath("scripts/wakeword.onnx")
         if os.path.exists(assets_dest):
             os.remove(assets_dest)
         onnx.save_model(model_proto, assets_dest)
-        print(f"Saved self-contained wake-word model with IR=8 to assets: {assets_dest}", flush=True)
+        onnx.save_model(model_proto, scripts_dest)
+        print(f"Saved self-contained wake-word model with IR=8 to: {assets_dest} and {scripts_dest}", flush=True)
     except Exception as ex:
         print(f"Failed to embed weights in ONNX: {ex}", flush=True)
         # Fallback to loading, overriding IR version to 8, and saving
@@ -281,17 +365,16 @@ def train_wakeword():
             model_proto = onnx.load(final_model_path)
             model_proto.ir_version = 8
             assets_dest = os.path.abspath("app/src/main/assets/wakeword.onnx")
+            scripts_dest = os.path.abspath("scripts/wakeword.onnx")
             if os.path.exists(assets_dest):
                 os.remove(assets_dest)
             onnx.save_model(model_proto, assets_dest)
-            print(f"Saved downgraded fallback wake-word model to assets: {assets_dest}", flush=True)
+            onnx.save_model(model_proto, scripts_dest)
+            print(f"Saved downgraded fallback wake-word model to: {assets_dest} and {scripts_dest}", flush=True)
         except Exception as ex2:
             print(f"Failed to write downgraded fallback: {ex2}", flush=True)
 
-    # Clean up temporary dataset folder
-    print("Cleaning up temporary dataset files...", flush=True)
-    shutil.rmtree(data_dir, ignore_errors=True)
-    print("Data synthesis dataset cleaned up.", flush=True)
+    print("Retaining dataset folder for future iterations.", flush=True)
 
 if __name__ == "__main__":
     train_wakeword()
