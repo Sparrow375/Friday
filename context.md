@@ -332,6 +332,25 @@ The project uses a clean package namespace `com.friday.assistant`:
               - Moderate hit (`0.70 <= conf < 0.80`, `margin >= 0.8`): 2-frame temporal confirmation.
             * Validated: 0 false triggers on `lecture_ambient.wav`, `command_1.wav`, and `last_command.wav`, while providing responsive activation on conversational speech.
             * Verified automatic daemon startup on boot (`systemctl is-enabled friday-wearable.service` -> `enabled`).
+      - **Joint NLU 48-Intent Overhaul, Spoken Reminders, YouTube Music & Search Routing Cleanup (September 2026)**:
+        * **Time-Based Spoken Reminders (`set_reminder`)**:
+          - Expanded Joint NLU model schema to 48 intents by introducing `set_reminder` (with slots `B-TIME`, `I-TIME`, `B-NOTE_CONTENT`, `I-NOTE_CONTENT`).
+          - Created `ReminderScheduler.scheduleAt(context, triggerAtMs, reminderMessage)` and a resilient natural date/time parser (`ReminderScheduler.parseNaturalDateTime`) supporting relative durations ("in 10 minutes"), natural day expressions ("tomorrow", "tomorrow at 7pm", "today at 12pm", "tonight at 8"), and day-of-week parsing.
+          - Updated `AgentCore.kt` to schedule RTC wake-up alarms with natural spoken confirmations ("I've set a reminder to pay the bill for tomorrow at 7:00 PM").
+          - Separated note creation from reminders in `handleNotesAndPreferences` and `PostClassificationValidator.kt` to prevent spoken reminder queries from ever being hijacked as notes.
+        * **Ad-Free YouTube Music Web Integration**:
+          - Completely removed Spotify dependencies and routed all music queries to YouTube Music web in the browser (`MediaControlTool.kt`).
+          - Implemented YouTube videoId scraping (`scrapeTopYouTubeVideoId`) to open direct track streams at `https://music.youtube.com/watch?v=<videoId>` with search results fallback (`https://music.youtube.com/search?q=<encoded>`).
+          - Set intent to open in Brave browser (`com.brave.browser`) if installed to ensure ad-free music listening.
+        * **Search Prefix Trap Removal & NLU-First Architecture**:
+          - Eliminated hardcoded question prefixes (`what `, `who `, `where `, `when `, `why `, `how `, `explain `, `tell me about `) from `isExplicitSearch` and `handleAppsAndNavigation` in `AgentCore.kt`.
+          - General knowledge and reasoning queries now cleanly classify as `unknown` and flow directly to the on-device local LLM brain (`Qwen2.5-3B-Instruct`), falling back to `WebSearchTool` only when the local brain is disabled or unloaded.
+          - Explicit web searches ("search quantum computing", "google latest news") are directly routed by NLU to `WebSearchTool`.
+        * **Training & Evaluation Pipeline**:
+          - Created `scripts/manual_commands_dataset.json` with 50+ curated human-written commands.
+          - Updated `scripts/train_joint_nlu.py` and Google Colab notebook `scripts/friday_joint_nlu_training.ipynb` with 48 intents, 23 BIO slot tags, rich data augmentation, and dynamic INT8 ONNX export.
+          - Updated PC test harness `scripts/test_joint_nlu_pc.py`, `scripts/stress_test_dataset.json`, and `scripts/test_user_interactive_suite.py`.
+
 
 
 

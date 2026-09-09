@@ -1,0 +1,252 @@
+[
+  {
+    "text": "remind me to pay the bill tomorrow",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT", "B-TIME"]
+  },
+  {
+    "text": "remind me to buy groceries tomorrow at 7pm",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "B-TIME", "I-TIME", "I-TIME"]
+  },
+  {
+    "text": "remind me to drink water today at 12pm",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "B-TIME", "I-TIME", "I-TIME"]
+  },
+  {
+    "text": "remind me tomorrow to call mom",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "B-TIME", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "remind me at 7pm to pick up dry cleaning",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "B-TIME", "I-TIME", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "remind me in 10 minutes to check the oven",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "B-TIME", "I-TIME", "I-TIME", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "remind me in 2 hours to submit assignment",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "B-TIME", "I-TIME", "I-TIME", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "remind me on friday at 9am to attend meeting",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "B-TIME", "I-TIME", "I-TIME", "I-TIME", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "remind me tonight at 8 to take medicine",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "B-TIME", "I-TIME", "I-TIME", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "set a reminder for tomorrow at 8am to go for a run",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "O", "O", "B-TIME", "I-TIME", "I-TIME", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "set a reminder to call dad tomorrow afternoon",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "O", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "B-TIME", "I-TIME"]
+  },
+  {
+    "text": "set a reminder for 5pm: doctor appointment",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "O", "O", "B-TIME", "B-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "remind me on monday morning to pay electricity bill",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "B-TIME", "I-TIME", "I-TIME", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "remind me in 3 days to follow up with rohit",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "B-TIME", "I-TIME", "I-TIME", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "remind me tomorrow morning to water the plants",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "B-TIME", "I-TIME", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "remind me at noon to eat lunch",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "B-TIME", "I-TIME", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "can you remind me to lock the back door tonight",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "O", "O", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT", "B-TIME"]
+  },
+  {
+    "text": "don't forget to remind me to recharge metro card tomorrow",
+    "intent": "set_reminder",
+    "slots": ["O", "O", "O", "O", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT", "B-TIME"]
+  },
+  {
+    "text": "search quantum computing",
+    "intent": "search_google",
+    "slots": ["O", "B-QUERY", "I-QUERY"]
+  },
+  {
+    "text": "search latest tech news",
+    "intent": "search_google",
+    "slots": ["O", "B-QUERY", "I-QUERY", "I-QUERY"]
+  },
+  {
+    "text": "search for vegan pasta recipes",
+    "intent": "search_google",
+    "slots": ["O", "O", "B-QUERY", "I-QUERY", "I-QUERY"]
+  },
+  {
+    "text": "look up weather in tokyo",
+    "intent": "search_google",
+    "slots": ["O", "O", "B-QUERY", "I-QUERY", "I-QUERY"]
+  },
+  {
+    "text": "search python documentation",
+    "intent": "search_google",
+    "slots": ["O", "B-QUERY", "I-QUERY"]
+  },
+  {
+    "text": "search the web for electric cars",
+    "intent": "search_google",
+    "slots": ["O", "O", "O", "O", "B-QUERY", "I-QUERY"]
+  },
+  {
+    "text": "search on google who won the world cup",
+    "intent": "search_google",
+    "slots": ["O", "O", "O", "B-QUERY", "I-QUERY", "I-QUERY", "I-QUERY", "I-QUERY"]
+  },
+  {
+    "text": "google best restaurants near me",
+    "intent": "search_google",
+    "slots": ["O", "B-QUERY", "I-QUERY", "I-QUERY", "I-QUERY"]
+  },
+  {
+    "text": "look up how to tie a tie on google",
+    "intent": "search_google",
+    "slots": ["O", "O", "B-QUERY", "I-QUERY", "I-QUERY", "I-QUERY", "I-QUERY", "O", "O"]
+  },
+  {
+    "text": "search for flights to mumbai",
+    "intent": "search_google",
+    "slots": ["O", "O", "B-QUERY", "I-QUERY", "I-QUERY"]
+  },
+  {
+    "text": "play sunflower on youtube music",
+    "intent": "play_media",
+    "slots": ["O", "B-QUERY", "O", "B-APP", "I-APP"]
+  },
+  {
+    "text": "play taylor swift on youtube music",
+    "intent": "play_media",
+    "slots": ["O", "B-QUERY", "I-QUERY", "O", "B-APP", "I-APP"]
+  },
+  {
+    "text": "listen to coldplay on youtube music",
+    "intent": "play_media",
+    "slots": ["O", "O", "B-QUERY", "O", "B-APP", "I-APP"]
+  },
+  {
+    "text": "play some lofi beats",
+    "intent": "play_media",
+    "slots": ["O", "O", "B-QUERY", "I-QUERY"]
+  },
+  {
+    "text": "put on some jazz music",
+    "intent": "play_media",
+    "slots": ["O", "O", "O", "B-QUERY", "I-QUERY"]
+  },
+  {
+    "text": "play workout playlist",
+    "intent": "play_media",
+    "slots": ["O", "B-QUERY", "I-QUERY"]
+  },
+  {
+    "text": "play eminem lose yourself",
+    "intent": "play_media",
+    "slots": ["O", "B-QUERY", "I-QUERY", "I-QUERY"]
+  },
+  {
+    "text": "play bohemian rhapsody",
+    "intent": "play_media",
+    "slots": ["O", "B-QUERY", "I-QUERY"]
+  },
+  {
+    "text": "note down meeting with client at 3pm",
+    "intent": "notes_create",
+    "slots": ["O", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "take a note that wifi password is admin",
+    "intent": "notes_create",
+    "slots": ["O", "O", "O", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "save note that car insurance expires next week",
+    "intent": "notes_create",
+    "slots": ["O", "O", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "create a note buy milk and eggs",
+    "intent": "notes_create",
+    "slots": ["O", "O", "O", "B-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT", "I-NOTE_CONTENT"]
+  },
+  {
+    "text": "search notes for shopping list",
+    "intent": "notes_search",
+    "slots": ["O", "O", "O", "B-QUERY", "I-QUERY"]
+  },
+  {
+    "text": "find note about rent",
+    "intent": "notes_search",
+    "slots": ["O", "O", "O", "B-QUERY"]
+  },
+  {
+    "text": "what did i note down about metro",
+    "intent": "notes_search",
+    "slots": ["O", "O", "O", "O", "O", "O", "B-QUERY"]
+  },
+  {
+    "text": "what is the capital of france",
+    "intent": "unknown",
+    "slots": ["O", "O", "O", "O", "O", "O"]
+  },
+  {
+    "text": "tell me a funny joke",
+    "intent": "unknown",
+    "slots": ["O", "O", "O", "O", "O"]
+  },
+  {
+    "text": "explain quantum computing simply",
+    "intent": "unknown",
+    "slots": ["O", "O", "O", "O"]
+  },
+  {
+    "text": "write a python function to check prime numbers",
+    "intent": "unknown",
+    "slots": ["O", "O", "O", "O", "O", "O", "O", "O"]
+  },
+  {
+    "text": "who wrote hamlet",
+    "intent": "unknown",
+    "slots": ["O", "O", "O"]
+  },
+  {
+    "text": "why is the sky blue",
+    "intent": "unknown",
+    "slots": ["O", "O", "O", "O", "O"]
+  },
+  {
+    "text": "how does an airplane fly",
+    "intent": "unknown",
+    "slots": ["O", "O", "O", "O", "O"]
+  }
+]

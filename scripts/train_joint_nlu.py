@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
 Friday Assistant - Joint Intent Classification & Neural Slot-Filling Trainer
-(Fine-tuned with implicit messaging, postposition navigation, user profile recall, and expanded QA)
+Enhanced with:
+1. Dedicated 'set_reminder' intent with absolute and relative time slot annotations.
+2. Direct 'search_google' web search classification without requiring 'google' keyword.
+3. YouTube Music browser playback support across all music queries.
+4. Clean separation of Notes creation from Reminders.
+5. Ingestion of user-typed manual dataset (manual_commands_dataset.json).
 """
 
 import os
@@ -15,14 +20,14 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
 # ==============================================================================
-# 1. SCHEMAS
+# 1. SCHEMAS (48 Intents, 23 Slot Tags)
 # ==============================================================================
 
 INTENT_LABELS = [
     "volume_up", "volume_down", "brightness_up", "brightness_down",
     "torch_toggle", "torch_strength", "lock_phone", "open_app",
-    "navigate_to", "set_alarm", "set_timer", "send_whatsapp",
-    "play_media", "play_spotify", "play_youtube",
+    "navigate_to", "set_alarm", "set_timer", "set_reminder",
+    "send_whatsapp", "play_media", "play_spotify", "play_youtube",
     "pause_media", "next_track", "previous_track",
     "power_saver_toggle", "screencast_toggle",
     "wifi_toggle", "bluetooth_toggle", "hotspot_toggle", "dnd_toggle",
@@ -92,7 +97,7 @@ APPS = [
     "spotify", "youtube", "whatsapp", "instagram", "reddit", "chrome",
     "settings", "camera", "files", "maps", "netflix", "telegram", "twitter",
     "gmail", "discord", "calculator", "calendar", "gallery", "clock", "notes",
-    "stotify", "insta", "yt", "fb", "snapchat"
+    "stotify", "insta", "yt", "fb", "snapchat", "youtube music", "yt music"
 ]
 
 MEDIA_QUERIES = [
@@ -100,14 +105,34 @@ MEDIA_QUERIES = [
     "rock music", "how to bake a cake", "cats funny videos", "workout playlist",
     "jazz music", "latest podcast episode", "space documentary", "relaxing piano",
     "ed sheeran", "eminem", "hans zimmer", "top hits 2026", "coding music",
-    "previous song", "next track", "latest news"
+    "previous song", "next track", "latest news", "lose yourself", "bohemian rhapsody"
 ]
 
-TIMES = [
+ALARM_TIMES = [
     "7 am", "6:30 am", "8:00 pm", "tomorrow morning at 8", "5 am", "6 pm",
+    "9:45 pm", "noon", "midnight", "tomorrow at 7:30 am"
+]
+
+TIMER_DURATIONS = [
     "10 minutes", "5 minutes", "30 seconds", "15 minutes", "1 hour", "45 mins",
-    "20 minutes", "9:45 pm", "noon", "midnight", "tomorrow at 7:30 am",
-    "2 days", "3 days", "5 days", "1 week", "2 weeks", "3 weeks", "1 month", "48 hours"
+    "20 minutes", "2 days", "3 days", "5 days", "1 week", "2 weeks", "3 weeks", "1 month"
+]
+
+REMINDER_TIMES = [
+    "tomorrow", "tomorrow morning", "tomorrow afternoon", "tomorrow night",
+    "tomorrow at 7pm", "tomorrow at 8am", "tomorrow at 10:30 am", "tomorrow at 5 pm",
+    "today at 12pm", "today at 3pm", "today at 6pm", "today at 8pm",
+    "tonight at 8", "tonight at 9pm", "tonight at 10", "tonight",
+    "on friday at 9am", "on monday at 10am", "on sunday afternoon", "this saturday at 4pm",
+    "in 10 minutes", "in 15 minutes", "in 30 minutes", "in 1 hour", "in 2 hours", "in 3 days",
+    "at 7pm", "at noon", "at midnight", "at 5:30 pm", "next monday morning"
+]
+
+REMINDER_TASKS = [
+    "pay the bill", "buy groceries", "drink water", "call mom", "pick up dry cleaning",
+    "submit assignment", "attend meeting", "take medicine", "go for a run", "water the plants",
+    "recharge metro card", "turn off the stove", "feed the dog", "check the oven", "call dad",
+    "pay electricity bill", "book flight tickets", "buy milk", "take a break"
 ]
 
 FACTS = [
@@ -115,6 +140,14 @@ FACTS = [
     "my car number is 4021", "my office starts at 9 am", "i live in new york",
     "my dog's name is max", "i drink coffee without sugar", "my birthday is in july",
     "i am a software engineer", "i like spicy food"
+]
+
+SEARCH_TOPICS = [
+    "quantum computing", "latest tech news", "vegan pasta recipes", "weather in tokyo",
+    "python documentation", "electric cars", "who won the world cup", "how to tie a tie",
+    "flights to mumbai", "artificial intelligence trends", "best laptops 2026",
+    "history of ancient rome", "mars rover discoveries", "stock market today",
+    "how does photosynthesis work", "world population 2026", "olympic games schedule"
 ]
 
 UNKNOWN_QUERIES = [
@@ -130,7 +163,7 @@ UNKNOWN_QUERIES = [
     "can you explain relativity", "what is the tallest mountain in the world",
     "capital of mumbai", "capital of india", "capital of maharashtra", "capital of texas",
     "whats the capital of india", "whats the capital of maharashtra", "capital of japan",
-    "who won the world cup", "how to tie a tie", "why do we dream", "good", "hello", "hi", "wd", "wdw",
+    "who won the world cup", "why do we dream", "good", "hello", "hi", "wd", "wdw",
     "owe friend", "owe friend money", "owe 50 dollars to friend", "i owe friend", "owe friend cash",
     "owe john 20 bucks", "owe mom money", "owe dad 100 rupees", "owe my friend"
 ]
@@ -146,8 +179,22 @@ def create_annotated_sample(words_with_tags: List[Tuple[str, str]], intent: str)
     return {"text": text, "intent": intent, "slots": slots}
 
 
-def generate_synthetic_dataset(samples_per_intent: int = 120) -> List[Dict[str, Any]]:
+def generate_synthetic_dataset(samples_per_intent: int = 140) -> List[Dict[str, Any]]:
     dataset = []
+
+    # 0. Load manual human-curated command dataset if available
+    manual_path = os.path.join(os.path.dirname(__file__), "manual_commands_dataset.json")
+    if os.path.exists(manual_path):
+        try:
+            with open(manual_path, "r", encoding="utf-8") as f:
+                manual_samples = json.load(f)
+            # Oversample manual real-world queries 6x to ensure memorization of nuanced phrasing
+            for _ in range(6):
+                for s in manual_samples:
+                    dataset.append(s)
+            print(f"Ingested {len(manual_samples)} unique manual curated samples (oversampled to {len(manual_samples)*6})")
+        except Exception as e:
+            print(f"Warning: Failed reading {manual_path}: {e}")
 
     for _ in range(samples_per_intent):
         # 1. Volume
@@ -229,29 +276,44 @@ def generate_synthetic_dataset(samples_per_intent: int = 120) -> List[Dict[str, 
         dataset.append(create_annotated_sample([("how", "O"), ("do", "O"), ("i", "O"), ("get", "O"), ("to", "O")] + dest_annotated, "navigate_to"))
         dataset.append(create_annotated_sample([("show", "O"), ("routes", "O"), ("to", "O")] + dest_annotated, "navigate_to"))
         dataset.append(create_annotated_sample([("take", "O"), ("me", "O"), ("home", "B-DESTINATION")], "navigate_to"))
-        # Postposition patterns: "<dest> directions"
         dataset.append(create_annotated_sample(dest_annotated + [("directions", "O")], "navigate_to"))
         dataset.append(create_annotated_sample(dest_annotated + [("routes", "O")], "navigate_to"))
         dataset.append(create_annotated_sample(dest_annotated + [("traffic", "O")], "navigate_to"))
 
         # 7. Alarms & Timers
-        t_val = random.choice(TIMES)
-        t_annotated = annotate_span(t_val.split(), "TIME")
-        dataset.append(create_annotated_sample([("set", "O"), ("alarm", "O"), ("for", "O")] + t_annotated, "set_alarm"))
-        dataset.append(create_annotated_sample([("wake", "O"), ("me", "O"), ("up", "O"), ("at", "O")] + t_annotated, "set_alarm"))
-        dataset.append(create_annotated_sample([("alarm", "O"), ("for", "O")] + t_annotated, "set_alarm"))
-        dataset.append(create_annotated_sample([("set", "O"), ("timer", "O"), ("for", "O")] + t_annotated, "set_timer"))
-        dataset.append(create_annotated_sample([("countdown", "O"), ("for", "O")] + t_annotated, "set_timer"))
-        dataset.append(create_annotated_sample([("start", "O"), ("a", "O")] + t_annotated + [("timer", "O")], "set_timer"))
-        dataset.append(create_annotated_sample([("timer", "O"), ("for", "O")] + t_annotated, "set_timer"))
+        al_val = random.choice(ALARM_TIMES)
+        al_annotated = annotate_span(al_val.split(), "TIME")
+        dataset.append(create_annotated_sample([("set", "O"), ("alarm", "O"), ("for", "O")] + al_annotated, "set_alarm"))
+        dataset.append(create_annotated_sample([("wake", "O"), ("me", "O"), ("up", "O"), ("at", "O")] + al_annotated, "set_alarm"))
+        dataset.append(create_annotated_sample([("alarm", "O"), ("for", "O")] + al_annotated, "set_alarm"))
+        
+        tm_val = random.choice(TIMER_DURATIONS)
+        tm_annotated = annotate_span(tm_val.split(), "TIME")
+        dataset.append(create_annotated_sample([("set", "O"), ("timer", "O"), ("for", "O")] + tm_annotated, "set_timer"))
+        dataset.append(create_annotated_sample([("countdown", "O"), ("for", "O")] + tm_annotated, "set_timer"))
+        dataset.append(create_annotated_sample([("start", "O"), ("a", "O")] + tm_annotated + [("timer", "O")], "set_timer"))
+        dataset.append(create_annotated_sample([("timer", "O"), ("for", "O")] + tm_annotated, "set_timer"))
 
-        # 8. WhatsApp Messaging (With & Without explicit 'whatsapp')
+        # 8. Time-Based Reminders (set_reminder)
+        r_task = random.choice(REMINDER_TASKS)
+        r_task_annotated = annotate_span(r_task.split(), "NOTE_CONTENT")
+        r_time = random.choice(REMINDER_TIMES)
+        r_time_annotated = annotate_span(r_time.split(), "TIME")
+
+        dataset.append(create_annotated_sample([("remind", "O"), ("me", "O"), ("to", "O")] + r_task_annotated + r_time_annotated, "set_reminder"))
+        dataset.append(create_annotated_sample([("remind", "O"), ("me", "O")] + r_time_annotated + [("to", "O")] + r_task_annotated, "set_reminder"))
+        dataset.append(create_annotated_sample([("set", "O"), ("a", "O"), ("reminder", "O"), ("to", "O")] + r_task_annotated + r_time_annotated, "set_reminder"))
+        dataset.append(create_annotated_sample([("set", "O"), ("a", "O"), ("reminder", "O"), ("for", "O")] + r_time_annotated + [("to", "O")] + r_task_annotated, "set_reminder"))
+        dataset.append(create_annotated_sample([("can", "O"), ("you", "O"), ("remind", "O"), ("me", "O"), ("to", "O")] + r_task_annotated + r_time_annotated, "set_reminder"))
+        dataset.append(create_annotated_sample([("don't", "O"), ("forget", "O"), ("to", "O"), ("remind", "O"), ("me", "O"), ("to", "O")] + r_task_annotated + r_time_annotated, "set_reminder"))
+        dataset.append(create_annotated_sample([("i", "O"), ("need", "O"), ("a", "O"), ("reminder", "O"), ("to", "O")] + r_task_annotated + r_time_annotated, "set_reminder"))
+
+        # 9. WhatsApp Messaging
         name = random.choice(NAMES)
         name_annotated = annotate_span(name.split(), "CONTACT")
         msg = random.choice(MESSAGES)
         msg_annotated = annotate_span(msg.split(), "MESSAGE")
 
-        # Explicit WhatsApp
         dataset.append(create_annotated_sample(
             [("send", "O"), ("message", "O"), ("to", "O")] + name_annotated + [("on", "O"), ("whatsapp", "O"), ("saying", "O")] + msg_annotated, "send_whatsapp"
         ))
@@ -262,17 +324,10 @@ def generate_synthetic_dataset(samples_per_intent: int = 120) -> List[Dict[str, 
             [("whatsapp", "O")] + name_annotated + [("saying", "O")] + msg_annotated, "send_whatsapp"
         ))
         dataset.append(create_annotated_sample(
-            [("message", "O")] + name_annotated + [("on", "O"), ("whatsapp", "O"), ("that", "O")] + msg_annotated, "send_whatsapp"
-        ))
-        # Implicit messaging ("text <contact> <msg>", "can you text <contact> <msg>")
-        dataset.append(create_annotated_sample(
             [("can", "O"), ("you", "O"), ("text", "O")] + name_annotated + msg_annotated, "send_whatsapp"
         ))
         dataset.append(create_annotated_sample(
             [("text", "O")] + name_annotated + msg_annotated, "send_whatsapp"
-        ))
-        dataset.append(create_annotated_sample(
-            [("text", "O")] + name_annotated + [("saying", "O")] + msg_annotated, "send_whatsapp"
         ))
         dataset.append(create_annotated_sample(
             [("message", "O")] + name_annotated + msg_annotated, "send_whatsapp"
@@ -280,11 +335,8 @@ def generate_synthetic_dataset(samples_per_intent: int = 120) -> List[Dict[str, 
         dataset.append(create_annotated_sample(
             [("send", "O"), ("a", "O"), ("message", "O"), ("to", "O")] + name_annotated + [("saying", "O")] + msg_annotated, "send_whatsapp"
         ))
-        dataset.append(create_annotated_sample(
-            [("ping", "O")] + name_annotated + [("that", "O")] + msg_annotated, "send_whatsapp"
-        ))
 
-        # 9. Phone Calls & Call Log
+        # 10. Phone Calls & Call Log
         dataset.append(create_annotated_sample([("call", "O")] + name_annotated, "call_contact"))
         dataset.append(create_annotated_sample([("can", "O"), ("you", "O"), ("call", "O")] + name_annotated, "call_contact"))
         dataset.append(create_annotated_sample([("dial", "O")] + name_annotated + [("please", "O")], "call_contact"))
@@ -293,17 +345,21 @@ def generate_synthetic_dataset(samples_per_intent: int = 120) -> List[Dict[str, 
         dataset.append(create_annotated_sample([("check", "O"), ("recent", "O"), ("calls", "O")], "read_call_log"))
         dataset.append(create_annotated_sample([("who", "O"), ("called", "O"), ("me", "O"), ("recently", "O")], "read_call_log"))
         dataset.append(create_annotated_sample([("show", "O"), ("call", "O"), ("history", "O")], "read_call_log"))
-        dataset.append(create_annotated_sample([("show", "O"), ("missed", "O"), ("calls", "O")], "read_call_log"))
 
-        # 10. Media Controls
+        # 11. Media Controls (YouTube Music & General Playback)
         mq = random.choice(MEDIA_QUERIES)
         mq_annotated = annotate_span(mq.split(), "QUERY")
-        dataset.append(create_annotated_sample([("play", "O")] + mq_annotated + [("on", "O"), ("spotify", "B-APP")], "play_spotify"))
-        dataset.append(create_annotated_sample([("listen", "O"), ("to", "O")] + mq_annotated + [("on", "O"), ("spotify", "B-APP")], "play_spotify"))
-        dataset.append(create_annotated_sample([("search", "O")] + mq_annotated + [("on", "O"), ("youtube", "B-APP")], "play_youtube"))
-        dataset.append(create_annotated_sample([("play", "O")] + mq_annotated + [("on", "O"), ("youtube", "B-APP")], "play_youtube"))
+        dataset.append(create_annotated_sample([("play", "O")] + mq_annotated + [("on", "O"), ("youtube", "B-APP"), ("music", "I-APP")], "play_media"))
+        dataset.append(create_annotated_sample([("listen", "O"), ("to", "O")] + mq_annotated + [("on", "O"), ("youtube", "B-APP"), ("music", "I-APP")], "play_media"))
+        dataset.append(create_annotated_sample([("play", "O")] + mq_annotated + [("on", "O"), ("yt", "B-APP"), ("music", "I-APP")], "play_media"))
         dataset.append(create_annotated_sample([("play", "O")] + mq_annotated, "play_media"))
         dataset.append(create_annotated_sample([("listen", "O"), ("to", "O")] + mq_annotated, "play_media"))
+        dataset.append(create_annotated_sample([("play", "O"), ("some", "O")] + mq_annotated, "play_media"))
+        dataset.append(create_annotated_sample([("put", "O"), ("on", "O")] + mq_annotated, "play_media"))
+        # Spotify alias mapped into play_spotify / play_media for compatibility
+        dataset.append(create_annotated_sample([("play", "O")] + mq_annotated + [("on", "O"), ("spotify", "B-APP")], "play_spotify"))
+        dataset.append(create_annotated_sample([("search", "O")] + mq_annotated + [("on", "O"), ("youtube", "B-APP")], "play_youtube"))
+        dataset.append(create_annotated_sample([("play", "O")] + mq_annotated + [("on", "O"), ("youtube", "B-APP")], "play_youtube"))
         dataset.append(create_annotated_sample([("pause", "O"), ("playback", "O")], "pause_media"))
         dataset.append(create_annotated_sample([("pause", "O"), ("the", "O"), ("music", "O")], "pause_media"))
         dataset.append(create_annotated_sample([("stop", "O"), ("music", "O")], "pause_media"))
@@ -311,17 +367,12 @@ def generate_synthetic_dataset(samples_per_intent: int = 120) -> List[Dict[str, 
         dataset.append(create_annotated_sample([("next", "O"), ("song", "O")], "next_track"))
         dataset.append(create_annotated_sample([("previous", "O"), ("song", "O")], "previous_track"))
         dataset.append(create_annotated_sample([("previous", "O"), ("track", "O")], "previous_track"))
-        dataset.append(create_annotated_sample([("go", "O"), ("back", "O"), ("to", "O"), ("previous", "O"), ("song", "O")], "previous_track"))
 
-        # 11. System Controls
+        # 12. System Controls
         dataset.append(create_annotated_sample([("turn", "O"), ("on", "O"), ("wifi", "O")], "wifi_toggle"))
         dataset.append(create_annotated_sample([("turn", "O"), ("off", "O"), ("wifi", "O")], "wifi_toggle"))
-        dataset.append(create_annotated_sample([("enable", "O"), ("wifi", "O")], "wifi_toggle"))
-        dataset.append(create_annotated_sample([("disable", "O"), ("wifi", "O")], "wifi_toggle"))
         dataset.append(create_annotated_sample([("turn", "O"), ("on", "O"), ("bluetooth", "O")], "bluetooth_toggle"))
         dataset.append(create_annotated_sample([("turn", "O"), ("off", "O"), ("bluetooth", "O")], "bluetooth_toggle"))
-        dataset.append(create_annotated_sample([("enable", "O"), ("bluetooth", "O")], "bluetooth_toggle"))
-        dataset.append(create_annotated_sample([("disable", "O"), ("bluetooth", "O")], "bluetooth_toggle"))
         dataset.append(create_annotated_sample([("turn", "O"), ("on", "O"), ("hotspot", "O")], "hotspot_toggle"))
         dataset.append(create_annotated_sample([("turn", "O"), ("off", "O"), ("hotspot", "O")], "hotspot_toggle"))
         dataset.append(create_annotated_sample([("turn", "O"), ("on", "O"), ("do", "O"), ("not", "O"), ("disturb", "O")], "dnd_toggle"))
@@ -330,65 +381,63 @@ def generate_synthetic_dataset(samples_per_intent: int = 120) -> List[Dict[str, 
         dataset.append(create_annotated_sample([("turn", "O"), ("off", "O"), ("battery", "O"), ("saver", "O")], "power_saver_toggle"))
         dataset.append(create_annotated_sample([("start", "O"), ("screen", "O"), ("mirroring", "O")], "screencast_toggle"))
         dataset.append(create_annotated_sample([("stop", "O"), ("screen", "O"), ("mirroring", "O")], "screencast_toggle"))
-        dataset.append(create_annotated_sample([("screencast", "O")], "screencast_toggle"))
         dataset.append(create_annotated_sample([("enable", "O"), ("airplane", "O"), ("mode", "O")], "airplane_mode_toggle"))
         dataset.append(create_annotated_sample([("turn", "O"), ("on", "O"), ("mobile", "O"), ("data", "O")], "mobile_data_toggle"))
         dataset.append(create_annotated_sample([("turn", "O"), ("off", "O"), ("mobile", "O"), ("data", "O")], "mobile_data_toggle"))
         dataset.append(create_annotated_sample([("take", "O"), ("a", "O"), ("screenshot", "O")], "take_screenshot"))
-        dataset.append(create_annotated_sample([("take", "O"), ("a", "O"), ("snap", "O"), ("of", "O"), ("the", "O"), ("screen", "O")], "take_screenshot"))
         dataset.append(create_annotated_sample([("capture", "O"), ("the", "O"), ("screen", "O")], "take_screenshot"))
-        dataset.append(create_annotated_sample([("screenshot", "O"), ("this", "O")], "take_screenshot"))
 
-        # 12. Clipboard, Notifications, Battery, Time
+        # 13. Clipboard, Notifications, Battery, Time
         dataset.append(create_annotated_sample([("read", "O"), ("my", "O"), ("clipboard", "O")], "clipboard_read"))
         dataset.append(create_annotated_sample([("what", "O"), ("is", "O"), ("on", "O"), ("my", "O"), ("clipboard", "O")], "clipboard_read"))
-        dataset.append(create_annotated_sample([("what", "O"), ("did", "O"), ("i", "O"), ("copy", "O")], "clipboard_read"))
         dataset.append(create_annotated_sample([("copy", "O"), ("to", "O"), ("clipboard", "O"), ("hello", "B-TEXT"), ("world", "I-TEXT")], "clipboard_write"))
-        dataset.append(create_annotated_sample([("copy", "O"), ("this", "O"), ("text", "O"), ("to", "O"), ("clipboard", "O"), ("admin123", "B-TEXT")], "clipboard_write"))
         dataset.append(create_annotated_sample([("read", "O"), ("notifications", "O")], "read_notifications"))
-        dataset.append(create_annotated_sample([("what", "O"), ("notifications", "O"), ("do", "O"), ("i", "O"), ("have", "O")], "read_notifications"))
         dataset.append(create_annotated_sample([("check", "O"), ("my", "O"), ("new", "O"), ("notifications", "O")], "read_notifications"))
         dataset.append(create_annotated_sample([("what", "O"), ("is", "O"), ("my", "O"), ("battery", "O"), ("level", "O")], "get_battery"))
-        dataset.append(create_annotated_sample([("how", "O"), ("much", "O"), ("battery", "O"), ("is", "O"), ("left", "O")], "get_battery"))
         dataset.append(create_annotated_sample([("check", "O"), ("battery", "O"), ("percentage", "O")], "get_battery"))
         dataset.append(create_annotated_sample([("what", "O"), ("time", "O"), ("is", "O"), ("it", "O")], "get_time"))
         dataset.append(create_annotated_sample([("tell", "O"), ("me", "O"), ("the", "O"), ("time", "O")], "get_time"))
 
-        # 13. Notes & Reminders (Including "note my <content>", "remind me to <content> in <time>")
-        note_text = random.choice(["buy milk", "meeting with client at 3pm", "call rohit", "drink water", "my metro card balance is 100 rupees", "pay electricity bill", "bring passport"])
+        # 14. Notes (Without Time boilerplate)
+        note_text = random.choice([
+            "buy milk and eggs", "meeting with client at 3pm", "call rohit", "drink water",
+            "my metro card balance is 100 rupees", "pay electricity bill", "bring passport",
+            "the gym locker code is 4021"
+        ])
         note_annotated = annotate_span(note_text.split(), "NOTE_CONTENT")
-        dataset.append(create_annotated_sample([("remind", "O"), ("me", "O"), ("to", "O")] + note_annotated + [("in", "O"), ("10", "B-TIME"), ("minutes", "I-TIME")], "notes_create"))
         dataset.append(create_annotated_sample([("jot", "O"), ("down", "O")] + note_annotated, "notes_create"))
         dataset.append(create_annotated_sample([("save", "O"), ("a", "O"), ("note", "O"), ("that", "O")] + note_annotated, "notes_create"))
         dataset.append(create_annotated_sample([("note", "O"), ("down", "O")] + note_annotated, "notes_create"))
+        dataset.append(create_annotated_sample([("take", "O"), ("a", "O"), ("note", "O")] + note_annotated, "notes_create"))
         dataset.append(create_annotated_sample([("note", "O"), ("my", "O")] + note_annotated, "notes_create"))
         dataset.append(create_annotated_sample([("create", "O"), ("a", "O"), ("note", "O")] + note_annotated, "notes_create"))
         dataset.append(create_annotated_sample([("find", "O"), ("notes", "O"), ("about", "O"), ("rent", "B-QUERY")], "notes_search"))
         dataset.append(create_annotated_sample([("show", "O"), ("all", "O"), ("my", "O"), ("notes", "O")], "notes_list"))
         dataset.append(create_annotated_sample([("list", "O"), ("all", "O"), ("notes", "O")], "notes_list"))
-        dataset.append(create_annotated_sample([("tell", "O"), ("my", "O"), ("notes", "O")], "notes_list"))
         dataset.append(create_annotated_sample([("delete", "O"), ("note", "O"), (f"{random.randint(1,20)}", "B-NOTE_ID")], "notes_delete"))
+
         n_id = f"{random.randint(1, 20)}"
         up_text = random.choice(["buy milk", "meeting at 5 pm", "pick up groceries", "new wifi password"])
         up_annotated = annotate_span(up_text.split(), "NOTE_CONTENT")
         dataset.append(create_annotated_sample([("update", "O"), ("note", "O"), (n_id, "B-NOTE_ID"), ("to", "O")] + up_annotated, "notes_update"))
         dataset.append(create_annotated_sample([("edit", "O"), ("note", "O"), (n_id, "B-NOTE_ID"), ("to", "O"), ("say", "O")] + up_annotated, "notes_update"))
-        dataset.append(create_annotated_sample([("change", "O"), ("note", "O"), (n_id, "B-NOTE_ID"), ("to", "O")] + up_annotated, "notes_update"))
 
-        # 14. Web & Reddit Search
-        sq = random.choice(["who won the match", "quantum physics", "weather in tokyo", "how to make pasta", "best laptops 2026"])
+        # 15. Web & Reddit Search (Explicit Search Queries)
+        sq = random.choice(SEARCH_TOPICS)
         sq_annotated = annotate_span(sq.split(), "QUERY")
+        dataset.append(create_annotated_sample([("search", "O")] + sq_annotated, "search_google"))
+        dataset.append(create_annotated_sample([("search", "O"), ("for", "O")] + sq_annotated, "search_google"))
         dataset.append(create_annotated_sample([("google", "O")] + sq_annotated, "search_google"))
         dataset.append(create_annotated_sample([("search", "O")] + sq_annotated + [("on", "O"), ("google", "O")], "search_google"))
         dataset.append(create_annotated_sample([("search", "O"), ("on", "O"), ("google", "O"), ("for", "O")] + sq_annotated, "search_google"))
-        dataset.append(create_annotated_sample([("search", "O"), ("on", "O"), ("google", "O")] + sq_annotated, "search_google"))
-        dataset.append(create_annotated_sample([("google", "O"), ("search", "O")] + sq_annotated, "search_google"))
+        dataset.append(create_annotated_sample([("look", "O"), ("up", "O")] + sq_annotated + [("on", "O"), ("google", "O")], "search_google"))
+        dataset.append(create_annotated_sample([("look", "O"), ("up", "O")] + sq_annotated, "search_google"))
+        dataset.append(create_annotated_sample([("look", "O"), ("up", "O")] + sq_annotated + [("online", "O")], "search_google"))
+        dataset.append(create_annotated_sample([("search", "O"), ("the", "O"), ("web", "O"), ("for", "O")] + sq_annotated, "web_search"))
         dataset.append(create_annotated_sample([("search", "O"), ("reddit", "O"), ("for", "O")] + sq_annotated, "search_reddit"))
         dataset.append(create_annotated_sample([("look", "O"), ("up", "O")] + sq_annotated + [("on", "O"), ("reddit", "O")], "search_reddit"))
-        dataset.append(create_annotated_sample([("search", "O"), ("the", "O"), ("web", "O"), ("for", "O")] + sq_annotated, "web_search"))
-        dataset.append(create_annotated_sample([("look", "O"), ("up", "O")] + sq_annotated + [("online", "O")], "web_search"))
 
-        # 15. User Preferences & Profile Recall
+        # 16. User Preferences & Profile Recall
         fact = random.choice(FACTS)
         fact_annotated = annotate_span(fact.split(), "FACT")
         dataset.append(create_annotated_sample([("remember", "O"), ("that", "O")] + fact_annotated, "remember_preference"))
@@ -399,7 +448,7 @@ def generate_synthetic_dataset(samples_per_intent: int = 120) -> List[Dict[str, 
         dataset.append(create_annotated_sample([("who", "O"), ("am", "O"), ("i", "O")], "recall_preference"))
         dataset.append(create_annotated_sample([("what", "O"), ("are", "O"), ("my", "O"), ("saved", "O"), ("preferences", "O")], "recall_preference"))
 
-        # Specific user memory & attribute queries ("what is my <attribute>")
+        # Specific user memory & attribute queries
         attr = random.choice([
             "metro card balance", "metro balance", "car number", "wifi password",
             "blood group", "passport number", "favorite color", "home address",
@@ -412,8 +461,7 @@ def generate_synthetic_dataset(samples_per_intent: int = 120) -> List[Dict[str, 
         dataset.append(create_annotated_sample([("what", "O"), ("did", "O"), ("i", "O"), ("note", "O"), ("down", "O"), ("about", "O")] + attr_annotated, "notes_search"))
         dataset.append(create_annotated_sample([("search", "O"), ("notes", "O"), ("for", "O")] + attr_annotated, "notes_search"))
 
-
-        # 16. Conversational / Unknown
+        # 17. Conversational / Unknown (General Knowledge & QA for LLM reasoning)
         unk = random.choice(UNKNOWN_QUERIES)
         dataset.append(create_annotated_sample([(w, "O") for w in unk.split()], "unknown"))
 
@@ -507,11 +555,11 @@ class JointTransformerNLU(nn.Module):
 
 def train_and_export():
     print("=" * 70)
-    print(" Friday Joint NLU Fine-Tuning (Edge Cases & Implicit Messaging)")
+    print(" Friday Joint NLU Fine-Tuning (48 Intents + Neural Slot Filling)")
+    print(" Features: Reminders, YouTube Music, Explicit Search, Manual Dataset")
     print("=" * 70)
 
     from transformers import AutoTokenizer, AutoModel
-    import onnxruntime as ort
     from onnxruntime.quantization import quantize_dynamic, QuantType
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -521,7 +569,7 @@ def train_and_export():
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     base_encoder = AutoModel.from_pretrained(model_name)
 
-    print("Generating enriched synthetic dataset...")
+    print("Generating enriched synthetic dataset and loading manual commands...")
     raw_data = generate_synthetic_dataset(samples_per_intent=140)
     print(f"Total training samples: {len(raw_data)} across {len(INTENT_LABELS)} intents and {len(SLOT_LABELS)} slot tags.")
 
@@ -558,9 +606,9 @@ def train_and_export():
     output_dir = os.path.join(os.path.dirname(__file__), "..", "output")
     os.makedirs(output_dir, exist_ok=True)
 
-    with open(os.path.join(output_dir, "joint_intent_labels.json"), "w") as f:
+    with open(os.path.join(output_dir, "joint_intent_labels.json"), "w", encoding="utf-8") as f:
         json.dump(INTENT_LABELS, f, indent=2)
-    with open(os.path.join(output_dir, "joint_slot_labels.json"), "w") as f:
+    with open(os.path.join(output_dir, "joint_slot_labels.json"), "w", encoding="utf-8") as f:
         json.dump(SLOT_LABELS, f, indent=2)
 
     model.eval()

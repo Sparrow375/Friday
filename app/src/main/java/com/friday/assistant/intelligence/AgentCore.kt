@@ -129,10 +129,7 @@ class AgentCore(
         // 4. Direct Command Execution (bypassed if routeToLlm is true, EXCEPT for web/google searches)
         val isExplicitSearch = matchedIntent == "search_google" || matchedIntent == "web_search" ||
             cleanQuery.contains("google") || cleanQuery.startsWith("search ") || cleanQuery.startsWith("search on google") ||
-            cleanQuery.startsWith("what ") || cleanQuery.startsWith("whats ") || cleanQuery.startsWith("what's ") ||
-            cleanQuery.startsWith("who ") || cleanQuery.startsWith("who's ") || cleanQuery.startsWith("where ") ||
-            cleanQuery.startsWith("when ") || cleanQuery.startsWith("why ") || cleanQuery.startsWith("how ") ||
-            cleanQuery.startsWith("explain ") || cleanQuery.startsWith("tell me about ") || cleanQuery.startsWith("look up ")
+            cleanQuery.startsWith("look up ") || cleanQuery.contains("search the web")
         if (!routeToLlm || isExplicitSearch) {
             handleBriefingAndAlarms(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
             handleMessagingAndCalls(cleanQuery, matchedIntent, preprocessed, nluSlots)?.let { return it }
@@ -341,44 +338,66 @@ class AgentCore(
             }
         }
 
-        // Timed Spoken Reminders (e.g. "remind me to drink water in 10 seconds", "remind me in 2 days to call dad", "remind me in 3 weeks")
-        val isReminderQuery = cleanQuery.contains("remind me") || cleanQuery.contains("set a reminder") || cleanQuery.contains("remind")
-        val durMatch = TIMER_DURATION_REGEX.find(preprocessed.originalText)
-        if (isReminderQuery && durMatch != null) {
-            val value = durMatch.groupValues[1].toInt()
-            val unit = durMatch.groupValues[2].lowercase()
-            val durationSeconds = when {
-                unit.startsWith("month") -> value * 30L * 86400L
-                unit.startsWith("week") -> value * 7L * 86400L
-                unit.startsWith("day") -> value * 86400L
-                unit.startsWith("hour") || unit.startsWith("hr") -> value * 3600L
-                unit.startsWith("minute") || unit.startsWith("min") -> value * 60L
-                else -> value.toLong()
+        // Timed Spoken Reminders (e.g. "remind me to pay the bill tomorrow", "remind me to buy groceries tomorrow at 7pm", "remind me in 10 minutes to drink water")
+        val isReminderQuery = matchedIntent == "set_reminder" ||
+            cleanQuery.contains("remind me") || cleanQuery.contains("set a reminder") || cleanQuery.startsWith("remind ")
+        if (isReminderQuery) {
+            val timeText = nluSlots["TIME"] ?: run {
+                val durM = TIMER_DURATION_REGEX.find(preprocessed.originalText)
+                if (durM != null) {
+                    val m = Regex("(?i)\\b(?:in|after|for)\\s+\\d+\\s*(?:months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b").find(preprocessed.originalText)
+                    m?.value ?: durM.value
+                } else {
+                    val dayClockRegex = Regex("(?i)\\b(?:tomorrow(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?)?|today(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?)?|tonight(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?)?|at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?|\\d{1,2}(?::\\d{2})?\\s*(?:am|pm))\\b")
+                    dayClockRegex.find(preprocessed.originalText)?.value ?: ""
+                }
             }
 
-            var reminderMsg = preprocessed.originalText
+            var reminderMsg = nluSlots["NOTE_CONTENT"] ?: preprocessed.originalText
                 .replace(Regex("(?i)^(?:friday|hey friday)[,\\s]*"), "")
                 .replace(Regex("(?i)\\b(?:please|can you|could you)\\b"), "")
                 .replace(Regex("(?i)remind me (?:to|of|about)?\\s*"), "")
                 .replace(Regex("(?i)set a reminder (?:to|of|about)?\\s*"), "")
+                .replace(Regex("(?i)remind\\s+"), "")
                 .replace(Regex("(?i)\\bin\\s+\\d+\\s*(?:months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b"), "")
                 .replace(Regex("(?i)\\bfor\\s+\\d+\\s*(?:months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b"), "")
                 .replace(Regex("(?i)\\bafter\\s+\\d+\\s*(?:months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b"), "")
+                .replace(Regex("(?i)\\b(?:tomorrow|today|tonight)(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?)?\\b"), "")
+                .replace(Regex("(?i)\\bat\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?\\b"), "")
+                .replace(Regex("(?i)\\b\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)\\b"), "")
                 .trim()
             if (reminderMsg.isEmpty()) reminderMsg = "check your reminder"
 
-            _agentStatusFlow.emit("Setting reminder...")
-            val scheduled = ReminderScheduler.schedule(context, durationSeconds, reminderMsg)
-            if (scheduled) {
-                val timeDesc = when {
-                    durationSeconds >= 86400L * 30L -> "${durationSeconds / (86400L * 30L)} months"
-                    durationSeconds >= 86400L * 7L -> "${durationSeconds / (86400L * 7L)} weeks"
-                    durationSeconds >= 86400L -> "${durationSeconds / 86400L} days"
-                    durationSeconds >= 3600L -> "${durationSeconds / 3600L} hours"
-                    durationSeconds >= 60L -> "${durationSeconds / 60L} minutes"
-                    else -> "$durationSeconds seconds"
+            val triggerAtMs = if (timeText.isNotBlank()) {
+                ReminderScheduler.parseNaturalDateTime(timeText)
+            } else {
+                ReminderScheduler.parseNaturalDateTime(preprocessed.originalText)
+            }
+
+            if (triggerAtMs != null) {
+                _agentStatusFlow.emit("Setting reminder...")
+                val scheduled = ReminderScheduler.scheduleAt(context, triggerAtMs, reminderMsg)
+                if (scheduled) {
+                    val fmt = java.text.SimpleDateFormat("EEE, MMM d 'at' h:mm a", java.util.Locale.getDefault())
+                    val diffSec = (triggerAtMs - System.currentTimeMillis()) / 1000L
+                    val timeDescription = if (diffSec < 86400L && java.util.Calendar.getInstance().apply { timeInMillis = triggerAtMs }.get(java.util.Calendar.DAY_OF_YEAR) == java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_YEAR)) {
+                        val timeFmt = java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
+                        "today at ${timeFmt.format(java.util.Date(triggerAtMs))}"
+                    } else if (diffSec in 86400L..172800L) {
+                        val timeFmt = java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
+                        "tomorrow at ${timeFmt.format(java.util.Date(triggerAtMs))}"
+                    } else {
+                        fmt.format(java.util.Date(triggerAtMs))
+                    }
+                    return fast("I've set a reminder to $reminderMsg for $timeDescription.")
                 }
-                return fast("I will remind you to $reminderMsg in $timeDesc.")
+            } else {
+                val defaultMs = System.currentTimeMillis() + 86400000L
+                _agentStatusFlow.emit("Setting reminder...")
+                val scheduled = ReminderScheduler.scheduleAt(context, defaultMs, reminderMsg)
+                if (scheduled) {
+                    return fast("I will remind you to $reminderMsg tomorrow morning.")
+                }
             }
         }
 
@@ -860,12 +879,11 @@ class AgentCore(
             val (regexQuery, targetApp) = EntityExtractor.extractMediaQuery(preprocessed.originalText)
             val mediaQuery = (nluSlots["QUERY"] ?: regexQuery).trim()
             val app = when (matchedIntent) {
-                "play_spotify" -> "spotify"
                 "play_youtube" -> "youtube"
-                else -> (nluSlots["APP"] ?: targetApp) ?: "youtube"
+                else -> "youtube music"
             }
             if (mediaQuery.isNotEmpty()) {
-                _agentStatusFlow.emit("Playing $mediaQuery on $app...")
+                _agentStatusFlow.emit("Playing $mediaQuery on YouTube Music...")
                 val mediaTool = ToolRegistry.get("media_control")
                 if (mediaTool != null) {
                     val result = mediaTool.execute(JsonObject().apply {
@@ -892,12 +910,12 @@ class AgentCore(
         val isNoteCreate = (matchedIntent == "notes_create" && confidence > 0.7f ||
                 cleanQuery.startsWith("note ") ||
                 cleanQuery.contains("save note") || cleanQuery.contains("note down") ||
-                cleanQuery.startsWith("take a note") ||
-                (cleanQuery.startsWith("remind me to") && !cleanQuery.contains(Regex("\\b(in|after|for)\\s+\\d+\\s*(sec|min|hour|hr|day|week|month)")))) &&
-                !cleanQuery.contains(Regex("\\b(in|after|for)\\s+\\d+\\s*(sec|min|hour|hr|day|week|month)"))
+                cleanQuery.startsWith("take a note")) &&
+                !cleanQuery.contains("remind") &&
+                matchedIntent != "set_reminder"
         if (isNoteCreate) {
             val content = nluSlots["NOTE_CONTENT"] ?: preprocessed.originalText
-                .replace(Regex("(?i)^(?:remind me to|note down|save note that|take a note that|take a note|note my|note that)\\s+"), "")
+                .replace(Regex("(?i)^(?:note down|save note that|take a note that|take a note|note my|note that)\\s+"), "")
                 .trim()
             if (content.isNotEmpty()) {
                 _agentStatusFlow.emit("Saving note...")
@@ -1165,15 +1183,8 @@ class AgentCore(
                 cleanQuery.startsWith("google ") || cleanQuery.contains("search google") ||
                 cleanQuery.contains("search on google") || cleanQuery.startsWith("search on google") ||
                 cleanQuery.contains("search the web for") || cleanQuery.contains("on google") ||
-                (cleanQuery.startsWith("search ") && cleanQuery.contains("google")) ||
-                cleanQuery.startsWith("search for ") || cleanQuery.startsWith("look up ") ||
-                cleanQuery.startsWith("what is ") || cleanQuery.startsWith("whats ") || cleanQuery.startsWith("what's ") ||
-                cleanQuery.startsWith("who is ") || cleanQuery.startsWith("who was ") || cleanQuery.startsWith("who's ") ||
-                cleanQuery.startsWith("where is ") || cleanQuery.startsWith("where are ") ||
-                cleanQuery.startsWith("when is ") || cleanQuery.startsWith("when did ") || cleanQuery.startsWith("when was ") ||
-                cleanQuery.startsWith("why is ") || cleanQuery.startsWith("why does ") || cleanQuery.startsWith("why do ") || cleanQuery.startsWith("why are ") ||
-                cleanQuery.startsWith("how to ") || cleanQuery.startsWith("how does ") || cleanQuery.startsWith("how do ") || cleanQuery.startsWith("how is ") || cleanQuery.startsWith("how can ") ||
-                cleanQuery.startsWith("explain ") || cleanQuery.startsWith("tell me about ") ||
+                cleanQuery.startsWith("search for ") || cleanQuery.startsWith("search ") ||
+                cleanQuery.startsWith("look up ") ||
                 (cleanQuery.contains("look this up") && !cleanQuery.contains("reddit"))
         if (isSearchGoogle) {
             var searchPhrase = nluSlots["QUERY"]

@@ -96,15 +96,13 @@ class MediaControlTool(private val context: Context) : Tool {
 
     private suspend fun playFromSearch(query: String, app: String?): ToolResult {
         return when {
-            app?.contains("spotify") == true -> playOnSpotify(query)
-            app?.contains("youtube music") == true || app == "yt music" -> playOnYouTubeMusic(query)
-            app?.contains("youtube") == true || app == "yt" -> searchOnYouTube(query)
+            app == "youtube" || app == "yt" -> searchOnYouTube(query)
             app?.contains("google") == true -> searchOnGoogle(query)
-            else -> searchOnYouTube(query)
+            else -> playOnYouTubeMusic(query)
         }
     }
 
-    private suspend fun scrapeTopYouTubeVideoUrl(query: String): String? {
+    private suspend fun scrapeTopYouTubeVideoId(query: String): String? {
         return withContext(Dispatchers.IO) {
             try {
                 val encoded = URLEncoder.encode(query, "UTF-8")
@@ -127,7 +125,6 @@ class MediaControlTool(private val context: Context) : Tool {
                     val videoRendererRegex = Regex("\"videoRenderer\":\\{\"videoId\":\"([a-zA-Z0-9_-]{11})\"")
                     var foundVid: String? = null
 
-                    // Stream lines up to 2MB; YouTube's primary results line typically appears around ~750KB
                     while (reader.readLine().also { line = it } != null && bytesRead < 2097152) {
                         val currentLine = line ?: break
                         bytesRead += currentLine.length
@@ -143,7 +140,7 @@ class MediaControlTool(private val context: Context) : Tool {
                     reader.close()
 
                     if (foundVid != null) {
-                        return@withContext "https://www.youtube.com/watch?v=$foundVid&autoplay=1"
+                        return@withContext foundVid
                     }
 
                     // Fallback to searching accumulated buffer
@@ -152,86 +149,61 @@ class MediaControlTool(private val context: Context) : Tool {
                     if (vrMatch != null) {
                         val vid = vrMatch.groupValues[1]
                         Log.i(TAG, "Scraped top YouTube videoId from buffer: $vid for query '$query'")
-                        return@withContext "https://www.youtube.com/watch?v=$vid&autoplay=1"
+                        return@withContext vid
                     }
 
-                    // Try matching watch?v= as secondary fallback
                     val watchRegex = Regex("/watch\\?v=([a-zA-Z0-9_-]{11})")
                     val watchMatch = watchRegex.find(html)
                     if (watchMatch != null) {
                         val vid = watchMatch.groupValues[1]
                         Log.i(TAG, "Scraped top YouTube videoId from watch link: $vid for query '$query'")
-                        return@withContext "https://www.youtube.com/watch?v=$vid&autoplay=1"
+                        return@withContext vid
                     }
                 }
                 null
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to scrape top YouTube video URL: ${e.message}")
+                Log.w(TAG, "Failed to scrape top YouTube video ID: ${e.message}")
                 null
             }
         }
     }
 
-    private fun playOnSpotify(query: String): ToolResult {
-        return try {
-            Log.d(TAG, "playOnSpotify: query='$query'")
-            val intent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
-                setPackage(PKG_SPOTIFY)
-                putExtra(SearchManager.QUERY, query)
-                putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/audio")
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            context.startActivity(intent)
-
-            if (AutomationBridge.isReady()) {
-                Thread {
-                    try { Thread.sleep(500) } catch (_: Exception) {}
-                    Log.d(TAG, "Triggering Spotify auto-play accessibility helper")
-                    val autoPlayed = AutomationBridge.triggerSpotifyAutoPlay(query)
-                    Log.d(TAG, "Spotify auto-play accessibility helper returned: $autoPlayed")
-                }.start()
-            }
-
-            ToolResult(true, "Launched Spotify to play '$query'")
-        } catch (e: Exception) {
-            Log.w(TAG, "Spotify INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH failed, falling back to search deep link", e)
-            try {
-                val encoded = URLEncoder.encode(query, "UTF-8")
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:$encoded")).apply {
-                    setPackage(PKG_SPOTIFY)
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
-                }
-                context.startActivity(intent)
-                if (AutomationBridge.isReady()) {
-                    Thread {
-                        try { Thread.sleep(500) } catch (_: Exception) {}
-                        AutomationBridge.triggerSpotifyAutoPlay(query)
-                    }.start()
-                }
-                ToolResult(true, "Opened Spotify search for '$query'")
-            } catch (ex: Exception) {
-                Log.e(TAG, "Spotify search fallback failed", ex)
-                playFromSearchDefault(query)
-            }
-        }
+    private suspend fun scrapeTopYouTubeVideoUrl(query: String): String? {
+        val vid = scrapeTopYouTubeVideoId(query) ?: return null
+        return "https://www.youtube.com/watch?v=$vid&autoplay=1"
     }
 
-    private fun playOnYouTubeMusic(query: String): ToolResult {
+    private suspend fun playOnSpotify(query: String): ToolResult {
+        // Spotify removed - redirect to YouTube Music web for ad-free listening in browser
+        Log.i(TAG, "playOnSpotify redirected to YouTube Music web for query='$query'")
+        return playOnYouTubeMusic(query)
+    }
+
+    private suspend fun playOnYouTubeMusic(query: String): ToolResult {
         return try {
+            val foundVid = scrapeTopYouTubeVideoId(query)
             val encoded = URLEncoder.encode(query, "UTF-8")
-            val webUri = Uri.parse("https://music.youtube.com/search?q=$encoded")
-            val intent = Intent(Intent.ACTION_VIEW, webUri).apply {
-                setPackage(PKG_YT_MUSIC)
+            val targetUri = if (!foundVid.isNullOrBlank()) {
+                Log.i(TAG, "Opening direct YouTube Music track: $foundVid for '$query'")
+                Uri.parse("https://music.youtube.com/watch?v=$foundVid")
+            } else {
+                Log.i(TAG, "Opening YouTube Music search for '$query'")
+                Uri.parse("https://music.youtube.com/search?q=$encoded")
+            }
+
+            val browserIntent = Intent(Intent.ACTION_VIEW, targetUri).apply {
+                val bravePackage = "com.brave.browser"
+                val isBraveInstalled = try {
+                    context.packageManager.getPackageInfo(bravePackage, 0) != null
+                } catch (_: Exception) {
+                    false
+                }
+                if (isBraveInstalled) {
+                    setPackage(bravePackage)
+                }
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
-            try {
-                context.startActivity(intent)
-            } catch (e: Exception) {
-                val genericIntent = Intent(Intent.ACTION_VIEW, webUri).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                context.startActivity(genericIntent)
-            }
+            context.startActivity(browserIntent)
             ToolResult(true, "Playing '$query' on YouTube Music")
         } catch (e: Exception) {
             Log.e(TAG, "YouTube Music search failed", e)

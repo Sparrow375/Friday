@@ -28,11 +28,11 @@ class NluIntentClassifier(private val context: Context) {
     private var tokenizer: WordpieceTokenizer? = null
     private var isLoaded = false
 
-    // 46 Intent Labels
+    // 48 Intent Labels
     private var intentLabels = listOf(
         "volume_up", "volume_down", "brightness_up", "brightness_down",
         "torch_toggle", "torch_strength", "lock_phone", "open_app",
-        "navigate_to", "set_alarm", "set_timer", "send_whatsapp",
+        "navigate_to", "set_alarm", "set_timer", "set_reminder", "send_whatsapp",
         "play_media", "play_spotify", "play_youtube",
         "pause_media", "next_track", "previous_track",
         "power_saver_toggle", "screencast_toggle",

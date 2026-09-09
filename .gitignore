@@ -16,6 +16,8 @@ local.properties
 
 # Project Friday Exclusions
 /app/src/main/assets/friday_onnx_models.zip
+scripts/*.zip
+*.zip
 /current_device_logs.txt
 /notebookoutput.md
 /output/

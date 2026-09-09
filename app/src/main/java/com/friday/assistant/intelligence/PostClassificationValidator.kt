@@ -51,10 +51,24 @@ object PostClassificationValidator {
             }
         }
 
-        // 3. Strict Phone Call Safety Guard: ONLY allow call_contact if explicit call verb is present
+        // 3. Spoken Reminder validation: preserve set_reminder or rescue from notes_create/unknown
+        val originalTextLower = preprocessed.originalText.lowercase()
+        val isSpokenReminder = originalTextLower.contains("remind me") || originalTextLower.contains("set a reminder") || originalTextLower.startsWith("remind ")
+        if (isSpokenReminder) {
+            if (finalIntent == "notes_create" || finalIntent == "unknown" || finalIntent == "set_alarm") {
+                Log.i(TAG, "Reclassifying intent as set_reminder for spoken reminder query: '${preprocessed.originalText}'")
+                finalIntent = "set_reminder"
+                finalConfidence = maxOf(finalConfidence, 0.92f)
+                routeToLlm = false
+            } else if (finalIntent == "set_reminder") {
+                finalConfidence = maxOf(finalConfidence, 0.92f)
+                routeToLlm = false
+            }
+        }
+
+        // 4. Strict Phone Call Safety Guard: ONLY allow call_contact if explicit call verb is present
         if (finalIntent == "call_contact") {
-            val originalLower = preprocessed.originalText.lowercase()
-            val hasExplicitCallVerb = originalLower.contains(Regex("\\b(call|dial)\\b"))
+            val hasExplicitCallVerb = originalTextLower.contains(Regex("\\b(call|dial)\\b"))
             if (!hasExplicitCallVerb) {
                 Log.w(TAG, "SAFETY BLOCK: Suppressing false call_contact intent for '${preprocessed.originalText}' - no explicit 'call' or 'dial' verb detected!")
                 finalIntent = "unknown"
@@ -63,7 +77,7 @@ object PostClassificationValidator {
             }
         }
 
-        // 4. Confidence threshold check
+        // 5. Confidence threshold check
         if (finalIntent == "unknown" || finalConfidence < 0.60f) {
             Log.d(TAG, "Intent is unknown or confidence $finalConfidence is below threshold 0.60. Routing to LLM fallback.")
             routeToLlm = true

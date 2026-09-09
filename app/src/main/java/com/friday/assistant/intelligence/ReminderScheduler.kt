@@ -20,11 +20,15 @@ object ReminderScheduler {
     )
 
     fun schedule(context: Context, delaySeconds: Long, reminderMessage: String): Boolean {
+        val triggerAtMs = System.currentTimeMillis() + (delaySeconds * 1000L)
+        return scheduleAt(context, triggerAtMs, reminderMessage)
+    }
+
+    fun scheduleAt(context: Context, triggerAtMs: Long, reminderMessage: String): Boolean {
         return try {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
                 ?: return false
 
-            val triggerAtMs = System.currentTimeMillis() + (delaySeconds * 1000L)
             val requestCode = (System.currentTimeMillis() % 100000000).toInt()
 
             val intent = Intent(context, ReminderReceiver::class.java).apply {
@@ -57,12 +61,120 @@ object ReminderScheduler {
             // Save to persistent storage to survive device reboots
             saveReminder(context, ScheduledReminder(requestCode, triggerAtMs, reminderMessage))
 
-            FridayLogger.i(TAG, "Scheduled spoken reminder in ${delaySeconds}s (triggerAtMs=$triggerAtMs) for: '$reminderMessage'")
+            val diffSec = (triggerAtMs - System.currentTimeMillis()) / 1000L
+            FridayLogger.i(TAG, "Scheduled spoken reminder at ms=$triggerAtMs (~${diffSec}s from now) for: '$reminderMessage'")
             true
         } catch (e: Exception) {
-            FridayLogger.e(TAG, "Failed to schedule reminder", e)
+            FridayLogger.e(TAG, "Failed to schedule reminder at timestamp", e)
             false
         }
+    }
+
+    fun parseNaturalDateTime(rawInput: String): Long? {
+        val input = rawInput.trim().lowercase()
+        val now = System.currentTimeMillis()
+        val cal = java.util.Calendar.getInstance()
+
+        // 1. Relative "in X [unit]"
+        val relRegex = Regex("(?i)\\b(?:in|after)\\s+(\\d+)\\s*(months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b")
+        val relMatch = relRegex.find(input)
+        if (relMatch != null) {
+            val value = relMatch.groupValues[1].toLong()
+            val unit = relMatch.groupValues[2].lowercase()
+            val sec = when {
+                unit.startsWith("month") -> value * 30L * 86400L
+                unit.startsWith("week") -> value * 7L * 86400L
+                unit.startsWith("day") -> value * 86400L
+                unit.startsWith("hour") || unit.startsWith("hr") -> value * 3600L
+                unit.startsWith("minute") || unit.startsWith("min") -> value * 60L
+                else -> value
+            }
+            return now + (sec * 1000L)
+        }
+
+        // 2. Day calculation (today, tomorrow, day-of-week)
+        var hasDayModifier = false
+        if (input.contains("tomorrow")) {
+            cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+            hasDayModifier = true
+        } else {
+            val daysOfWeek = mapOf(
+                "sunday" to java.util.Calendar.SUNDAY,
+                "monday" to java.util.Calendar.MONDAY,
+                "tuesday" to java.util.Calendar.TUESDAY,
+                "wednesday" to java.util.Calendar.WEDNESDAY,
+                "thursday" to java.util.Calendar.THURSDAY,
+                "friday" to java.util.Calendar.FRIDAY,
+                "saturday" to java.util.Calendar.SATURDAY
+            )
+            for ((dayName, dayConst) in daysOfWeek) {
+                if (input.contains(dayName)) {
+                    val currentDay = cal.get(java.util.Calendar.DAY_OF_WEEK)
+                    var daysToAdd = dayConst - currentDay
+                    if (daysToAdd <= 0) daysToAdd += 7
+                    cal.add(java.util.Calendar.DAY_OF_YEAR, daysToAdd)
+                    hasDayModifier = true
+                    break
+                }
+            }
+        }
+
+        // 3. Time-of-day clock parsing
+        val timeRegex = Regex("(?i)(?:at\\s+)?(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm|a\\.m\\.|p\\.m\\.|o'clock)?\\b")
+        val timeMatch = timeRegex.findAll(input).firstOrNull { match ->
+            val hasAmPm = match.groupValues[3].isNotEmpty()
+            val hasColon = match.groupValues[2].isNotEmpty()
+            val startsWithAt = match.value.startsWith("at")
+            hasAmPm || hasColon || startsWithAt
+        }
+
+        var hour = -1
+        var minute = 0
+
+        if (timeMatch != null) {
+            var h = timeMatch.groupValues[1].toInt()
+            minute = if (timeMatch.groupValues[2].isNotEmpty()) timeMatch.groupValues[2].toInt() else 0
+            val ampm = timeMatch.groupValues[3].lowercase().replace(".", "")
+            if (ampm == "pm" && h < 12) h += 12
+            else if (ampm == "am" && h == 12) h = 0
+            else if (ampm.isEmpty() && !hasDayModifier && h in 1..11 && h <= cal.get(java.util.Calendar.HOUR_OF_DAY)) {
+                h += 12
+            }
+            hour = h.coerceIn(0, 23)
+            minute = minute.coerceIn(0, 59)
+        } else if (input.contains("tonight")) {
+            hour = 20; minute = 0
+        } else if (input.contains("morning")) {
+            hour = 9; minute = 0
+        } else if (input.contains("afternoon")) {
+            hour = 14; minute = 0
+        } else if (input.contains("evening")) {
+            hour = 18; minute = 0
+        } else if (input.contains("noon")) {
+            hour = 12; minute = 0
+        } else if (input.contains("midnight")) {
+            hour = 0; minute = 0
+        }
+
+        if (hour >= 0) {
+            cal.set(java.util.Calendar.HOUR_OF_DAY, hour)
+            cal.set(java.util.Calendar.MINUTE, minute)
+            cal.set(java.util.Calendar.SECOND, 0)
+            cal.set(java.util.Calendar.MILLISECOND, 0)
+
+            if (cal.timeInMillis <= now && !hasDayModifier) {
+                cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+            }
+            return cal.timeInMillis
+        } else if (hasDayModifier) {
+            cal.set(java.util.Calendar.HOUR_OF_DAY, 9)
+            cal.set(java.util.Calendar.MINUTE, 0)
+            cal.set(java.util.Calendar.SECOND, 0)
+            cal.set(java.util.Calendar.MILLISECOND, 0)
+            return cal.timeInMillis
+        }
+
+        return null
     }
 
     fun onReminderTriggered(context: Context, requestCode: Int) {

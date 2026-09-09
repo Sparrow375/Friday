@@ -4,7 +4,8 @@ import json
 import zipfile
 import shutil
 
-ASSETS_DIR = "f:/Avaneesh/projects/Friday/app/src/main/assets"
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ASSETS_DIR = os.path.join(PROJECT_ROOT, "app", "src", "main", "assets")
 DOWNLOADS_DIR = os.path.expanduser("~/Downloads")
 
 def find_latest_model():
@@ -17,7 +18,7 @@ def find_latest_model():
                 candidates.append((p, os.path.getmtime(p)))
     
     # Search Project output
-    output_dir = "f:/Avaneesh/projects/Friday/output"
+    output_dir = os.path.join(PROJECT_ROOT, "output")
     if os.path.exists(output_dir):
         for root, _, files in os.walk(output_dir):
             for f in files:

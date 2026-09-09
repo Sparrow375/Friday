@@ -13,6 +13,9 @@ Measures:
 
 import os
 import sys
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
 import json
 import time
 import re
@@ -30,6 +33,8 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output", "friday_joint_nlu", "output")
 if not os.path.exists(os.path.join(OUTPUT_DIR, "joint_nlu_model.onnx")):
     OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
+if not os.path.exists(os.path.join(OUTPUT_DIR, "joint_nlu_model.onnx")):
+    OUTPUT_DIR = os.path.join(PROJECT_ROOT, "app", "src", "main", "assets")
 
 MODEL_PATH = os.path.join(OUTPUT_DIR, "joint_nlu_model.onnx")
 INTENT_LABELS_PATH = os.path.join(OUTPUT_DIR, "joint_intent_labels.json")
@@ -275,12 +280,20 @@ class JointAgentDispatcher:
             args = {"action": "set_timer", "duration": slots.get("TIME", "5 minutes")}
             reason = "Set timer"
             simulated_output = f"Timer started for {args['duration']}"
+        elif intent == "set_reminder":
+            tool = "reminder_control"
+            time_val = slots.get("TIME", "tomorrow")
+            reminder_content = slots.get("NOTE_CONTENT", query)
+            args = {"action": "set_reminder", "time": time_val, "content": reminder_content}
+            reason = f"Reminder ({time_val}): {reminder_content}"
+            simulated_output = f"Spoken reminder scheduled for {time_val}: '{reminder_content}'"
         elif intent in ("play_spotify", "play_youtube", "play_media"):
             tool = "media_control"
-            app = "spotify" if intent == "play_spotify" else ("youtube" if intent == "play_youtube" else slots.get("APP", None))
-            args = {"action": "play_search", "query": slots.get("QUERY", query), "app": app}
-            reason = f"Media playback ({intent})"
-            simulated_output = f"Playing '{args['query']}' on {app or 'media player'}"
+            target_app = "youtube music"
+            query_str = slots.get("QUERY", query)
+            args = {"action": "play_search", "query": query_str, "app": target_app}
+            reason = f"YouTube Music Web Playback for '{query_str}'"
+            simulated_output = f"Opening 'https://music.youtube.com/search?q={query_str}' in Brave browser."
         elif intent in ("pause_media", "next_track", "previous_track"):
             tool = "media_control"
             args = {"action": intent.replace("_media", "").replace("_track", "")}

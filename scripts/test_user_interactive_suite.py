@@ -6,6 +6,9 @@ Targeted Verification Suite for User Interactive Edge Cases
 import os
 import sys
 import json
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
 sys.path.insert(0, os.path.dirname(__file__))
 from test_joint_nlu_pc import JointNluRunner, JointAgentDispatcher, MODEL_PATH, INTENT_LABELS_PATH, SLOT_LABELS_PATH
 
@@ -21,7 +24,12 @@ TEST_QUERIES = [
     ("what is my metro card balance", "recall_preference", "recall"),
     ("tell my notes", "notes_list", "notes_control"),
     ("open stotify", "open_app", "app_launcher"),
-    ("remind me to drink water in 10 minutes", "notes_create", "notes_control"),
+    ("remind me to drink water in 10 minutes", "set_reminder", "reminder_control"),
+    ("remind me to pay the bill tomorrow", "set_reminder", "reminder_control"),
+    ("remind me to buy groceries tomorrow at 7pm", "set_reminder", "reminder_control"),
+    ("remind me to drink water today at 12pm", "set_reminder", "reminder_control"),
+    ("search quantum computing", "search_google", "web_search"),
+    ("play sunflower on youtube music", "play_media", "media_control"),
     ("tell a joke", "unknown", "FALLBACK_LLM_BRAIN"),
     ("wd", "unknown", "FALLBACK_LLM_BRAIN"),
 ]

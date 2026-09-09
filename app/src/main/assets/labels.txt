@@ -9,6 +9,7 @@ open_app
 navigate_to
 set_alarm
 set_timer
+set_reminder
 send_whatsapp
 play_media
 play_spotify

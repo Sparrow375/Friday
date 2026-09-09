@@ -2,10 +2,12 @@ import onnxruntime as ort
 import json
 import numpy as np
 
-# Load assets
-model_path = "f:/Avaneesh/projects/Friday/app/src/main/assets/joint_nlu_model.onnx"
-intents_path = "f:/Avaneesh/projects/Friday/app/src/main/assets/joint_intent_labels.json"
-vocab_path = "f:/Avaneesh/projects/Friday/app/src/main/assets/vocab.txt"
+import os
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+model_path = os.path.join(PROJECT_ROOT, "app", "src", "main", "assets", "joint_nlu_model.onnx")
+intents_path = os.path.join(PROJECT_ROOT, "app", "src", "main", "assets", "joint_intent_labels.json")
+vocab_path = os.path.join(PROJECT_ROOT, "app", "src", "main", "assets", "vocab.txt")
 
 with open(intents_path, "r", encoding="utf-8") as f:
     intents = json.load(f)
