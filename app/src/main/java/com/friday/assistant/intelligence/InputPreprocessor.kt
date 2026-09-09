@@ -77,16 +77,22 @@ object InputPreprocessor {
             entities["[PHONE]"] = entities["[PHONE_1]"]!!
         }
 
-        // 4. Time expressions: \d{1,2}:\d{2}\s*(am|pm)? or \d{1,2}\s*(am|pm) -> [TIME]
+        // 4. Normalize ASR time variants (e.g. "8:00 p.m." -> "8:00 pm", "8 a.m." -> "8 am")
+        // We normalize formatting to natural English so the Joint NLU slot tagger gets clean tokens,
+        // rather than replacing with synthetic tokens that corrupt slot extraction for reminders/timers.
+        val dottedTimeRegex = "(?i)\\b(\\d{1,2}(?::\\d{2})?)\\s*([ap])\\s*\\.\\s*m\\s*\\.?\\b".toRegex()
+        workingText = dottedTimeRegex.replace(workingText) { m ->
+            "${m.groupValues[1]} ${m.groupValues[2].lowercase()}m"
+        }
+
         val timeRegex = "\\b\\d{1,2}:\\d{2}\\s*(?:am|pm|AM|PM)?\\b|\\b\\d{1,2}\\s*(?:am|pm|AM|PM)\\b".toRegex()
         var timeIndex = 1
         var timeMatch = timeRegex.find(workingText)
         while (timeMatch != null) {
             val key = "[TIME_${timeIndex}]"
             entities[key] = timeMatch.value
-            workingText = workingText.replace(timeMatch.value, key)
             timeIndex++
-            timeMatch = timeRegex.find(workingText)
+            timeMatch = timeMatch.next()
         }
         if (entities.containsKey("[TIME_1]")) {
             entities["[TIME]"] = entities["[TIME_1]"]!!

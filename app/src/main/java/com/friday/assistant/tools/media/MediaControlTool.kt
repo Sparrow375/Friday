@@ -191,19 +191,41 @@ class MediaControlTool(private val context: Context) : Tool {
                 Uri.parse("https://music.youtube.com/search?q=$encoded")
             }
 
+            val ytMusicPackage = "com.google.android.apps.youtube.music"
+            val isYtMusicInstalled = try {
+                context.packageManager.getPackageInfo(ytMusicPackage, 0) != null
+            } catch (_: Exception) { false }
+
+            val bravePackage = "com.brave.browser"
+            val isBraveInstalled = try {
+                context.packageManager.getPackageInfo(bravePackage, 0) != null
+            } catch (_: Exception) { false }
+
             val browserIntent = Intent(Intent.ACTION_VIEW, targetUri).apply {
-                val bravePackage = "com.brave.browser"
-                val isBraveInstalled = try {
-                    context.packageManager.getPackageInfo(bravePackage, 0) != null
-                } catch (_: Exception) {
-                    false
-                }
-                if (isBraveInstalled) {
-                    setPackage(bravePackage)
+                when {
+                    isYtMusicInstalled -> setPackage(ytMusicPackage)
+                    isBraveInstalled -> setPackage(bravePackage)
                 }
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
             context.startActivity(browserIntent)
+
+            // Trigger accessibility auto-play helper to click Play in browser or media app
+            if (AutomationBridge.isReady()) {
+                Thread {
+                    try { Thread.sleep(600) } catch (_: Exception) {}
+                    AutomationBridge.triggerMediaAutoPlay(query)
+                }.start()
+            }
+
+            // Secondary fallback: send KEYCODE_MEDIA_PLAY key event after 2.2 seconds
+            Thread {
+                try {
+                    Thread.sleep(2200)
+                    sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY)
+                } catch (_: Exception) {}
+            }.start()
+
             ToolResult(true, "Playing '$query' on YouTube Music")
         } catch (e: Exception) {
             Log.e(TAG, "YouTube Music search failed", e)
@@ -229,15 +251,21 @@ class MediaControlTool(private val context: Context) : Tool {
             }
             context.startActivity(genericIntent)
 
-            // If accessibility service is ready and fallback search page was opened, trigger UI automator
-            if (directVideoUrl.isNullOrBlank() && AutomationBridge.isReady()) {
+            // Always trigger auto-play automation
+            if (AutomationBridge.isReady()) {
                 Thread {
-                    try { Thread.sleep(400) } catch (_: Exception) {}
-                    Log.d(TAG, "Triggering YouTube auto-play accessibility helper")
-                    val autoPlayed = AutomationBridge.triggerYouTubeAutoPlay(query)
-                    Log.d(TAG, "YouTube auto-play accessibility helper returned: $autoPlayed")
+                    try { Thread.sleep(600) } catch (_: Exception) {}
+                    AutomationBridge.triggerMediaAutoPlay(query)
                 }.start()
             }
+
+            // Secondary fallback: send KEYCODE_MEDIA_PLAY key event after 2.2 seconds
+            Thread {
+                try {
+                    Thread.sleep(2200)
+                    sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY)
+                } catch (_: Exception) {}
+            }.start()
 
             ToolResult(true, "Playing '$query' on YouTube")
         } catch (e: Exception) {

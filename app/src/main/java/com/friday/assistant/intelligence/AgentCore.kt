@@ -145,57 +145,48 @@ class AgentCore(
 
         if (useLlm && modelManager.isLlmLoaded()) {
             val path = modelManager.getLlmModelPath()
-            if (!llamaEngine.isModelLoaded() || llamaEngine.getLoadedModelPath() != path) {
+            var loadedOk = llamaEngine.isModelLoaded() && llamaEngine.getLoadedModelPath() == path
+            if (!loadedOk) {
                 _agentStatusFlow.emit("Loading brain...")
                 com.friday.assistant.core.FridayLogger.i(TAG, "Loading LLM GGUF model from: $path")
-                val success = llamaEngine.loadModel(path)
-                com.friday.assistant.core.FridayLogger.i(TAG, "LLM GGUF model load success: $success")
-                if (!success) {
-                    return QueryResult("Failed to load the local brain. Please check if your device has enough free memory.", false)
+                loadedOk = llamaEngine.loadModel(path)
+                com.friday.assistant.core.FridayLogger.i(TAG, "LLM GGUF model load success: $loadedOk")
+            }
+            if (loadedOk) {
+                _agentStatusFlow.emit("Thinking...")
+                val currentPrompt = promptBuilder.buildMinimalPrompt(resolvedInput)
+                val response = llamaEngine.generateStream(currentPrompt, maxTokens = 128, temp = 0.7f, callback = object : LlamaEngine.TokenCallback {
+                    override fun onToken(token: String) {
+                        onToken(token)
+                    }
+                }).trim()
+                val finalResponse = sanitizeResponse(response)
+                if (finalResponse.isNotBlank()) {
+                    memoryManager.saveConversationTurn(resolvedInput, finalResponse)
+                    return QueryResult(finalResponse, false)
                 }
             }
-            _agentStatusFlow.emit("Thinking...")
-            val currentPrompt = promptBuilder.buildMinimalPrompt(resolvedInput)
-            val response = llamaEngine.generateStream(currentPrompt, maxTokens = 128, temp = 0.7f, callback = object : LlamaEngine.TokenCallback {
-                override fun onToken(token: String) {
-                    onToken(token)
-                }
-            }).trim()
-            val finalResponse = sanitizeResponse(response)
-
-            memoryManager.saveConversationTurn(resolvedInput, finalResponse)
-            return QueryResult(finalResponse, false)
-        } else {
-            val isSearchLike = cleanQuery.startsWith("search") ||
-                cleanQuery.contains("google") ||
-                cleanQuery.contains("what is") ||
-                cleanQuery.contains("whats ") ||
-                cleanQuery.contains("who is") ||
-                cleanQuery.contains("how to") ||
-                cleanQuery.contains("where is") ||
-                cleanQuery.contains("when is") ||
-                cleanQuery.contains("tell me about") ||
-                cleanQuery.contains("look up")
-
-            if (isSearchLike) {
-                _agentStatusFlow.emit("Searching the web...")
-                val searchTool = ToolRegistry.get("web_search")
-                if (searchTool != null) {
-                    val cleanSearch = cleanQuery
-                        .replace(Regex("(?i)^(?:google|search on google for|search on google|search google for|search google|search for|search|look up)\\s+"), "")
-                        .replace(Regex("(?i)\\s+on\\s+google$"), "")
-                        .replace(Regex("(?i)\\s+google$"), "")
-                        .trim()
-                    val q = if (cleanSearch.isNotEmpty()) cleanSearch else resolvedInput
-                    val result = searchTool.execute(JsonObject().apply {
-                        addProperty("query", q)
-                    })
-                    if (result.success) return fast(result.data)
-                }
-            }
-
-            return QueryResult("I'm running in offline assistant mode, but the local brain (Qwen GGUF) is not loaded or has been offloaded. You can download or enable it in the Friday app dashboard.", false)
         }
+
+        // 6. Online search fallback: Query web search and speak the extracted answer
+        _agentStatusFlow.emit("Searching the web...")
+        val searchTool = ToolRegistry.get("web_search")
+        if (searchTool != null) {
+            val cleanSearch = cleanQuery
+                .replace(Regex("(?i)^(?:google|search on google for|search on google|search google for|search google|search for|search|look up)\\s+"), "")
+                .replace(Regex("(?i)\\s+on\\s+google$"), "")
+                .replace(Regex("(?i)\\s+google$"), "")
+                .trim()
+            val q = if (cleanSearch.isNotEmpty()) cleanSearch else resolvedInput
+            val result = searchTool.execute(JsonObject().apply {
+                addProperty("query", q)
+            })
+            if (result.success && result.data.isNotBlank()) {
+                return fast(result.data)
+            }
+        }
+
+        return QueryResult("I couldn't find an answer online, and the offline brain (Qwen GGUF) is not loaded. You can enable or download it in the Friday dashboard.", false)
     }
 
     private suspend fun handleBriefingAndAlarms(
@@ -342,36 +333,52 @@ class AgentCore(
         val isReminderQuery = matchedIntent == "set_reminder" ||
             cleanQuery.contains("remind me") || cleanQuery.contains("set a reminder") || cleanQuery.startsWith("remind ")
         if (isReminderQuery) {
-            val timeText = nluSlots["TIME"] ?: run {
+            val rawTime = nluSlots["TIME"]?.trim()
+            val timeText = if (!rawTime.isNullOrBlank() && rawTime.length > 1 && !rawTime.matches(Regex("^[.,!?:;\"'\\-_/\\\\]+$"))) {
+                rawTime
+            } else {
                 val durM = TIMER_DURATION_REGEX.find(preprocessed.originalText)
                 if (durM != null) {
                     val m = Regex("(?i)\\b(?:in|after|for)\\s+\\d+\\s*(?:months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b").find(preprocessed.originalText)
                     m?.value ?: durM.value
                 } else {
-                    val dayClockRegex = Regex("(?i)\\b(?:tomorrow(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?)?|today(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?)?|tonight(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?)?|at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?|\\d{1,2}(?::\\d{2})?\\s*(?:am|pm))\\b")
+                    val dayClockRegex = Regex("(?i)\\b(?:tomorrow(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm|a\\.m\\.|p\\.m\\.)?)?|today(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm|a\\.m\\.|p\\.m\\.)?)?|tonight(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm|a\\.m\\.|p\\.m\\.)?)?|at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm|a\\.m\\.|p\\.m\\.)?|\\d{1,2}(?::\\d{2})?\\s*(?:am|pm|a\\.m\\.|p\\.m\\.))\\b")
                     dayClockRegex.find(preprocessed.originalText)?.value ?: ""
                 }
             }
 
-            var reminderMsg = nluSlots["NOTE_CONTENT"] ?: preprocessed.originalText
-                .replace(Regex("(?i)^(?:friday|hey friday)[,\\s]*"), "")
-                .replace(Regex("(?i)\\b(?:please|can you|could you)\\b"), "")
-                .replace(Regex("(?i)remind me (?:to|of|about)?\\s*"), "")
-                .replace(Regex("(?i)set a reminder (?:to|of|about)?\\s*"), "")
-                .replace(Regex("(?i)remind\\s+"), "")
-                .replace(Regex("(?i)\\bin\\s+\\d+\\s*(?:months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b"), "")
-                .replace(Regex("(?i)\\bfor\\s+\\d+\\s*(?:months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b"), "")
-                .replace(Regex("(?i)\\bafter\\s+\\d+\\s*(?:months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b"), "")
-                .replace(Regex("(?i)\\b(?:tomorrow|today|tonight)(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?)?\\b"), "")
-                .replace(Regex("(?i)\\bat\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?\\b"), "")
-                .replace(Regex("(?i)\\b\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)\\b"), "")
-                .trim()
-            if (reminderMsg.isEmpty()) reminderMsg = "check your reminder"
+            fun extractFallbackNote(text: String): String {
+                return text
+                    .replace(Regex("(?i)^(?:friday|hey friday)[,\\s]*"), "")
+                    .replace(Regex("(?i)\\b(?:please|can you|could you)\\b"), "")
+                    .replace(Regex("(?i)remind me (?:to|of|about)?\\s*"), "")
+                    .replace(Regex("(?i)set a reminder (?:to|of|about|for)?\\s*"), "")
+                    .replace(Regex("(?i)remind\\s+"), "")
+                    .replace(Regex("(?i)\\bin\\s+\\d+\\s*(?:months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b"), "")
+                    .replace(Regex("(?i)\\bfor\\s+\\d+\\s*(?:months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b"), "")
+                    .replace(Regex("(?i)\\bafter\\s+\\d+\\s*(?:months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b"), "")
+                    .replace(Regex("(?i)\\b(?:tomorrow|today|tonight)(?:\\s+at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm|a\\.m\\.|p\\.m\\.)?)?\\b"), "")
+                    .replace(Regex("(?i)\\bat\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm|a\\.m\\.|p\\.m\\.)?\\b"), "")
+                    .replace(Regex("(?i)\\b\\d{1,2}(?::\\d{2})?\\s*(?:am|pm|a\\.m\\.|p\\.m\\.)\\b"), "")
+                    .trim()
+            }
 
-            val triggerAtMs = if (timeText.isNotBlank()) {
-                ReminderScheduler.parseNaturalDateTime(timeText)
+            val rawNote = nluSlots["NOTE_CONTENT"]?.trim()
+            var reminderMsg = if (!rawNote.isNullOrBlank() && rawNote.length > 1 && !rawNote.matches(Regex("^[.,!?:;\"'\\-_/\\\\]+$"))) {
+                rawNote
             } else {
-                ReminderScheduler.parseNaturalDateTime(preprocessed.originalText)
+                extractFallbackNote(preprocessed.originalText)
+            }
+            if (reminderMsg.isEmpty() || reminderMsg.matches(Regex("^[.,!?:;\"'\\-_/\\\\]+$"))) {
+                reminderMsg = "check your reminder"
+            }
+
+            var triggerAtMs = if (timeText.isNotBlank()) {
+                ReminderScheduler.parseNaturalDateTime(timeText)
+            } else null
+
+            if (triggerAtMs == null) {
+                triggerAtMs = ReminderScheduler.parseNaturalDateTime(preprocessed.originalText)
             }
 
             if (triggerAtMs != null) {

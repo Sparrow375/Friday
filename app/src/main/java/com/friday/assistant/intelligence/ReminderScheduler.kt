@@ -94,9 +94,13 @@ object ReminderScheduler {
 
         // 2. Day calculation (today, tomorrow, day-of-week)
         var hasDayModifier = false
+        var isExplicitToday = false
         if (input.contains("tomorrow")) {
             cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
             hasDayModifier = true
+        } else if (input.contains("today") || input.contains("tonight")) {
+            hasDayModifier = true
+            isExplicitToday = true
         } else {
             val daysOfWeek = mapOf(
                 "sunday" to java.util.Calendar.SUNDAY,
@@ -137,7 +141,9 @@ object ReminderScheduler {
             val ampm = timeMatch.groupValues[3].lowercase().replace(".", "")
             if (ampm == "pm" && h < 12) h += 12
             else if (ampm == "am" && h == 12) h = 0
-            else if (ampm.isEmpty() && !hasDayModifier && h in 1..11 && h <= cal.get(java.util.Calendar.HOUR_OF_DAY)) {
+            else if (ampm.isEmpty() && (input.contains("tonight") || input.contains("evening")) && h in 1..11) {
+                h += 12
+            } else if (ampm.isEmpty() && !hasDayModifier && h in 1..11 && h <= cal.get(java.util.Calendar.HOUR_OF_DAY)) {
                 h += 12
             }
             hour = h.coerceIn(0, 23)
@@ -162,8 +168,13 @@ object ReminderScheduler {
             cal.set(java.util.Calendar.SECOND, 0)
             cal.set(java.util.Calendar.MILLISECOND, 0)
 
-            if (cal.timeInMillis <= now && !hasDayModifier) {
-                cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+            if (cal.timeInMillis <= now) {
+                if (!hasDayModifier) {
+                    cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+                } else if (isExplicitToday) {
+                    FridayLogger.w(TAG, "Explicit today reminder was requested for a time in the past (${cal.time}), scheduling 60s from now")
+                    cal.timeInMillis = now + 60000L
+                }
             }
             return cal.timeInMillis
         } else if (hasDayModifier) {

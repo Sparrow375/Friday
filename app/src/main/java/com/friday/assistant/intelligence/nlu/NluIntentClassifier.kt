@@ -264,6 +264,20 @@ class NluIntentClassifier(private val context: Context) {
                             predictedSlotIds.add(bestSlotIdx)
                         }
 
+                        // Helper to safely commit extracted entity without corrupting with punctuation or raw placeholders
+                        fun commitSlot(tag: String, tokens: List<String>) {
+                            val raw = tokenizer!!.convertTokensToString(tokens).trim()
+                            val cleanVal = raw.replace(Regex("[\\[\\]]"), "").trim()
+                            if (cleanVal.isEmpty() || cleanVal.matches(Regex("^[.,!?:;\"'\\-_/\\\\]+$"))) return
+                            if (cleanVal.equals("quote", ignoreCase = true) || cleanVal.equals("contact", ignoreCase = true)) return
+                            
+                            val existing = slotsMap[tag]
+                            // Keep existing if current is just single letter/punctuation or shorter than existing
+                            if (existing == null || (cleanVal.length > existing.length && !cleanVal.matches(Regex("^[.,!?:;\"'\\-_/\\\\]+$")))) {
+                                slotsMap[tag] = cleanVal
+                            }
+                        }
+
                         // Reconstruct entities from BIO tags (skip [CLS] at 0 and [SEP] at last)
                         var currentTag: String? = null
                         val currentTokens = mutableListOf<String>()
@@ -275,42 +289,33 @@ class NluIntentClassifier(private val context: Context) {
 
                             if (slotTag.startsWith("B-")) {
                                 if (currentTag != null && currentTokens.isNotEmpty()) {
-                                    slotsMap[currentTag] = tokenizer!!.convertTokensToString(currentTokens)
+                                    commitSlot(currentTag, currentTokens)
                                 }
                                 currentTag = slotTag.substring(2)
                                 currentTokens.clear()
                                 currentTokens.add(tokStr)
-                            } else if (slotTag.startsWith("I-")) {
-                                val tagType = slotTag.substring(2)
-                                if (currentTag == tagType) {
-                                    currentTokens.add(tokStr)
-                                } else {
-                                    if (currentTag != null && currentTokens.isNotEmpty()) {
-                                        slotsMap[currentTag] = tokenizer!!.convertTokensToString(currentTokens)
-                                    }
-                                    currentTag = tagType
-                                    currentTokens.clear()
-                                    currentTokens.add(tokStr)
-                                }
+                            } else if (slotTag.startsWith("I-") && currentTag == slotTag.substring(2)) {
+                                currentTokens.add(tokStr)
                             } else {
                                 if (currentTag != null && currentTokens.isNotEmpty()) {
-                                    slotsMap[currentTag] = tokenizer!!.convertTokensToString(currentTokens)
+                                    commitSlot(currentTag, currentTokens)
                                     currentTag = null
                                     currentTokens.clear()
                                 }
                             }
                         }
                         if (currentTag != null && currentTokens.isNotEmpty()) {
-                            slotsMap[currentTag] = tokenizer!!.convertTokensToString(currentTokens)
+                            commitSlot(currentTag, currentTokens)
                         }
                     }
                 }
 
-                // Sanitize slotsMap: remove single brackets or raw placeholder tokens
+                // Sanitize slotsMap: ensure no empty or single punctuation values remain
                 val cleanedSlotsMap = mutableMapOf<String, String>()
                 for ((k, v) in slotsMap) {
                     val cleanVal = v.replace(Regex("[\\[\\]]"), "").trim()
-                    if (cleanVal.isNotEmpty() && !cleanVal.equals("quote", ignoreCase = true) && !cleanVal.equals("contact", ignoreCase = true)) {
+                    if (cleanVal.isNotEmpty() && !cleanVal.matches(Regex("^[.,!?:;\"'\\-_/\\\\]+$")) &&
+                        !cleanVal.equals("quote", ignoreCase = true) && !cleanVal.equals("contact", ignoreCase = true)) {
                         cleanedSlotsMap[k] = cleanVal
                     }
                 }

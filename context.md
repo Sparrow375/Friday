@@ -350,6 +350,37 @@ The project uses a clean package namespace `com.friday.assistant`:
           - Created `scripts/manual_commands_dataset.json` with 50+ curated human-written commands.
           - Updated `scripts/train_joint_nlu.py` and Google Colab notebook `scripts/friday_joint_nlu_training.ipynb` with 48 intents, 23 BIO slot tags, rich data augmentation, and dynamic INT8 ONNX export.
           - Updated PC test harness `scripts/test_joint_nlu_pc.py`, `scripts/stress_test_dataset.json`, and `scripts/test_user_interactive_suite.py`.
+      - **NLU Reminder Slot Extraction, Autonomous Media Auto-Play & Online Web Search Fallback Overhaul (September 2026)**:
+        * **NLU Slot Extraction & Spoken Reminder Fixes (`InputPreprocessor.kt`, `NluIntentClassifier.kt`, `ReminderScheduler.kt`, `AgentCore.kt`)**:
+          - **Root Cause Diagnosed**:
+            1. `InputPreprocessor.kt` matched `8:00` in `8:00 p.m.` (failing on dotted `p.m.`), replacing it with synthetic `[TIME_1]` and leaving `[TIME_1] p.m.`.
+            2. In `NluIntentClassifier.kt`, BIO slot decoding allowed an unexpected `I-` tag to start a new entity, causing trailing `.` and `m` tokens from `p.m.` to overwrite valid slot entities, resulting in `{NOTE_CONTENT=., TIME=m}`.
+            3. In `ReminderScheduler.kt`, `parseNaturalDateTime` omitted `"today"`, leaving `hasDayModifier = false`. When `timeText` was `"m"`, parsing returned null, causing `AgentCore.kt` to schedule `now + 86400000L` (24h = tomorrow) for `"."`.
+          - **Resolution Implemented**:
+            1. Cleanly normalized dotted ASR time variants (`p.m.` / `a.m.` -> `pm` / `am`) in `InputPreprocessor.kt` without replacing with synthetic `[TIME]` tokens, preserving natural English input for the neural slot filler.
+            2. Fixed BIO decoding in `NluIntentClassifier.kt`: strict prefix adherence (`I-` tags never start new entities), filtered out single punctuation characters (`.`, `,`), and prevented spurious single-character slots from overwriting multi-token entities.
+            3. Added explicit `"today"` and `"tonight"` handling in `ReminderScheduler.kt`, with guards against silently bumping explicit "today" reminders to tomorrow.
+            4. Added sanity checks and regex fallback in `AgentCore.kt` so corrupted slots cannot overwrite valid note text or dates/times from the original user query.
+            5. Verified via Python simulation harness (`scripts/verify_reminder_fix.py`): `"remind me to test today at 8:00 p.m."` extracts `Intent: set_reminder` (99.8%), `NOTE_CONTENT: test`, and `TIME: today at 8 : 00 pm`.
+        * **Autonomous Media & Browser Auto-Play (`FridayAccessibilityService.kt`, `AutomationBridge.kt`, `MediaControlTool.kt`)**:
+          - **Root Cause Diagnosed**: When music was played, `MediaControlTool.kt` opened YouTube Music or YouTube in Brave/browser. Mobile web browsers enforce strict autoplay policies blocking audio without user gesture, leaving the player paused. Furthermore, accessibility helpers only looked for `"youtube"` package names, ignoring browsers, and were not triggered for direct video links.
+          - **Resolution Implemented**:
+            1. Created `postMediaAutoPlay` and `findMediaPlayElement` in `FridayAccessibilityService.kt`: actively monitors browser packages (`com.brave.browser`, `com.android.chrome`) as well as native media apps (`com.google.android.youtube`, `com.google.android.apps.youtube.music`, `com.spotify.music`).
+            2. Automatically detects Play/Resume controls via contentDescription, text, viewId (`play_pause`, `play_button`, `play-pause-button`), and aria-labels, executing dual click (`ACTION_CLICK` + hardware `dispatchTap`).
+            3. Added browser video player viewport tap fallback (X = 50%, Y = 32%) after 2.5s page load delay if explicit play buttons are not exposed in DOM.
+            4. Dispatches secondary `KeyEvent.KEYCODE_MEDIA_PLAY` after 2.2s delay to start media sessions.
+            5. Exposed `AutomationBridge.triggerMediaAutoPlay` and hooked it into `playOnYouTubeMusic` and `searchOnYouTube`.
+        * **Conversational Fallback & Multi-Tier Online Web Search (`AgentCore.kt`, `WebSearchTool.kt`)**:
+          - **Root Cause Diagnosed**: `AgentCore.kt` restricted web search fallback to a narrow 10-phrase whitelist (`what is`, `how to`, `search`, etc.). Unmatched general queries ("capital of france", "define photosynthesis", "score of match") immediately dead-ended with `"I'm running in offline assistant mode, but the local brain (Qwen GGUF) is not loaded..."`. Additionally, `WebSearchTool.kt` only checked deprecated `AbstractText` in DuckDuckGo, failing to retrieve and speak direct answers.
+          - **Resolution Implemented**:
+            1. In `AgentCore.kt`, routed all conversational fallbacks (when local LLM is not loaded or fails) directly to `WebSearchTool.kt` to speak real answers.
+            2. Upgraded `WebSearchTool.kt` with a 4-tier answer extraction pipeline:
+               - **Tier 1 (DDG Instant Answer API)**: Extracts `Answer`, `AbstractText`, and `RelatedTopics` text.
+               - **Tier 2 (Wikipedia Search & Summary REST API)**: Queries Wikipedia search API for the best topic title and fetches 1-2 sentence encyclopedic summaries from `https://en.wikipedia.org/api/rest_v1/page/summary/{title}` with citation scrubbing.
+               - **Tier 3 (DuckDuckGo Lite Organic Snippet)**: Extracts search snippet directly from `https://lite.duckduckgo.com/lite/`.
+               - **Tier 4 (Browser Fallback)**: Opens Google in browser with concise voice response: `"I've searched Google for '$query'."`
+            3. Verified via Python test harness (`scripts/test_web_search.py`): queries across geography, science, biographies, and definitions ("capital of france", "who is elon musk", "what is photosynthesis", "define gravity") successfully return clean direct answers.
+        * **Compilation & Build**: Verified via `./gradlew compileDebugKotlin` (BUILD SUCCESSFUL in 57s).
 
 
 

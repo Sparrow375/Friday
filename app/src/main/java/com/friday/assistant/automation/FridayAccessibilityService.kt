@@ -525,27 +525,70 @@ class FridayAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Tries to find and click the first video in YouTube search results.
+     * Searches for Play / Resume controls across browser webpages and media apps.
      */
-    fun postYouTubeAutoPlay(query: String, timeoutMs: Long = 7000L, callback: (Boolean) -> Unit) {
+    private fun findMediaPlayElement(root: AccessibilityNodeInfo, isBrowser: Boolean): AccessibilityNodeInfo? {
+        val playKeywords = listOf("play", "play video", "play track", "play music", "resume", "play/pause", "start")
+        for (kw in playKeywords) {
+            val byText = root.findAccessibilityNodeInfosByText(kw)
+            if (!byText.isNullOrEmpty()) {
+                for (node in byText) {
+                    val cd = node.contentDescription?.toString()?.trim()?.lowercase() ?: ""
+                    val txt = node.text?.toString()?.trim()?.lowercase() ?: ""
+                    if (cd == kw || txt == kw || cd.startsWith("play ") || txt.startsWith("play ")) {
+                        return findClickableNode(node) ?: node
+                    }
+                }
+            }
+        }
+
+        val playIds = listOf("play_pause", "play-pause", "play_button", "playbutton", "btn_play", "player_control_play", "play-pause-button")
+        val byId = walkTree(root) { node ->
+            val rid = node.viewIdResourceName?.lowercase() ?: ""
+            playIds.any { rid.contains(it) } && (node.isClickable || node.parent?.isClickable == true)
+        }
+        if (byId != null) return findClickableNode(byId) ?: byId
+
+        if (isBrowser) {
+            val browserPlay = walkTree(root) { node ->
+                val cd = node.contentDescription?.toString()?.lowercase() ?: ""
+                (cd.contains("play") && !cd.contains("playlist") && !cd.contains("player")) &&
+                    (node.isClickable || node.parent?.isClickable == true)
+            }
+            if (browserPlay != null) return findClickableNode(browserPlay) ?: browserPlay
+        }
+
+        return null
+    }
+
+    /**
+     * Unified media auto-play helper: detects browser or media apps and triggers playback autonomously.
+     */
+    fun postMediaAutoPlay(query: String = "", timeoutMs: Long = 8000L, callback: (Boolean) -> Unit) {
         Thread {
             val deadline = System.currentTimeMillis() + timeoutMs
             var success = false
+            var attemptedCenterTap = false
 
             while (System.currentTimeMillis() < deadline) {
                 try {
                     val root = rootInActiveWindow
                     if (root != null) {
                         val pkg = root.packageName?.toString() ?: ""
-                        if (pkg.contains("youtube", ignoreCase = true)) {
-                            val videoNode = findYouTubeVideoElement(root, query)
-                            if (videoNode != null) {
-                                val rect = android.graphics.Rect()
-                                videoNode.getBoundsInScreen(rect)
+                        val isBrowser = pkg.contains("browser", ignoreCase = true) ||
+                            pkg.contains("chrome", ignoreCase = true)
+                        val isYouTube = pkg.contains("youtube", ignoreCase = true)
+                        val isSpotify = pkg.contains("spotify", ignoreCase = true)
 
+                        if (isBrowser || isYouTube || isSpotify) {
+                            // 1. Check for Play / Resume button
+                            val playNode = findMediaPlayElement(root, isBrowser)
+                            if (playNode != null) {
+                                val rect = android.graphics.Rect()
+                                playNode.getBoundsInScreen(rect)
                                 val latch = java.util.concurrent.CountDownLatch(1)
                                 mainHandler.post {
-                                    val target = findClickableNode(videoNode) ?: videoNode
+                                    val target = findClickableNode(playNode) ?: playNode
                                     target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                                     if (rect.width() > 0 && rect.height() > 0) {
                                         dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat())
@@ -554,18 +597,60 @@ class FridayAccessibilityService : AccessibilityService() {
                                 }
                                 latch.await(600, java.util.concurrent.TimeUnit.MILLISECONDS)
                                 success = true
-                                Log.i(TAG, "YouTube video auto-play clicked successfully at $rect")
+                                Log.i(TAG, "Media auto-play clicked play element at $rect in $pkg")
                                 break
+                            }
+
+                            // 2. If YouTube app on search results, click first video
+                            if (isYouTube && query.isNotEmpty()) {
+                                val videoNode = findYouTubeVideoElement(root, query)
+                                if (videoNode != null) {
+                                    val rect = android.graphics.Rect()
+                                    videoNode.getBoundsInScreen(rect)
+                                    val latch = java.util.concurrent.CountDownLatch(1)
+                                    mainHandler.post {
+                                        val target = findClickableNode(videoNode) ?: videoNode
+                                        target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                                        if (rect.width() > 0 && rect.height() > 0) {
+                                            dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat())
+                                        }
+                                        latch.countDown()
+                                    }
+                                    latch.await(600, java.util.concurrent.TimeUnit.MILLISECONDS)
+                                    success = true
+                                    Log.i(TAG, "Media auto-play clicked YouTube video at $rect")
+                                    break
+                                }
+                            }
+
+                            // 3. Fallback for browser: tap center of video player area after loading
+                            val elapsed = System.currentTimeMillis() - (deadline - timeoutMs)
+                            if (isBrowser && elapsed > 2500L && !attemptedCenterTap) {
+                                attemptedCenterTap = true
+                                val metrics = resources.displayMetrics
+                                val tapX = metrics.widthPixels * 0.5f
+                                val tapY = metrics.heightPixels * 0.32f
+                                mainHandler.post {
+                                    dispatchTap(tapX, tapY)
+                                }
+                                Log.i(TAG, "Media auto-play fallback tap at ($tapX, $tapY) for browser media")
                             }
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "postYouTubeAutoPlay poll error", e)
+                    Log.e(TAG, "postMediaAutoPlay poll error", e)
                 }
-                Thread.sleep(200)
+                Thread.sleep(250)
             }
             callback(success)
         }.start()
+    }
+
+    /**
+     * Tries to find and click the first video in YouTube search results.
+     */
+    fun postYouTubeAutoPlay(query: String, timeoutMs: Long = 7000L, callback: (Boolean) -> Unit) {
+        postMediaAutoPlay(query, timeoutMs, callback)
     }
 
     private fun isShortsNode(node: AccessibilityNodeInfo): Boolean {

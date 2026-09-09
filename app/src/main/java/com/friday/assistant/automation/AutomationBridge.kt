@@ -77,18 +77,25 @@ object AutomationBridge {
     }
 
     /**
-     * Asks the accessibility service to auto-play top video result in YouTube.
+     * Asks the accessibility service to auto-play media in active window (YouTube, browser, Spotify).
      */
-    fun triggerYouTubeAutoPlay(query: String): Boolean {
+    fun triggerMediaAutoPlay(query: String = ""): Boolean {
         val svc = service ?: return false
         val result = AtomicBoolean(false)
         val latch = CountDownLatch(1)
-        svc.postYouTubeAutoPlay(query, timeoutMs = 7000L) { ok ->
+        svc.postMediaAutoPlay(query, timeoutMs = 8000L) { ok ->
             result.set(ok)
             latch.countDown()
         }
-        latch.await(8, TimeUnit.SECONDS)
+        latch.await(9, TimeUnit.SECONDS)
         return result.get()
+    }
+
+    /**
+     * Asks the accessibility service to auto-play top video result in YouTube.
+     */
+    fun triggerYouTubeAutoPlay(query: String): Boolean {
+        return triggerMediaAutoPlay(query)
     }
 
     /**
