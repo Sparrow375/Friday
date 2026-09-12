@@ -1204,11 +1204,9 @@ class AgentCore(
             }
             if (searchPhrase.isEmpty()) searchPhrase = preprocessed.originalText
             _agentStatusFlow.emit("Searching Google...")
-            val searchTool = ToolRegistry.get("web_search")
-            if (searchTool != null) {
-                val result = searchTool.execute(JsonObject().apply { addProperty("query", searchPhrase) })
-                if (result.success) return fast(result.data)
-            }
+            // Explicit search commands open Google directly in the browser —
+            // DO NOT call WebSearchTool here, as it returns irrelevant Wikipedia
+            // definitions instead of opening the actual search page.
             return try {
                 val intent = Intent(Intent.ACTION_VIEW).apply {
                     data = Uri.parse("https://www.google.com/search?q=" + java.net.URLEncoder.encode(searchPhrase, "UTF-8"))

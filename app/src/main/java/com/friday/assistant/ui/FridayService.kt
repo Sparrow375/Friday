@@ -8,6 +8,7 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
+import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -110,7 +111,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         ToolRegistrar.registerAll(this, FridayApplication.memoryManager)
 
         // 3. Setup TTS
-        tts = TextToSpeech(this, this)
+        tts = TextToSpeech(applicationContext, this)
 
         // 4. Setup Speech to Text Helper
         speechToTextHelper = SpeechToTextHelper(
@@ -389,14 +390,19 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         val response = queryResult.message
 
         if (queryResult.isFastTool) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "Fast tool result received (${response.length} chars): ${response.take(100)}")
             val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
             val confirmTools = prefs.getBoolean("voice_confirm_tools", true)
             if (confirmTools && response.isNotBlank()) {
-                // Speak the brief confirmation then auto-dismiss
+                // Speak the confirmation/result then auto-dismiss
+                com.friday.assistant.core.FridayLogger.d(TAG, "Speaking fast tool response via TTS")
                 speakResponse(response)
-            } else {
-                // No TTS — show result on overlay briefly then dismiss immediately
+            } else if (response.isNotBlank()) {
+                // voice_confirm_tools is off — show result on overlay without TTS
+                com.friday.assistant.core.FridayLogger.d(TAG, "voice_confirm_tools=false, showing result silently")
                 overlayManager?.updateState(PipelineState.IDLE, response, trans = query, resp = response)
+                transitionToState(PipelineState.IDLE, responseText = response, transcriptText = query)
+            } else {
                 transitionToState(PipelineState.IDLE, responseText = response, transcriptText = query)
             }
             return
@@ -434,6 +440,9 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         var cleaned = text.replace("(?i)source\\s*link:\\s*https?://\\S+".toRegex(), "")
         cleaned = cleaned.replace("(?i)source:\\s*https?://\\S+".toRegex(), "")
         cleaned = cleaned.replace("https?://\\S+".toRegex(), "")
+        cleaned = cleaned.replace(Regex("[*#_`~]"), "") // Strip markdown formatting symbols
+        cleaned = cleaned.replace(Regex("\\[(.*?)\\]\\(.*?\\)"), "$1") // Strip markdown links
+        cleaned = cleaned.replace(Regex("\\s+"), " ")
         return cleaned.trim()
     }
 
@@ -446,13 +455,17 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         val textToSpeak = cleanTextForTts(cleanedChunk)
         if (textToSpeak.isEmpty()) return
 
+        val params = Bundle().apply {
+            putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+        }
+
         val result = if (isFirst) {
             transitionToState(PipelineState.SPEAKING, responseText = fullResponseText)
-            requestAudioFocus(exclusive = true)  // Full exclusive focus while TTS is speaking
-            tts?.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, "${UTTERANCE_ID}_0")
+            requestAudioFocus(exclusive = false)
+            tts?.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, params, "${UTTERANCE_ID}_0")
         } else {
             overlayManager?.updateState(PipelineState.SPEAKING, "Speaking...", resp = fullResponseText)
-            tts?.speak(textToSpeak, TextToSpeech.QUEUE_ADD, null, "${UTTERANCE_ID}_${System.currentTimeMillis()}")
+            tts?.speak(textToSpeak, TextToSpeech.QUEUE_ADD, params, "${UTTERANCE_ID}_${System.currentTimeMillis()}")
         }
 
         if (result == TextToSpeech.ERROR) {
@@ -467,15 +480,23 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
     private fun speakResponse(response: String) {
         if (!isTtsInitialized || tts == null) {
-            com.friday.assistant.core.FridayLogger.e(TAG, "TTS not initialized")
+            com.friday.assistant.core.FridayLogger.e(TAG, "TTS not initialized (isTtsInitialized=$isTtsInitialized, tts=$tts)")
             transitionToState(PipelineState.IDLE, responseText = response)
             return
         }
 
         transitionToState(PipelineState.SPEAKING, responseText = response)
-        requestAudioFocus(exclusive = true)
+        requestAudioFocus(exclusive = false)
         val textToSpeak = cleanTextForTts(response)
-        val result = tts?.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID)
+        if (textToSpeak.isBlank()) {
+            transitionToState(PipelineState.IDLE, responseText = response)
+            return
+        }
+        val params = Bundle().apply {
+            putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+        }
+        com.friday.assistant.core.FridayLogger.i(TAG, "Speaking via TTS (${textToSpeak.length} chars): ${textToSpeak.take(80)}")
+        val result = tts?.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, params, UTTERANCE_ID)
 
         if (result == TextToSpeech.ERROR) {
             com.friday.assistant.core.FridayLogger.e(TAG, "tts.speak returned ERROR in speakResponse")
@@ -517,17 +538,10 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 )
                 .setAcceptsDelayedFocusGain(false)
                 .setOnAudioFocusChangeListener { focusChange ->
-                    // Only stop TTS if we lose focus while actively speaking.
-                    // Do NOT transition to IDLE on general focus loss — that creates a loop with media apps.
-                    if (focusChange == AudioManager.AUDIOFOCUS_LOSS && pipelineState.value == PipelineState.SPEAKING) {
-                        com.friday.assistant.core.FridayLogger.d(TAG, "Audio focus lost during TTS — stopping speech")
-                        serviceScope.launch {
-                            tts?.stop()
-                            transitionToState(PipelineState.IDLE)
-                        }
-                    } else {
-                        com.friday.assistant.core.FridayLogger.d(TAG, "Audio focus change: $focusChange (state=${pipelineState.value}) — ignoring")
-                    }
+                    com.friday.assistant.core.FridayLogger.d(TAG, "Audio focus change: $focusChange (state=${pipelineState.value})")
+                    // Do NOT kill TTS on audio focus loss — the TTS engine itself manages its audio track,
+                    // and on many devices (e.g. Samsung One UI) the TTS engine's track triggers a transient
+                    // focus notification to our listener.
                 }
                 .build()
             val result = audioManager.requestAudioFocus(req)
@@ -554,14 +568,26 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
-            tts?.language = Locale.US
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                val audioAttributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+                tts?.setAudioAttributes(audioAttributes)
+            }
+            var langResult = tts?.setLanguage(Locale.US)
+            if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                com.friday.assistant.core.FridayLogger.w(TAG, "Locale.US not supported/missing data, falling back to default locale")
+                langResult = tts?.setLanguage(Locale.getDefault())
+                com.friday.assistant.core.FridayLogger.i(TAG, "Fallback locale set with result: $langResult")
+            }
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
-                    com.friday.assistant.core.FridayLogger.d(TAG, "TTS speaking started")
+                    com.friday.assistant.core.FridayLogger.d(TAG, "TTS speaking started: $utteranceId")
                 }
 
                 override fun onDone(utteranceId: String?) {
-                    com.friday.assistant.core.FridayLogger.d(TAG, "TTS speaking finished")
+                    com.friday.assistant.core.FridayLogger.d(TAG, "TTS speaking finished: $utteranceId")
                     serviceScope.launch {
                         transitionToState(PipelineState.IDLE)
                     }
@@ -569,7 +595,14 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
                 @Deprecated("Deprecated in Java")
                 override fun onError(utteranceId: String?) {
-                    com.friday.assistant.core.FridayLogger.e(TAG, "TTS speaking error")
+                    com.friday.assistant.core.FridayLogger.e(TAG, "TTS speaking error: $utteranceId")
+                    serviceScope.launch {
+                        transitionToState(PipelineState.IDLE)
+                    }
+                }
+
+                override fun onError(utteranceId: String?, errorCode: Int) {
+                    com.friday.assistant.core.FridayLogger.e(TAG, "TTS speaking error: $utteranceId, errorCode=$errorCode")
                     serviceScope.launch {
                         transitionToState(PipelineState.IDLE)
                     }
@@ -578,7 +611,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             isTtsInitialized = true
             com.friday.assistant.core.FridayLogger.i(TAG, "TTS Initialized successfully")
         } else {
-            com.friday.assistant.core.FridayLogger.e(TAG, "TTS Initialization failed")
+            com.friday.assistant.core.FridayLogger.e(TAG, "TTS Initialization failed with status=$status")
         }
     }
 

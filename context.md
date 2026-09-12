@@ -381,6 +381,28 @@ The project uses a clean package namespace `com.friday.assistant`:
                - **Tier 4 (Browser Fallback)**: Opens Google in browser with concise voice response: `"I've searched Google for '$query'."`
             3. Verified via Python test harness (`scripts/test_web_search.py`): queries across geography, science, biographies, and definitions ("capital of france", "who is elon musk", "what is photosynthesis", "define gravity") successfully return clean direct answers.
         * **Compilation & Build**: Verified via `./gradlew compileDebugKotlin` (BUILD SUCCESSFUL in 57s).
+      - **Search Routing, Browser Direct Launch & TTS Voice Playback Overhaul (September 2026)**:
+        * **TTS Silence Root Cause & Fix (`FridayService.kt`, `AndroidManifest.xml`)**:
+          - Diagnosed why Friday was silent across all voice queries: `speakResponse()` called `requestAudioFocus(exclusive = true)` immediately before `tts?.speak()`. When Android's internal TextToSpeech engine began audio output, it requested its own audio focus from `AudioManager`. The system triggered `AudioManager.AUDIOFOCUS_LOSS` on `FridayService`'s focus listener, which executed `if (focusChange == AUDIOFOCUS_LOSS) { tts?.stop(); transitionToState(IDLE) }`, terminating speech before a single syllable could play.
+          - Removed `tts?.stop()` on audio focus loss in `requestAudioFocus` so internal TTS engine audio track allocation does not self-terminate.
+          - Initialized `TextToSpeech(applicationContext, this)` using the application context instead of the service context.
+          - Added `<queries><intent><action android:name="android.intent.action.TTS_SERVICE"/></intent></queries>` to `AndroidManifest.xml` for strict Android 11+ (targetSdk 36) TTS service visibility.
+          - Set `AudioAttributes` (`USAGE_ASSISTANT`, `CONTENT_TYPE_SPEECH`) on `TextToSpeech`.
+          - Added dynamic fallback from `Locale.US` to `Locale.getDefault()` if the US English voice pack is missing or unsupported on Samsung/OEM TTS engines.
+          - Implemented modern `onError(utteranceId, errorCode)` on `UtteranceProgressListener`.
+          - Cleaned markdown tokens (`*`, `#`, `_`, `~`, backticks) and URLs in `cleanTextForTts` and passed explicit volume bundle (`KEY_PARAM_VOLUME = 1.0f`).
+        * **Explicit Google Search Direct Execution (`AgentCore.kt`)**:
+          - Root cause: Explicit search commands like "search icc on google" and "search real madrid" triggered `WebSearchTool`, which hit Wikipedia and returned encyclopedic definition blurbs (e.g. ICC disambiguation page or Real Madrid club bio) instead of opening Google search.
+          - In `handleAppsAndNavigation`, streamlined `isSearchGoogle` to extract the search phrase cleanly (stripping prefix and suffix query wrappers) and launch Google Search directly in the user's browser via `Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=..."))` with `fast("Searching Google for '$searchPhrase'.")`.
+          - The agent speaks: "Searching Google for '$searchPhrase'." and displays Google Search with Google's AI Overview on screen.
+        * **Wikipedia Purge & 4-Tier Search Knowledge Pipeline (`WebSearchTool.kt`, `scripts/test_web_search.py`)**:
+          - Completely removed Wikipedia summary lookups to eliminate misleading definition responses (e.g. leaning tower of pizza for recipe queries, disambiguation definitions for acronyms).
+          - Implemented 4-tier pipeline:
+            1. **Tier 1 (Google Snippet Scraping)**: Checks for featured snippets, calculator/conversion elements, and mobile snippets (`scrapeGoogleAnswer`).
+            2. **Tier 2 (DuckDuckGo Instant Answer API)**: Handles calculations, unit conversions, and direct facts (`searchDuckDuckGoInstant`).
+            3. **Tier 3 (DuckDuckGo Lite Organic Search)**: Scrapes clean snippets from `https://lite.duckduckgo.com/lite/` (`searchDuckDuckGoLite`), reliably delivering how-to steps (e.g. homemade pizza recipe) and biographies.
+            4. **Tier 4 (Browser Fallback)**: Opens Google Search directly in the browser (`openBrowserSearch`) so the user can interact with Google's full AI Overview.
+          - Verified via PC test harness (`scripts/test_web_search.py`): 10/12 test queries returned direct concise answers; complex search terms cleanly fell through to browser search.
 
 
 

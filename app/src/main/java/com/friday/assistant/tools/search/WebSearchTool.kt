@@ -46,13 +46,13 @@ class WebSearchTool(private val context: Context) : Tool {
         val query = args.get("query")?.asString ?: return ToolResult(false, "Missing required parameter: query")
         
         return withContext(Dispatchers.IO) {
-            // Tier 1: DuckDuckGo Instant Answer API
+            // Tier 1: Google Featured Snippet / Knowledge Panel scraping
+            scrapeGoogleAnswer(query)?.let { return@withContext ToolResult(true, it) }
+
+            // Tier 2: DuckDuckGo Instant Answer API (good for calculators, conversions, quick facts)
             searchDuckDuckGoInstant(query)?.let { return@withContext ToolResult(true, it) }
 
-            // Tier 2: Wikipedia Search & Summary API
-            searchWikipediaSummary(query)?.let { return@withContext ToolResult(true, it) }
-
-            // Tier 3: DuckDuckGo Lite Organic Search Snippet
+            // Tier 3: DuckDuckGo Lite search snippet (recipes, general questions, definitions)
             searchDuckDuckGoLite(query)?.let { return@withContext ToolResult(true, it) }
 
             // Tier 4: Fallback to opening browser search
@@ -66,13 +66,131 @@ class WebSearchTool(private val context: Context) : Tool {
             .replace("&amp;", "&")
             .replace("&#39;", "'")
             .replace("&nbsp;", " ")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
         val noCitations = noHtml.replace(Regex("\\[[0-9a-zA-Z_\\s-]+\\]"), "")
         val normalized = noCitations.replace(Regex("\\s+"), " ").trim()
         val sentences = normalized.split(Regex("(?<=[.!?])\\s+")).filter { it.isNotBlank() }
-        return if (sentences.size > 2) {
-            "${sentences[0]} ${sentences[1]}"
+        return if (sentences.size > 3) {
+            "${sentences[0]} ${sentences[1]} ${sentences[2]}"
         } else {
             normalized
+        }
+    }
+
+    /**
+     * Scrapes Google search results page for featured snippets, knowledge panels,
+     * and organic snippets. This provides AI Overview-quality answers for general
+     * knowledge queries.
+     */
+    private fun scrapeGoogleAnswer(query: String): String? {
+        return try {
+            val encodedQuery = URLEncoder.encode(query, "UTF-8")
+            val url = URL("https://www.google.com/search?q=$encodedQuery&hl=en")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.connectTimeout = 4000
+            conn.readTimeout = 4000
+            conn.instanceFollowRedirects = true
+            // Mobile User-Agent for cleaner/simpler HTML
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14; SM-S926B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
+            conn.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+            conn.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+            if (conn.responseCode == HttpURLConnection.HTTP_OK) {
+                val reader = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8"))
+                val sb = StringBuilder()
+                var line: String?
+                var bytesRead = 0
+                // Read up to 512KB — featured snippets typically appear in the first 100-300KB
+                while (reader.readLine().also { line = it } != null && bytesRead < 524288) {
+                    sb.append(line).append("\n")
+                    bytesRead += (line?.length ?: 0)
+                }
+                reader.close()
+                conn.disconnect()
+
+                val html = sb.toString()
+
+                // Check for CAPTCHA / consent page
+                if (html.contains("detected unusual traffic") || html.contains("consent.google.com")) {
+                    Log.d(TAG, "Google returned CAPTCHA/consent page, skipping")
+                    return null
+                }
+
+                // Strategy 1: Featured snippet (class="hgKElc" or "IZ6rdc")
+                var match = Regex("""class="hgKElc"[^>]*>(.*?)</(?:span|div)""", RegexOption.DOT_MATCHES_ALL).find(html)
+                if (match != null) {
+                    val text = cleanAnswerText(match.groupValues[1])
+                    if (text.length > 15) {
+                        Log.d(TAG, "Google Featured Snippet found for '$query'")
+                        return text
+                    }
+                }
+
+                // Strategy 2: Knowledge panel description (class="kno-rdesc")
+                match = Regex("""class="kno-rdesc"[^>]*>.*?<span[^>]*>(.*?)</span>""", RegexOption.DOT_MATCHES_ALL).find(html)
+                if (match != null) {
+                    val text = cleanAnswerText(match.groupValues[1])
+                    if (text.length > 15) {
+                        Log.d(TAG, "Google Knowledge Panel found for '$query'")
+                        return text
+                    }
+                }
+
+                // Strategy 3: Calculator / converter / direct answer (data-tts="answers", class="qv3Wpe", or "Z0LcW")
+                match = Regex("""class="(?:qv3Wpe|Z0LcW|XcVN5d)"[^>]*>(.*?)</""", RegexOption.DOT_MATCHES_ALL).find(html)
+                if (match != null) {
+                    val text = cleanAnswerText(match.groupValues[1])
+                    if (text.length > 2) {
+                        Log.d(TAG, "Google Direct Answer found for '$query'")
+                        return text
+                    }
+                }
+
+                // Strategy 4: "About this result" / knowledge fact box ("wDYxhc")
+                match = Regex("""data-attrid="[^"]*"[^>]*class="[^"]*wDYxhc[^"]*"[^>]*>(.*?)</div>""", RegexOption.DOT_MATCHES_ALL).find(html)
+                if (match != null) {
+                    val text = cleanAnswerText(match.groupValues[1])
+                    if (text.length > 20 && !text.contains("People also ask")) {
+                        Log.d(TAG, "Google Knowledge Fact found for '$query'")
+                        return text
+                    }
+                }
+
+                // Strategy 5: BNeawe text snippets (Google's mobile search result CSS class)
+                val bneaweMatches = Regex("""class="BNeawe[^"]*"[^>]*>(.*?)</div>""", RegexOption.DOT_MATCHES_ALL).findAll(html)
+                for (bMatch in bneaweMatches) {
+                    val text = cleanAnswerText(bMatch.groupValues[1])
+                    // Skip short text, URLs, navigation elements, and dates
+                    if (text.length > 40
+                        && !text.startsWith("http")
+                        && !text.contains("Google")
+                        && !text.contains("Sign in")
+                        && !text.contains("Search tools")
+                        && !text.matches(Regex("^[A-Z][a-z]{2} \\d{1,2}, \\d{4}.*"))) {
+                        Log.d(TAG, "Google BNeawe Snippet found for '$query'")
+                        return text
+                    }
+                }
+
+                // Strategy 6: Generic organic result snippet (class="VwiC3b" or "lEBKkf")
+                match = Regex("""class="(?:VwiC3b|lEBKkf)[^"]*"[^>]*>(.*?)</(?:span|div)""", RegexOption.DOT_MATCHES_ALL).find(html)
+                if (match != null) {
+                    val text = cleanAnswerText(match.groupValues[1])
+                    if (text.length > 30) {
+                        Log.d(TAG, "Google Organic Snippet found for '$query'")
+                        return text
+                    }
+                }
+            } else {
+                Log.d(TAG, "Google search returned HTTP ${conn.responseCode}")
+                conn.disconnect()
+            }
+            null
+        } catch (e: Exception) {
+            Log.d(TAG, "Google scraping failed: ${e.message}")
+            null
         }
     }
 
@@ -96,93 +214,18 @@ class WebSearchTool(private val context: Context) : Tool {
                 reader.close()
 
                 val json = JsonParser.parseString(sb.toString()).asJsonObject
+
+                // DDG "Answer" field is great for calculators, conversions, and quick facts
                 val ans = json.get("Answer")?.asString?.trim() ?: ""
                 if (ans.isNotEmpty()) return cleanAnswerText(ans)
 
+                // DDG "AbstractText" provides brief definitions (only use if substantial)
                 val abstractText = json.get("AbstractText")?.asString?.trim() ?: ""
-                if (abstractText.isNotEmpty()) return cleanAnswerText(abstractText)
-
-                val related = json.getAsJsonArray("RelatedTopics")
-                if (related != null && related.size() > 0 && related[0].isJsonObject) {
-                    val topicTxt = related[0].asJsonObject.get("Text")?.asString?.trim() ?: ""
-                    if (topicTxt.length > 20) return cleanAnswerText(topicTxt)
-                }
+                if (abstractText.length > 30) return cleanAnswerText(abstractText)
             }
             null
         } catch (e: Exception) {
             Log.d(TAG, "DDG Instant lookup failed: ${e.message}")
-            null
-        }
-    }
-
-    private fun searchWikipediaSummary(query: String): String? {
-        return try {
-            val cleanQuery = query.replace(Regex("(?i)^(?:what is|who is|where is|when is|how is|define|tell me about)\\s+"), "").trim()
-            if (cleanQuery.isEmpty()) return null
-
-            // 1. Search Wikipedia for best page title
-            val searchEncoded = URLEncoder.encode(cleanQuery, "UTF-8")
-            val searchUrl = URL("https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=$searchEncoded&utf8=&format=json&srlimit=1")
-            val searchConn = searchUrl.openConnection() as HttpURLConnection
-            searchConn.requestMethod = "GET"
-            searchConn.connectTimeout = 3000
-            searchConn.readTimeout = 3000
-            searchConn.setRequestProperty("User-Agent", "FridayAssistant/1.0 (contact@friday.ai)")
-
-            var pageTitle: String? = null
-            var snippetFallback: String? = null
-
-            if (searchConn.responseCode == HttpURLConnection.HTTP_OK) {
-                val reader = BufferedReader(InputStreamReader(searchConn.inputStream))
-                val sb = StringBuilder()
-                var line: String?
-                while (reader.readLine().also { line = it } != null) {
-                    sb.append(line)
-                }
-                reader.close()
-
-                val json = JsonParser.parseString(sb.toString()).asJsonObject
-                val searchArr = json.getAsJsonObject("query")?.getAsJsonArray("search")
-                if (searchArr != null && searchArr.size() > 0) {
-                    val first = searchArr[0].asJsonObject
-                    pageTitle = first.get("title")?.asString
-                    snippetFallback = first.get("snippet")?.asString
-                }
-            }
-
-            if (!pageTitle.isNullOrBlank()) {
-                val titleEncoded = URLEncoder.encode(pageTitle, "UTF-8")
-                val summaryUrl = URL("https://en.wikipedia.org/api/rest_v1/page/summary/$titleEncoded")
-                val sumConn = summaryUrl.openConnection() as HttpURLConnection
-                sumConn.requestMethod = "GET"
-                sumConn.connectTimeout = 3000
-                sumConn.readTimeout = 3000
-                sumConn.setRequestProperty("User-Agent", "FridayAssistant/1.0 (contact@friday.ai)")
-
-                if (sumConn.responseCode == HttpURLConnection.HTTP_OK) {
-                    val reader = BufferedReader(InputStreamReader(sumConn.inputStream))
-                    val sb = StringBuilder()
-                    var line: String?
-                    while (reader.readLine().also { line = it } != null) {
-                        sb.append(line)
-                    }
-                    reader.close()
-
-                    val sumJson = JsonParser.parseString(sb.toString()).asJsonObject
-                    val extract = sumJson.get("extract")?.asString?.trim() ?: ""
-                    if (extract.isNotEmpty()) {
-                        return cleanAnswerText(extract)
-                    }
-                }
-            }
-
-            if (!snippetFallback.isNullOrBlank()) {
-                val clean = cleanAnswerText(snippetFallback)
-                if (clean.length > 20) return clean
-            }
-            null
-        } catch (e: Exception) {
-            Log.d(TAG, "Wikipedia summary lookup failed: ${e.message}")
             null
         }
     }
@@ -205,20 +248,22 @@ class WebSearchTool(private val context: Context) : Tool {
             os.close()
 
             if (conn.responseCode == HttpURLConnection.HTTP_OK) {
-                val reader = BufferedReader(InputStreamReader(conn.inputStream))
+                val reader = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8"))
                 val sb = StringBuilder()
                 var line: String?
                 while (reader.readLine().also { line = it } != null) {
-                    sb.append(line)
+                    sb.append(line).append("\n")
                 }
                 reader.close()
 
                 val html = sb.toString()
-                val snippetRegex = Regex("<td class=[\"']result-snippet[\"']>(.*?)</td>")
-                val match = snippetRegex.find(html)
-                if (match != null) {
+                val snippets = Regex("""<td class=['"]result-snippet['"]>(.*?)</td>""", RegexOption.DOT_MATCHES_ALL).findAll(html)
+                for (match in snippets) {
                     val snippet = cleanAnswerText(match.groupValues[1])
-                    if (snippet.length > 15) return snippet
+                    if (snippet.length > 20 && !snippet.startsWith("http")) {
+                        Log.d(TAG, "DDG Lite snippet found for '$query'")
+                        return snippet
+                    }
                 }
             }
             null
