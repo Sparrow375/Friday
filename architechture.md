@@ -62,25 +62,27 @@ graph TD
    - Captures raw 16kHz 16-bit PCM mono audio stream directly from PDM hardware peripheral using DMA.
 2. **Stage 0: Micro-VAD Energy Gating**:
    - Calculates real-time Root-Mean-Square (RMS) amplitude and zero-crossing rate over 32ms frames.
-   - Discards silence and low ambient noise without activating heavy model inference, keeping CPU consumption minimal.
+   - Calibrated speech threshold floor (`MIN_SPEECH_RMS = 60.0f`, `VAD_MULTIPLIER = 1.40f`) filters room noise and babble before activating CNN inference.
 3. **Stage 1: TinyML Wake-Word Engine ("Friday" via `wakeword_model.h`)**:
    - Runs a 1,697-parameter Depthwise Separable CNN on a 1.5-second (24,000 samples @ 16kHz) rolling circular buffer.
    - Extracts 16-band Log-Mel Spectrogram features (512 FFT with Hanning window, 384 hop, 62 frames) with zero dynamic memory allocation.
-   - Pure C++ inference latency is ~3ms on Cortex-M4F @ 64MHz, achieving 97.9% precision and 98% negative rejection against background noise and conversational speech.
+   - Trained on 723 hard negative samples (phonetic confusables like "freeday", "friend", "fire", "frida", "freddy", common command words, and ambient noise).
+   - Multi-tier temporal verification: Requires either a single high-confidence detection (`score >= 0.86`) or two consecutive frames (`score >= 0.72` within 160ms) to trigger, eliminating single-frame transient false alarms.
+   - Enforces a 3.5s cooldown after wake-word detection or audio streaming to prevent recursive self-triggering loops.
 4. **Stage 2: BLE GATT Server (`bluefruit.h` via `Bluefruit52Lib`)**:
-   - Built on the Nordic SoftDevice S140 stack bundled directly with Seeed nRF52 Boards (zero external library downloads needed).
+   - Built on the Nordic SoftDevice S140 stack bundled directly with Seeed nRF52 Boards.
    - **State Characteristic UUID**: `1F81DA01-B5A3-F393-E0A9-E50E24DCCA9E` (Notify / Read)
      - `0x01`: Wake-Word Trigger detected.
      - `0x02`: Pendant is currently recording speech.
      - `0x00`: Pendant in Idle / Listening state.
    - **Command Characteristic UUID**: `1F81DA02-B5A3-F393-E0A9-E50E24DCCA9E` (Notify / Write)
      - `0x00`: Direct plain text command (if on-device STT is available).
-     - `0x01`: Audio Header (`totalChunks`, `totalBytes`, `sampleRate`).
-     - `0x02`: Audio Chunk (`chunkIndex` + IMA-ADPCM compressed payload).
-     - `0x03`: Audio End transmission sentinel.
+     - `0x01`: Audio Header (`totalChunks`, `totalBytes`, `sampleRate`) with 5x retry.
+     - `0x02`: Audio Chunk (`chunkIndex` + IMA-ADPCM compressed payload) with flow control (preserves un-notified packets on TX buffer backpressure).
+     - `0x03`: Audio End transmission sentinel with 5x retry.
 5. **Stage 3: Fast Audio Compression (IMA-ADPCM)**:
    - Compresses 16-bit linear PCM down to 4 bits per sample (4:1 compression ratio).
-   - 1 second of 16kHz audio = 8,000 bytes (easily transmitted in ~16 BLE packets of 500 bytes over high MTU).
+   - 1 second of 16kHz audio = 8,000 bytes. Zero-loss transmission ensures pristine audio fidelity for phone speech-to-text.
 
 ---
 
@@ -103,6 +105,9 @@ The Android application is organized under package namespace `com.friday.assista
   - System-bound `VoiceInteractionService` & `AccessibilityService` running continuously.
   - Manages assistant lifecycle: `IDLE` -> `LISTENING` -> `THINKING` -> `SPEAKING`.
   - Coordinates microphone ownership, audio focus (`AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK` during listening, `EXCLUSIVE` during TTS).
+  - Wearable activation routing: Does not activate phone microphone on wearable trigger; instead holds for BLE audio stream from the chip.
+  - Anti-recursion cooldown: Enforces 3.0s cooldown and state validation to reject echo self-triggers.
+  - Transcript Sanitizer (`cleanAndValidateTranscript`): Strips Whisper hallucination tokens (`[BLANK_AUDIO]`, `(music)`, `Thank you.`), rejects replacement characters (`\uFFFD`, `ï¿½`, `%08`), and requires >= 70% alphanumeric content before routing queries to NLU or web search.
 - **`OverlayManager.kt` & Compose Overlays**:
   - WindowManager `TYPE_ACCESSIBILITY_OVERLAY` rendering glowing glassmorphic bubble, interactive typewriter text, source chips, and real-time audio waveforms.
   - Non-intrusive: top-anchored, passes through background touch events unless text input is requested.
@@ -111,9 +116,11 @@ The Android application is organized under package namespace `com.friday.assista
 
 ### 4.3 Audio & Speech Recognition Pipeline (`audio/`)
 - **`SpeechToTextHelper.kt`**:
-  - Reusable, low-latency Android `SpeechRecognizer` wrapper providing real-time partial word updates and RMS amplitude callbacks.
+  - Reusable, low-latency Android `SpeechRecognizer` wrapper providing real-time partial word updates and RMS amplitude callbacks for phone-side interactions (volume key gestures, digital assistant power button).
 - **`WhisperEngine.kt`**:
   - JNI bridge to `whisper.cpp` capable of offline transcription of raw audio buffers received from the BLE pendant.
+  - Configured with hallucination suppression parameters (`suppress_blank = true`, `suppress_nst = true`, `no_context = true`, `single_segment = true`, `temperature = 0.0f`).
+  - Gated by audio RMS energy check (`rms >= 0.008f`, `maxPeak >= 0.035f`) to eliminate transcription of silence/noise.
 - **`SpeakerVerifier.kt`**:
   - ONNX ECAPA-TDNN embedding extractor to authenticate the user's voiceprint.
 

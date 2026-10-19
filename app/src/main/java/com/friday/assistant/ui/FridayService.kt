@@ -340,12 +340,20 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     }
 
     private suspend fun executeAgentQuery(query: String) {
+        val cleanQuery = cleanAndValidateTranscript(query)
+        if (cleanQuery.isBlank()) {
+            com.friday.assistant.core.FridayLogger.w(TAG, "executeAgentQuery rejected invalid/garbled query: '$query'")
+            transitionToState(PipelineState.IDLE)
+            overlayManager?.dismiss()
+            return
+        }
+
         var responseAccumulator = ""
         var ttsBuffer = ""
         var isFirstChunk = true
         var lastUiUpdateMs = 0L
 
-        val queryResult = agentCore.processQuery(query) { token ->
+        val queryResult = agentCore.processQuery(cleanQuery) { token ->
             serviceScope.launch {
                 if (pipelineState.value != PipelineState.THINKING && pipelineState.value != PipelineState.SPEAKING) {
                     transitionToState(PipelineState.THINKING, statusMessage = "Thinking...", transcriptText = query)
@@ -644,11 +652,24 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         bleWearableManager?.setEnabled(shouldEnable)
     }
 
-    private fun onWearableWakeWordTriggered() {
-        val enabled = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("assistant_enabled", true)
-        if (!enabled) return
+    private var lastWearableWakeTriggerMs = 0L
 
-        com.friday.assistant.core.FridayLogger.i(TAG, "Wearable wake-word detected — waking screen and showing overlay")
+    private fun onWearableWakeWordTriggered() {
+        val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("assistant_enabled", true)) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastWearableWakeTriggerMs < 3000L) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "Ignoring wearable wake trigger — inside 3s cooldown (${now - lastWearableWakeTriggerMs}ms)")
+            return
+        }
+        if (pipelineState.value == PipelineState.THINKING || pipelineState.value == PipelineState.SPEAKING) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "Ignoring wearable wake trigger while assistant is ${pipelineState.value}")
+            return
+        }
+        lastWearableWakeTriggerMs = now
+
+        com.friday.assistant.core.FridayLogger.i(TAG, "Wearable wake-word detected — waking screen and showing overlay for pendant speech")
         serviceScope.launch {
             if (pipelineState.value == PipelineState.SPEAKING) {
                 try { tts?.stop() } catch (e: Exception) { Log.e(TAG, "Error stopping TTS", e) }
@@ -656,37 +677,65 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             overlayManager?.show()
             transitionToState(PipelineState.LISTENING, statusMessage = "Listening to Pendant...")
 
-            // Dual-mode capture: start phone STT immediately so speech is captured with zero delay.
-            // If the pendant streams audio over BLE, onWearableAudioCommandReceived will process the BLE audio stream.
-            speechToTextHelper.startListening()
+            // Voice is taken directly FROM the CHIP over BLE.
+            // Do NOT start phone SpeechRecognizer microphone so phone mic does not compete.
         }
     }
 
     private fun onWearableAudioCommandReceived(audioSamples: FloatArray) {
         serviceScope.launch {
-            speechToTextHelper.onIdle() // Hand over from phone mic to pendant audio stream
+            if (audioSamples.isEmpty()) {
+                com.friday.assistant.core.FridayLogger.w(TAG, "Received empty pendant audio buffer")
+                transitionToState(PipelineState.IDLE)
+                return@launch
+            }
+
+            // 1. Calculate RMS energy & peak amplitude to gate out silence / room murmur
+            var sumSq = 0.0
+            var maxPeak = 0.0f
+            for (s in audioSamples) {
+                val abs = kotlin.math.abs(s)
+                if (abs > maxPeak) maxPeak = abs
+                sumSq += (s * s)
+            }
+            val rms = kotlin.math.sqrt(sumSq / audioSamples.size).toFloat()
+            com.friday.assistant.core.FridayLogger.i(TAG, "Received pendant audio: ${audioSamples.size} samples (${audioSamples.size / 16000.0f}s), RMS: $rms, MaxPeak: $maxPeak")
+
+            // Require minimal speech energy — prevents transcribing silence which causes Whisper hallucinations
+            if (rms < 0.008f || maxPeak < 0.035f) {
+                com.friday.assistant.core.FridayLogger.w(TAG, "Pendant audio is below speech threshold (RMS=$rms, Peak=$maxPeak) — ignoring silence")
+                overlayManager?.updateState(PipelineState.IDLE, "No speech detected")
+                kotlinx.coroutines.delay(1200)
+                transitionToState(PipelineState.IDLE)
+                overlayManager?.dismiss()
+                return@launch
+            }
+
             transitionToState(PipelineState.THINKING, statusMessage = "Processing pendant speech...")
             val whisperEngine = FridayApplication.whisperEngine
             if (!whisperEngine.isModelLoaded()) {
                 val whisperPath = modelManager.getWhisperModelPath()
-                if (whisperPath != null && java.io.File(whisperPath).exists()) {
+                if (java.io.File(whisperPath).exists()) {
                     whisperEngine.loadModel(whisperPath)
                 }
             }
 
-            val transcribed = if (whisperEngine.isModelLoaded()) {
+            val rawTranscribed = if (whisperEngine.isModelLoaded()) {
                 whisperEngine.transcribe(audioSamples).trim()
             } else {
                 ""
             }
 
-            if (transcribed.isNotBlank()) {
-                com.friday.assistant.core.FridayLogger.i(TAG, "Pendant speech transcribed: '$transcribed'")
-                executeAgentQuery(transcribed)
+            // 2. Clean and validate transcript against Whisper hallucinations & binary corruption
+            val cleanTranscribed = cleanAndValidateTranscript(rawTranscribed)
+
+            if (cleanTranscribed.isNotBlank()) {
+                com.friday.assistant.core.FridayLogger.i(TAG, "Pendant speech cleanly transcribed: '$cleanTranscribed'")
+                executeAgentQuery(cleanTranscribed)
             } else {
-                com.friday.assistant.core.FridayLogger.w(TAG, "Pendant audio transcription was blank")
-                overlayManager?.updateState(PipelineState.IDLE, "Could not recognize pendant speech")
-                kotlinx.coroutines.delay(2000)
+                com.friday.assistant.core.FridayLogger.w(TAG, "Pendant transcription was invalid or hallucinated: '$rawTranscribed'")
+                overlayManager?.updateState(PipelineState.IDLE, "Could not understand pendant speech")
+                kotlinx.coroutines.delay(1500)
                 transitionToState(PipelineState.IDLE)
                 overlayManager?.dismiss()
             }
@@ -694,12 +743,36 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     }
 
     private fun onWearableTextCommandReceived(text: String) {
-        if (text.isNotBlank()) {
+        val clean = cleanAndValidateTranscript(text)
+        if (clean.isNotBlank()) {
             serviceScope.launch {
                 overlayManager?.show()
-                executeAgentQuery(text)
+                executeAgentQuery(clean)
             }
         }
+    }
+
+    private fun cleanAndValidateTranscript(raw: String): String {
+        var text = raw.trim()
+        // Strip Whisper bracketed tokens e.g. [BLANK_AUDIO], (music), [applause]
+        text = text.replace(Regex("\\[.*?\\]"), "").replace(Regex("\\(.*?\\)"), "").trim()
+        // Reject strings containing replacement characters (\uFFFD or ï¿½) or control codes like %08
+        if (text.contains("\uFFFD") || text.contains("ï¿½") || text.contains("%08") || text.contains("\\x")) return ""
+        // Must have at least 2 characters and contain at least one ASCII letter
+        if (text.length < 2 || !text.any { it.isLetter() }) return ""
+
+        val lower = text.lowercase()
+        val hallucinations = listOf(
+            "thank you.", "thank you", "thanks for watching", "subtitles by",
+            "you", "bye.", "bye", "amara.org", "watching", "subscribe"
+        )
+        if (hallucinations.any { lower == it || lower.startsWith(it) }) return ""
+
+        // Alphanumeric ratio check (guards against garbled Unicode symbol trains)
+        val alphaCount = text.count { it.isLetterOrDigit() || it.isWhitespace() }
+        if (alphaCount.toFloat() / text.length < 0.70f) return ""
+
+        return text
     }
 
     fun showOverlay() {

@@ -478,20 +478,20 @@ def main():
     all_specs = []
     all_labels = []
 
-    # Positives + 8x augmentations
+    # Positives + 14x augmentations
     for p in raw_pos:
         all_specs.append(extract_log_mel_spectrogram(p))
         all_labels.append(1.0)
-        for _ in range(8):
+        for _ in range(14):
             aug = augment_audio(p, noise_pool)
             all_specs.append(extract_log_mel_spectrogram(aug))
             all_labels.append(1.0)
 
-    # Negatives + 8x augmentations
+    # Negatives + 2x augmentations
     for n in raw_neg:
         all_specs.append(extract_log_mel_spectrogram(n))
         all_labels.append(0.0)
-        for _ in range(8):
+        for _ in range(2):
             aug = augment_audio(n, noise_pool)
             all_specs.append(extract_log_mel_spectrogram(aug))
             all_labels.append(0.0)
@@ -522,9 +522,9 @@ def main():
     print(f"Model Architecture: TinyWakeWordCnn ({total_params} parameters, ~{total_params * 4 / 1024:.2f} KB)", flush=True)
 
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.003, weight_decay=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=0.002, weight_decay=2e-4)
 
-    epochs = 30
+    epochs = 35
     best_val_acc = 0.0
     best_weights = None
 

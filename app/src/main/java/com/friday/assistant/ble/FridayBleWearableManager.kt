@@ -370,9 +370,13 @@ class FridayBleWearableManager private constructor(private val context: Context)
                     0x00 -> {
                         // Direct text command (e.g., if Pi did ASR locally)
                         val text = String(value, 1, value.size - 1, Charsets.UTF_8).trim()
-                        FridayLogger.i(TAG, "Received direct text command from wearable: '$text'")
-                        mainHandler.post {
-                            onCommandTextReceived?.invoke(text)
+                        if (text.isNotBlank() && !text.contains("\uFFFD") && text.any { it.isLetter() }) {
+                            FridayLogger.i(TAG, "Received direct text command from wearable: '$text'")
+                            mainHandler.post {
+                                onCommandTextReceived?.invoke(text)
+                            }
+                        } else {
+                            FridayLogger.w(TAG, "Ignored invalid/corrupted text packet from wearable (raw size: ${value.size})")
                         }
                     }
 
@@ -402,13 +406,16 @@ class FridayBleWearableManager private constructor(private val context: Context)
                     0x03 -> {
                         // Audio End: 0x03 -> Decode and dispatch!
                         val compressedBytes = audioBufferAccumulator.toByteArray()
+                        audioBufferAccumulator.reset()
                         FridayLogger.i(TAG, "Wearable audio transmission complete: received ${compressedBytes.size} compressed bytes")
 
-                        scope.launch(Dispatchers.Default) {
-                            val decodedSamples = ImaAdpcmDecoder.decode(compressedBytes)
-                            FridayLogger.i(TAG, "Decoded IMA ADPCM -> ${decodedSamples.size} float PCM samples (${decodedSamples.size / 16000.0f}s)")
-                            mainHandler.post {
-                                onCommandAudioReceived?.invoke(decodedSamples)
+                        if (compressedBytes.isNotEmpty()) {
+                            scope.launch(Dispatchers.Default) {
+                                val decodedSamples = ImaAdpcmDecoder.decode(compressedBytes)
+                                FridayLogger.i(TAG, "Decoded IMA ADPCM -> ${decodedSamples.size} float PCM samples (${decodedSamples.size / 16000.0f}s)")
+                                mainHandler.post {
+                                    onCommandAudioReceived?.invoke(decodedSamples)
+                                }
                             }
                         }
                     }

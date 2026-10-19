@@ -77,6 +77,14 @@ Java_com_friday_assistant_core_native_WhisperEngine_transcribeWhisper(JNIEnv *en
     params.print_timestamps = false;
     params.language = "en";
     params.translate = false;
+    params.suppress_blank = true;
+    params.suppress_nst = true;
+    params.no_context = true;
+    params.single_segment = true;
+    params.temperature = 0.0f;
+    params.temperature_inc = 0.0f;
+    params.entropy_thold = 2.4f;
+    params.logprob_thold = -1.0f;
 
     LOGI("Starting Whisper transcription on %d samples", len);
     int ret = whisper_full(ctx, params, samples, len);
@@ -91,10 +99,22 @@ Java_com_friday_assistant_core_native_WhisperEngine_transcribeWhisper(JNIEnv *en
     int n_segments = whisper_full_n_segments(ctx);
     for (int i = 0; i < n_segments; ++i) {
         const char *text = whisper_full_get_segment_text(ctx, i);
-        result += text;
+        if (text != nullptr) {
+            result += text;
+        }
     }
-    LOGI("Transcription finished: %s", result.c_str());
-    return env->NewStringUTF(result.c_str());
+
+    // Strip unprintable control characters (\x00 to \x1F except space/tab/newline)
+    std::string sanitized = "";
+    for (char c : result) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (uc >= 32 || uc == '\n' || uc == '\t') {
+            sanitized += c;
+        }
+    }
+
+    LOGI("Transcription finished: %s", sanitized.c_str());
+    return env->NewStringUTF(sanitized.c_str());
 }
 
 // ==========================================

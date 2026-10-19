@@ -50,11 +50,14 @@ PendantState currentState = STATE_IDLE;
 
 // VAD & Wake-word calibrated parameters
 float backgroundRms = 50.0f;
-const float VAD_MULTIPLIER = 1.30f;
-const float MIN_SPEECH_RMS = 45.0f;
-const float WAKE_CONFIDENCE_THRESHOLD = 0.55f; // Positive avg is 0.89, noise avg is 0.04
+const float VAD_MULTIPLIER = 1.40f;
+const float MIN_SPEECH_RMS = 60.0f;
+const float WAKE_CONFIDENCE_STRICT = 0.86f;   // Instant single-hit trigger
+const float WAKE_CONFIDENCE_MODERATE = 0.72f; // Requires 2 consecutive hits (~160ms)
 unsigned long wakeTriggerTimestamp = 0;
-bool streamAudioOverBle = true; // Set true to stream compressed voice command to phone
+unsigned long wakeCooldownUntil = 0;          // Cooldown to prevent recursive re-triggering
+static int consecutiveWakeHits = 0;
+bool streamAudioOverBle = true; // Stream compressed voice command to phone
 
 // ==================== IMA-ADPCM Encoder ====================
 static const int STEP_TABLE[89] = {
@@ -170,6 +173,11 @@ void onPDMdata() {
 // ==================== Wake-Word Detection ====================
 // Returns true when "Friday" is detected by the on-chip CNN model
 bool checkWakeWord(float currentRms) {
+  // Cooldown guard: prevent self-triggering after wake detection or audio recording
+  if (millis() < wakeCooldownUntil) {
+    return false;
+  }
+
   // Wait until circular buffer has at least 1.5 seconds of live audio
   if (totalSamplesCollected < ROLLING_BUFFER_SIZE) {
     return false;
@@ -180,15 +188,16 @@ bool checkWakeWord(float currentRms) {
   if (speechThreshold < MIN_SPEECH_RMS) speechThreshold = MIN_SPEECH_RMS;
 
   // Hysteresis Voice Activity Detection:
-  // Once voice starts, maintain speech window for at least 16 frames (~250ms) across syllables
+  // Once voice starts, maintain speech window for at least 14 frames (~220ms) across syllables
   if (currentRms >= speechThreshold) {
-    speechActiveFrames = 16;
+    speechActiveFrames = 14;
   } else {
     if (speechActiveFrames > 0) {
       speechActiveFrames--;
     } else {
       // Ambient silence: slowly adapt background noise baseline
       backgroundRms = (backgroundRms * 0.99f) + (currentRms * 0.01f);
+      consecutiveWakeHits = 0;
     }
   }
 
@@ -208,12 +217,26 @@ bool checkWakeWord(float currentRms) {
     Serial.print(F(" | 'Friday' Score: "));
     Serial.println(confidence, 3);
 
-    if (confidence >= WAKE_CONFIDENCE_THRESHOLD) {
+    bool isTrigger = false;
+    if (confidence >= WAKE_CONFIDENCE_STRICT) {
+      isTrigger = true;
+    } else if (confidence >= WAKE_CONFIDENCE_MODERATE) {
+      consecutiveWakeHits++;
+      if (consecutiveWakeHits >= 2) {
+        isTrigger = true;
+      }
+    } else {
+      consecutiveWakeHits = 0;
+    }
+
+    if (isTrigger) {
       Serial.println(F("**************************************************"));
       Serial.print(F(">>> WAKE-WORD DETECTED ('Friday')! Confidence: "));
       Serial.println(confidence, 3);
       Serial.println(F("**************************************************"));
       speechActiveFrames = 0;
+      consecutiveWakeHits = 0;
+      wakeCooldownUntil = millis() + 4000; // 4s cooldown during speech recording and command turnaround
       return true;
     }
   }
@@ -419,7 +442,12 @@ void loop() {
           header[7] = (rate >> 8) & 0xFF;
           header[8] = rate & 0xFF;
 
-          commandCharacteristic.notify(header, sizeof(header));
+          // Retry header up to 5 times to ensure phone central receives stream metadata
+          for (int r = 0; r < 5; r++) {
+            if (commandCharacteristic.notify(header, sizeof(header))) break;
+            delay(5);
+          }
+
           currentState = STATE_RECORDING_VOICE;
           stateCharacteristic.write8((uint8_t)STATE_RECORDING_VOICE);
           stateCharacteristic.notify8((uint8_t)STATE_RECORDING_VOICE);
@@ -431,6 +459,7 @@ void loop() {
           // If not streaming audio, let phone listen via its own mic
           delay(800);
           currentState = STATE_IDLE;
+          wakeCooldownUntil = millis() + 3000;
           stateCharacteristic.write8((uint8_t)STATE_IDLE);
           stateCharacteristic.notify8((uint8_t)STATE_IDLE);
           digitalWrite(LED_GREEN, HIGH);
@@ -452,8 +481,6 @@ void loop() {
         for (int i = 0; i < FRAME_SAMPLES; i++) {
           chunk[i] = rollingBuffer[(streamingReadIdx + i) % ROLLING_BUFFER_SIZE];
         }
-        streamingReadIdx = (streamingReadIdx + FRAME_SAMPLES) % ROLLING_BUFFER_SIZE;
-        availableSamples -= FRAME_SAMPLES;
 
         // Encode 256 samples to 128 ADPCM bytes
         uint8_t adpcmPayload[ADPCM_PAYLOAD_SIZE];
@@ -466,19 +493,31 @@ void loop() {
         packet[2] = chunkIndex & 0xFF;
         memcpy(&packet[3], adpcmPayload, ADPCM_PAYLOAD_SIZE);
 
-        commandCharacteristic.notify(packet, sizeof(packet));
-        chunkIndex++;
+        bool sent = commandCharacteristic.notify(packet, sizeof(packet));
+        if (sent) {
+          chunkIndex++;
+          streamingReadIdx = (streamingReadIdx + FRAME_SAMPLES) % ROLLING_BUFFER_SIZE;
+          availableSamples -= FRAME_SAMPLES;
+        } else {
+          // BLE TX queue full - wait briefly for stack to transmit without dropping packet
+          delay(4);
+          break;
+        }
       }
 
       // Stop recording after 2.5 seconds or 156 chunks
       if (chunkIndex >= 156 || (millis() - recordingStartTime > 2800)) {
-        // Send Audio End packet (0x03)
+        // Send Audio End packet (0x03) with retry
         uint8_t endPacket[1] = { 0x03 };
-        commandCharacteristic.notify(endPacket, 1);
+        for (int r = 0; r < 5; r++) {
+          if (commandCharacteristic.notify(endPacket, 1)) break;
+          delay(5);
+        }
 
         Serial.println(F("Audio streaming complete. Returning to IDLE."));
         chunkIndex = 0;
         currentState = STATE_IDLE;
+        wakeCooldownUntil = millis() + 3500; // 3.5s cooldown after streaming to prevent recursion
         stateCharacteristic.write8((uint8_t)STATE_IDLE);
         stateCharacteristic.notify8((uint8_t)STATE_IDLE);
         digitalWrite(LED_RED, HIGH);
