@@ -25,20 +25,20 @@ BLECharacteristic commandCharacteristic(COMMAND_CHAR_UUID);
 #define FRAME_SAMPLES 256      // 16ms per frame
 #define ADPCM_PAYLOAD_SIZE 128 // 256 samples compressed 4:1 = 128 bytes
 
-short pcmFrame[FRAME_SAMPLES];
-volatile bool frameReady = false;
-
 // Circular buffer for rolling wake-word detection (1.5 seconds = 24000 samples)
 #define ROLLING_BUFFER_SIZE 24000
 short rollingBuffer[ROLLING_BUFFER_SIZE];
-int rollingWriteIdx = 0;
-unsigned long totalSamplesCollected = 0;
-unsigned long totalFramesReceived = 0;
+volatile int rollingWriteIdx = 0;
+volatile unsigned long totalSamplesCollected = 0;
+volatile unsigned long totalFramesReceived = 0;
+volatile float lastCalculatedRms = 0.0f;
+volatile bool newAudioReady = false;
 
+int streamingReadIdx = 0;
 int speechActiveFrames = 0;
 unsigned long lastInferenceTime = 0;
 unsigned long lastHeartbeatTime = 0;
-float lastCalculatedRms = 0.0f;
+unsigned long lastHeartbeatFrames = 0;
 
 // State management
 enum PendantState {
@@ -136,19 +136,40 @@ void encodeFrame(const short* inPcm, uint8_t* outAdpcm, int samples) {
   }
 }
 
-// ==================== PDM Audio Callback ====================
+// ==================== PDM Audio Callback (DMA Interrupt) ====================
 void onPDMdata() {
   int bytesAvailable = PDM.available();
-  if (bytesAvailable > 0) {
-    int bytesToRead = bytesAvailable > (int)sizeof(pcmFrame) ? sizeof(pcmFrame) : bytesAvailable;
-    PDM.read(pcmFrame, bytesToRead);
-    frameReady = true;
+  short tempBuffer[256];
+
+  // Drain all available audio frames from PDM hardware buffer
+  while (bytesAvailable >= 512) {
+    int bytesRead = PDM.read(tempBuffer, 512);
+    if (bytesRead <= 0) break;
+    int samples = bytesRead / sizeof(short);
+
+    long sumSquares = 0;
+    int writeIdx = rollingWriteIdx;
+    for (int i = 0; i < samples; i++) {
+      short sample = tempBuffer[i];
+      sumSquares += ((long)sample * sample);
+      rollingBuffer[writeIdx] = sample;
+      writeIdx = (writeIdx + 1);
+      if (writeIdx >= ROLLING_BUFFER_SIZE) writeIdx = 0;
+    }
+    rollingWriteIdx = writeIdx;
+    totalSamplesCollected += samples;
+    totalFramesReceived++;
+
+    lastCalculatedRms = sqrtf((float)sumSquares / samples);
+    newAudioReady = true;
+
+    bytesAvailable = PDM.available();
   }
 }
 
 // ==================== Wake-Word Detection ====================
 // Returns true when "Friday" is detected by the on-chip CNN model
-bool checkWakeWord(const short* frame, int samples, float currentRms) {
+bool checkWakeWord(float currentRms) {
   // Wait until circular buffer has at least 1.5 seconds of live audio
   if (totalSamplesCollected < ROLLING_BUFFER_SIZE) {
     return false;
@@ -159,9 +180,9 @@ bool checkWakeWord(const short* frame, int samples, float currentRms) {
   if (speechThreshold < MIN_SPEECH_RMS) speechThreshold = MIN_SPEECH_RMS;
 
   // Hysteresis Voice Activity Detection:
-  // Once voice starts, maintain speech window for at least 8 frames (~130ms) across short pauses
+  // Once voice starts, maintain speech window for at least 16 frames (~250ms) across syllables
   if (currentRms >= speechThreshold) {
-    speechActiveFrames = 8;
+    speechActiveFrames = 16;
   } else {
     if (speechActiveFrames > 0) {
       speechActiveFrames--;
@@ -171,12 +192,13 @@ bool checkWakeWord(const short* frame, int samples, float currentRms) {
     }
   }
 
-  // Run TinyML CNN forward pass when speech is active, throttled to every 90ms
-  if (speechActiveFrames > 0 && (millis() - lastInferenceTime >= 90)) {
+  // Run TinyML CNN forward pass when speech is active, throttled to every 80ms
+  if (speechActiveFrames > 0 && (millis() - lastInferenceTime >= 80)) {
     lastInferenceTime = millis();
 
     // Zero-copy circular inference (direct evaluation on rollingBuffer, 0 extra RAM)
-    float confidence = predictWakeWordScoreCircular(rollingBuffer, rollingWriteIdx);
+    int head = rollingWriteIdx;
+    float confidence = predictWakeWordScoreCircular(rollingBuffer, head);
 
     // Live feedback in Serial Monitor
     Serial.print(F("[Speech Active] RMS: "));
@@ -320,14 +342,23 @@ void setup() {
 
 // ==================== Main Loop ====================
 void loop() {
-  // 1. Top-Level Heartbeat every 1.5 seconds (runs even if mic is silent)
+  // 1. Top-Level Heartbeat every 1.5 seconds with exact FPS calculation
   if (millis() - lastHeartbeatTime >= 1500) {
-    lastHeartbeatTime = millis();
+    unsigned long now = millis();
+    unsigned long elapsedMs = now - lastHeartbeatTime;
+    lastHeartbeatTime = now;
+
+    unsigned long framesDelta = totalFramesReceived - lastHeartbeatFrames;
+    lastHeartbeatFrames = totalFramesReceived;
+    float fps = (float)framesDelta * 1000.0f / elapsedMs;
+
     Serial.print(F("[Heartbeat] Up: "));
-    Serial.print(millis() / 1000);
+    Serial.print(now / 1000);
     Serial.print(F("s | Frames: "));
     Serial.print(totalFramesReceived);
-    Serial.print(F(" | Last RMS: "));
+    Serial.print(F(" ("));
+    Serial.print(fps, 1);
+    Serial.print(F(" fps) | RMS: "));
     Serial.print((int)lastCalculatedRms);
     Serial.print(F(" | BG: "));
     Serial.print((int)backgroundRms);
@@ -349,28 +380,13 @@ void loop() {
   }
 
   // 3. Handle incoming audio frames
-  if (frameReady) {
-    frameReady = false;
-    totalFramesReceived++;
-
-    // Calculate RMS volume of this 16ms frame
-    long sumSquares = 0;
-    for (int i = 0; i < FRAME_SAMPLES; i++) {
-      short sample = pcmFrame[i];
-      sumSquares += ((long)sample * sample);
-
-      // Append to circular rolling buffer
-      rollingBuffer[rollingWriteIdx] = sample;
-      rollingWriteIdx = (rollingWriteIdx + 1) % ROLLING_BUFFER_SIZE;
-      totalSamplesCollected++;
-    }
-    float currentRms = sqrt((float)sumSquares / FRAME_SAMPLES);
-    lastCalculatedRms = currentRms;
+  if (newAudioReady) {
+    newAudioReady = false;
 
     // ================= State Machine =================
     if (currentState == STATE_IDLE) {
       // Check for Wake-Word Trigger
-      if (checkWakeWord(pcmFrame, FRAME_SAMPLES, currentRms)) {
+      if (checkWakeWord(lastCalculatedRms)) {
         currentState = STATE_WAKE_DETECTED;
         wakeTriggerTimestamp = millis();
 
@@ -409,6 +425,8 @@ void loop() {
           stateCharacteristic.notify8((uint8_t)STATE_RECORDING_VOICE);
           digitalWrite(LED_GREEN, HIGH);
           digitalWrite(LED_RED, LOW); // Red = Recording
+
+          streamingReadIdx = rollingWriteIdx;
         } else {
           // If not streaming audio, let phone listen via its own mic
           delay(800);
@@ -426,19 +444,31 @@ void loop() {
         recordingStartTime = millis();
       }
 
-      // Encode 256 samples to 128 ADPCM bytes
-      uint8_t adpcmPayload[ADPCM_PAYLOAD_SIZE];
-      encodeFrame(pcmFrame, adpcmPayload, FRAME_SAMPLES);
+      int currentHead = rollingWriteIdx;
+      int availableSamples = (currentHead - streamingReadIdx + ROLLING_BUFFER_SIZE) % ROLLING_BUFFER_SIZE;
 
-      // Construct packet: 0x02 | chunkIdx(2B) | payload(128B) = 131 bytes
-      uint8_t packet[3 + ADPCM_PAYLOAD_SIZE];
-      packet[0] = 0x02; // Audio Chunk
-      packet[1] = (chunkIndex >> 8) & 0xFF;
-      packet[2] = chunkIndex & 0xFF;
-      memcpy(&packet[3], adpcmPayload, ADPCM_PAYLOAD_SIZE);
+      while (availableSamples >= FRAME_SAMPLES && chunkIndex < 156) {
+        short chunk[FRAME_SAMPLES];
+        for (int i = 0; i < FRAME_SAMPLES; i++) {
+          chunk[i] = rollingBuffer[(streamingReadIdx + i) % ROLLING_BUFFER_SIZE];
+        }
+        streamingReadIdx = (streamingReadIdx + FRAME_SAMPLES) % ROLLING_BUFFER_SIZE;
+        availableSamples -= FRAME_SAMPLES;
 
-      commandCharacteristic.notify(packet, sizeof(packet));
-      chunkIndex++;
+        // Encode 256 samples to 128 ADPCM bytes
+        uint8_t adpcmPayload[ADPCM_PAYLOAD_SIZE];
+        encodeFrame(chunk, adpcmPayload, FRAME_SAMPLES);
+
+        // Construct packet: 0x02 | chunkIdx(2B) | payload(128B) = 131 bytes
+        uint8_t packet[3 + ADPCM_PAYLOAD_SIZE];
+        packet[0] = 0x02; // Audio Chunk
+        packet[1] = (chunkIndex >> 8) & 0xFF;
+        packet[2] = chunkIndex & 0xFF;
+        memcpy(&packet[3], adpcmPayload, ADPCM_PAYLOAD_SIZE);
+
+        commandCharacteristic.notify(packet, sizeof(packet));
+        chunkIndex++;
+      }
 
       // Stop recording after 2.5 seconds or 156 chunks
       if (chunkIndex >= 156 || (millis() - recordingStartTime > 2800)) {

@@ -64,6 +64,26 @@ const float FC_B[1] = {
 };
 
 // ==================== Compact In-Place Radix-2 Real FFT ====================
+static const float FFT_TWIDDLE_STEPS[9][2] = {
+    { -1.000000000f, -0.000000000f }, // l = 1
+    { 0.000000000f, -1.000000000f },  // l = 2
+    { 0.707106781f, -0.707106781f },  // l = 4
+    { 0.923879533f, -0.382683432f },  // l = 8
+    { 0.980785280f, -0.195090322f },  // l = 16
+    { 0.995184727f, -0.098017140f },  // l = 32
+    { 0.998795456f, -0.049067674f },  // l = 64
+    { 0.999698819f, -0.024541229f },  // l = 128
+    { 0.999924702f, -0.012271538f }   // l = 256
+};
+
+// Non-zero frequency bin bounds for each of the 16 Mel filterbanks
+static const int MEL_BOUNDS[16][2] = {
+    { 7, 11 },   { 10, 15 },  { 13, 19 },  { 17, 23 },
+    { 21, 28 },  { 25, 33 },  { 30, 39 },  { 35, 45 },
+    { 41, 52 },  { 47, 60 },  { 54, 69 },  { 62, 78 },
+    { 71, 89 },  { 80, 100 }, { 91, 113 }, { 102, 127 }
+};
+
 static void computeFftMagnitude(float* real, float* imag, float* outMag) {
     int n = WW_FRAME_LEN;
     int j = 0;
@@ -77,10 +97,10 @@ static void computeFftMagnitude(float* real, float* imag, float* outMag) {
         j += k;
     }
 
-    for (int l = 1; l < n; l <<= 1) {
-        float angle = -3.14159265358979323846f / (float)l;
-        float wstepR = cosf(angle);
-        float wstepI = sinf(angle);
+    int stage = 0;
+    for (int l = 1; l < n; l <<= 1, stage++) {
+        float wstepR = FFT_TWIDDLE_STEPS[stage][0];
+        float wstepI = FFT_TWIDDLE_STEPS[stage][1];
         int l2 = l << 1;
         for (int m = 0; m < n; m += l2) {
             float wR = 1.0f;
@@ -101,7 +121,8 @@ static void computeFftMagnitude(float* real, float* imag, float* outMag) {
         }
     }
 
-    for (int k = 0; k <= n / 2; k++) {
+    // Mel bands only span up to bin 127 (4000 Hz)
+    for (int k = 0; k <= 127; k++) {
         outMag[k] = sqrtf(real[k] * real[k] + imag[k] * imag[k]);
     }
 }
@@ -138,7 +159,9 @@ static void extractFeatures(const short* rawAudio) {
         for (int m = 0; m < WW_NUM_MELS; m++) {
             float energy = 0.0f;
             int fbankRowOffset = m * 257;
-            for (int k = 0; k < 257; k++) {
+            int kMin = MEL_BOUNDS[m][0];
+            int kMax = MEL_BOUNDS[m][1];
+            for (int k = kMin; k <= kMax; k++) {
                 energy += MEL_FBANK[fbankRowOffset + k] * fftMag[k];
             }
             float logE = log10f(energy + 1e-5f);
@@ -294,7 +317,9 @@ static void extractFeaturesCircular(const short* circBuffer, int headIdx) {
         for (int m = 0; m < WW_NUM_MELS; m++) {
             float energy = 0.0f;
             int fbankRowOffset = m * 257;
-            for (int k = 0; k < 257; k++) {
+            int kMin = MEL_BOUNDS[m][0];
+            int kMax = MEL_BOUNDS[m][1];
+            for (int k = kMin; k <= kMax; k++) {
                 energy += MEL_FBANK[fbankRowOffset + k] * fftMag[k];
             }
             float logE = log10f(energy + 1e-5f);

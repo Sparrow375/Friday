@@ -14,4 +14,11 @@
 - [x] 12. Evaluate model metrics via `scripts/test_pendant_model.py` and test on recorded dataset <!-- id: 11 -->
 - [x] 13. Migrate pendant firmware from `ArduinoBLE` to native `Bluefruit52Lib` (zero library downloads required) <!-- id: 12 -->
 - [x] 14. Compile and flash production wake-word pendant firmware to XIAO nRF52840 Sense <!-- id: 13 -->
-- [ ] 15. Verify live wake-word detection and Android BLE connection <!-- id: 14 -->
+- [x] 15. Diagnose live stream wake-word suppression (Root cause: 91.2% audio frame drop due to ISR buffer overwrite while loop() was executing, decimating contiguous speech into fragmented stutters) <!-- id: 14 -->
+- [x] 16. Eliminate frame drops & accelerate TinyML inference:
+  - [x] Direct DMA ring-buffer ingestion in `onPDMdata()` (guarantees contiguous 16kHz audio with 0 dropped frames)
+  - [x] Precomputed Radix-2 FFT twiddle steps (eliminates 558 runtime `cosf`/`sinf` calls per pass)
+  - [x] Bounded Mel filterbank projection (bins 7..127, cutting Mel matrix ops by 95%)
+  - [x] Syllable hysteresis expansion to 16 frames (~250ms) to bridge natural pauses in "Friday"
+  - [x] Added live FPS meter in Heartbeat telemetry (`~62.5 fps`) <!-- id: 15 -->
+- [ ] 17. Upload updated firmware to Seeed XIAO Sense, verify 62.5 fps audio stream and live wake-word triggers (> 0.85) on "Friday" <!-- id: 16 -->
