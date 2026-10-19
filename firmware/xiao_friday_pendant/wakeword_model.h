@@ -196,7 +196,7 @@ static float forwardCnn() {
                 for (int ic = 0; ic < 8; ic++) {
                     for (int kh = -1; kh <= 1; kh++) {
                         int ih = in_h_center + kh;
-                        if (ih < 0 || ih >= 8) continue;
+                        if (ih < 0 || ih >= 16) continue;
                         for (int kw = -1; kw <= 1; kw++) {
                             int iw = in_w_center + kw;
                             if (iw < 0 || iw >= 31) continue;
@@ -271,6 +271,59 @@ static float forwardCnn() {
  * Runs the TinyML wake-word model on a 1.5-second buffer (24,000 samples @ 16kHz).
  * Returns the probability (0.0 to 1.0) that "Friday" was spoken.
  */
+static void extractFeaturesCircular(const short* circBuffer, int headIdx) {
+    float sumTotal = 0.0f;
+    float sumSq = 0.0f;
+    int totalElements = WW_NUM_MELS * WW_NUM_FRAMES;
+
+    for (int f = 0; f < WW_NUM_FRAMES; f++) {
+        int start = f * WW_HOP_LEN;
+        for (int i = 0; i < WW_FRAME_LEN; i++) {
+            int offset = start + i;
+            float s = 0.0f;
+            if (offset < WW_TOTAL_SAMPLES) {
+                int circIdx = (headIdx + offset) % WW_TOTAL_SAMPLES;
+                s = circBuffer[circIdx] / 32768.0f;
+            }
+            fftReal[i] = s * HANNING_WINDOW[i];
+            fftImag[i] = 0.0f;
+        }
+
+        computeFftMagnitude(fftReal, fftImag, fftMag);
+
+        for (int m = 0; m < WW_NUM_MELS; m++) {
+            float energy = 0.0f;
+            int fbankRowOffset = m * 257;
+            for (int k = 0; k < 257; k++) {
+                energy += MEL_FBANK[fbankRowOffset + k] * fftMag[k];
+            }
+            float logE = log10f(energy + 1e-5f);
+            melSpectrogram[m][f] = logE;
+            sumTotal += logE;
+            sumSq += (logE * logE);
+        }
+    }
+
+    float mean = sumTotal / (float)totalElements;
+    float variance = (sumSq / (float)totalElements) - (mean * mean);
+    float std = sqrtf(fmaxf(variance, 1e-6f));
+    float normScale = 1.0f / (2.5f * std);
+
+    for (int m = 0; m < WW_NUM_MELS; m++) {
+        for (int f = 0; f < WW_NUM_FRAMES; f++) {
+            float val = (melSpectrogram[m][f] - mean) * normScale;
+            if (val > 2.0f) val = 2.0f;
+            if (val < -2.0f) val = -2.0f;
+            melSpectrogram[m][f] = val;
+        }
+    }
+}
+
+static inline float predictWakeWordScoreCircular(const short* circBuffer, int headIdx) {
+    extractFeaturesCircular(circBuffer, headIdx);
+    return forwardCnn();
+}
+
 static inline float predictWakeWordScore(const short* audio24k) {
     extractFeatures(audio24k);
     return forwardCnn();

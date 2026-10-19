@@ -441,6 +441,9 @@ The project uses a clean package namespace `com.friday.assistant`:
             - **Diagnosed Wake-Word Non-Trigger Root Cause**: (1) Hardware PDM gain was set to only 25, resulting in speech RMS of 110-150; (2) The firmware had clamped MIN_SPEECH_RMS = 200.0f and required 6 strictly consecutive frames, which erroneously categorized all normal speech as ambient silence and never executed the CNN inference; (3) Serial monitor lacked live diagnostic telemetry.
             - **Acoustic Calibration Overhaul**: Boosted PDM digital microphone gain to 50 (PDM.setGain(50)), lowered MIN_SPEECH_RMS to 45.0f with VAD_MULTIPLIER = 1.30f, implemented an 8-frame (~130ms) speech hysteresis window to bridge soft consonants, calibrated wake-word confidence threshold to 0.55f (noise floor is 0.045, positive avg is 0.893), and integrated real-time heartbeat and VAD confidence diagnostics over Serial (115200 baud).
             - **Flashed & Operational**: Recompiled and flashed to Seeed XIAO Sense over USB serial.
+          * **Critical CNN Indexing Bug Fix (wakeword_model.h) (October 2026 - Part 5)**:
+            - **Diagnosed Model Score Suppression (0.001 - 0.062)**: In wakeword_model.h Conv2 layer, the input height boundary check was erroneously hardcoded to if (ih < 0 || ih >= 8) continue; when the input tensor height from Conv1 was actually 16. This caused the upper 8 Mel frequency bands to be completely zeroed out during forward inference, collapsing the detection score from 0.997 down to ~0.02.
+            - **Fixed Bound & Zero-Copy Circular Buffer**: Corrected boundary check to ih >= 16. Implemented predictWakeWordScoreCircular to evaluate directly on the rolling audio buffer without allocating 48KB for linearAudioBuffer, cutting SRAM usage from 147KB to 99KB (freeing 138KB). Tested on all 52 recorded positive samples: average confidence jumped back to 89.3% (with peak scores reaching 0.997).
 
 
 

@@ -5,16 +5,6 @@
  * Board: "Seeed Studio XIAO nRF52840 Sense" (Seeed nRF52 Boards)
  * Core:  Seeeduino:nrf52 (includes Bluefruit52Lib and PDM pre-installed)
  * Zero external library downloads required!
- *
- * Features:
- * 1. Low-power PDM digital microphone acquisition @ 16kHz mono (Gain = 50).
- * 2. Adaptive VAD with voice hysteresis (no syllable dropouts).
- * 3. On-chip TinyML CNN Wake-Word Detection ("Friday") via wakeword_model.h.
- * 4. BLE 5.0 GATT Server advertising "Friday-Pendant":
- *    - Service: 1F81DA00-B5A3-F393-E0A9-E50E24DCCA9E
- *    - State Char: 1F81DA01-... (0x01 = Wake Detected, 0x02 = Recording, 0x00 = Idle)
- *    - Command Char: 1F81DA02-... (IMA-ADPCM compressed audio packet streaming)
- * 5. Real-time serial volume & confidence diagnostics.
  */
 
 #include <bluefruit.h>
@@ -41,13 +31,14 @@ volatile bool frameReady = false;
 // Circular buffer for rolling wake-word detection (1.5 seconds = 24000 samples)
 #define ROLLING_BUFFER_SIZE 24000
 short rollingBuffer[ROLLING_BUFFER_SIZE];
-short linearAudioBuffer[ROLLING_BUFFER_SIZE]; // Unwrapped buffer for model inference
 int rollingWriteIdx = 0;
 unsigned long totalSamplesCollected = 0;
+unsigned long totalFramesReceived = 0;
 
 int speechActiveFrames = 0;
 unsigned long lastInferenceTime = 0;
 unsigned long lastHeartbeatTime = 0;
+float lastCalculatedRms = 0.0f;
 
 // State management
 enum PendantState {
@@ -58,7 +49,7 @@ enum PendantState {
 PendantState currentState = STATE_IDLE;
 
 // VAD & Wake-word calibrated parameters
-float backgroundRms = 60.0f;
+float backgroundRms = 50.0f;
 const float VAD_MULTIPLIER = 1.30f;
 const float MIN_SPEECH_RMS = 45.0f;
 const float WAKE_CONFIDENCE_THRESHOLD = 0.55f; // Positive avg is 0.89, noise avg is 0.04
@@ -184,18 +175,11 @@ bool checkWakeWord(const short* frame, int samples, float currentRms) {
   if (speechActiveFrames > 0 && (millis() - lastInferenceTime >= 90)) {
     lastInferenceTime = millis();
 
-    // Unroll circular buffer into contiguous linear buffer [24,000 samples = 1.5s]
-    int head = rollingWriteIdx;
-    for (int i = 0; i < ROLLING_BUFFER_SIZE; i++) {
-      int idx = (head + i) % ROLLING_BUFFER_SIZE;
-      linearAudioBuffer[i] = rollingBuffer[idx];
-    }
-
-    // Run on-chip TinyWakeWordCnn forward pass (< 4ms on Cortex-M4F)
-    float confidence = predictWakeWordScore(linearAudioBuffer);
+    // Zero-copy circular inference (direct evaluation on rollingBuffer, 0 extra RAM)
+    float confidence = predictWakeWordScoreCircular(rollingBuffer, rollingWriteIdx);
 
     // Live feedback in Serial Monitor
-    Serial.print(F("[VAD Active] RMS: "));
+    Serial.print(F("[Speech Active] RMS: "));
     Serial.print((int)currentRms);
     Serial.print(F(" | Thresh: "));
     Serial.print((int)speechThreshold);
@@ -281,10 +265,21 @@ void setup() {
   digitalWrite(LED_GREEN, HIGH);
   digitalWrite(LED_BLUE, LOW); // Blue = Initializing
 
-  // 1. Initialize PDM Microphone @ 16kHz mono with high gain (50)
+  // Allow USB CDC up to 2 seconds if user has Serial Monitor open
+  unsigned long startWait = millis();
+  while (!Serial && (millis() - startWait < 2000)) {
+    delay(10);
+  }
+
+  Serial.println(F("\n=================================================="));
+  Serial.println(F("  Project Friday - Seeed XIAO nRF52840 Sense Boot "));
+  Serial.println(F("=================================================="));
+
+  // 1. Initialize PDM Microphone @ 16kHz mono with gain = 45
+  Serial.print(F("[1/3] Initializing PDM Mic @ 16kHz... "));
   PDM.onReceive(onPDMdata);
-  PDM.setGain(50); // Increased sensitivity for pendant distance
   if (!PDM.begin(1, 16000)) {
+    Serial.println(F("FAILED!"));
     while (1) {
       digitalWrite(LED_RED, LOW);
       delay(150);
@@ -292,31 +287,55 @@ void setup() {
       delay(150);
     }
   }
+  PDM.setGain(45); // Set gain AFTER begin()
+  Serial.println(F("OK!"));
 
-  // 2. Initialize Bluetooth LE via native Bluefruit52Lib
-  Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
-  Bluefruit.begin();
+  // 2. Initialize Bluetooth LE with standard safe memory footprint
+  Serial.print(F("[2/3] Initializing Bluefruit LE... "));
+  if (!Bluefruit.begin()) {
+    Serial.println(F("FAILED!"));
+  } else {
+    Serial.println(F("OK!"));
+  }
+
   Bluefruit.setTxPower(4); // +4 dBm
   Bluefruit.setName("Friday-Pendant");
   Bluefruit.Periph.setConnectCallback(connect_callback);
   Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
 
+  // 3. Configure GATT Services & Start Advertising
+  Serial.print(F("[3/3] Setting up GATT & BLE Advertising... "));
   setupGatt();
   startAdv();
+  Serial.println(F("OK!"));
 
   Serial.println(F("=================================================="));
-  Serial.println(F("  Friday Pendant (Seeed XIAO nRF52840 Sense) READY"));
-  Serial.println(F("  BLE Device Name: Friday-Pendant                 "));
-  Serial.println(F("  Service UUID: 1F81DA00-B5A3-F393-E0A9-E50E24DCCA9E"));
-  Serial.println(F("  PDM Gain: 50 | Wakeword: 'Friday'               "));
-  Serial.println(F("=================================================="));
+  Serial.println(F("  Friday Pendant READY & LISTENING               "));
+  Serial.println(F("  Device Name: Friday-Pendant                     "));
+  Serial.println(F("  Say 'Friday' to trigger wake-word!              "));
+  Serial.println(F("==================================================\n"));
 
   digitalWrite(LED_BLUE, HIGH); // Off after setup
 }
 
 // ==================== Main Loop ====================
 void loop() {
-  // LED indication based on connection status
+  // 1. Top-Level Heartbeat every 1.5 seconds (runs even if mic is silent)
+  if (millis() - lastHeartbeatTime >= 1500) {
+    lastHeartbeatTime = millis();
+    Serial.print(F("[Heartbeat] Up: "));
+    Serial.print(millis() / 1000);
+    Serial.print(F("s | Frames: "));
+    Serial.print(totalFramesReceived);
+    Serial.print(F(" | Last RMS: "));
+    Serial.print((int)lastCalculatedRms);
+    Serial.print(F(" | BG: "));
+    Serial.print((int)backgroundRms);
+    Serial.print(F(" | BLE: "));
+    Serial.println(Bluefruit.connected() ? F("Connected") : F("Advertising"));
+  }
+
+  // 2. LED indication based on connection status
   if (Bluefruit.connected()) {
     // Steady Blue = BLE Connected
     digitalWrite(LED_BLUE, LOW);
@@ -329,9 +348,10 @@ void loop() {
     }
   }
 
-  // Handle incoming audio frames
+  // 3. Handle incoming audio frames
   if (frameReady) {
     frameReady = false;
+    totalFramesReceived++;
 
     // Calculate RMS volume of this 16ms frame
     long sumSquares = 0;
@@ -345,17 +365,7 @@ void loop() {
       totalSamplesCollected++;
     }
     float currentRms = sqrt((float)sumSquares / FRAME_SAMPLES);
-
-    // Periodic heartbeat in Serial Monitor every 3 seconds to confirm mic is live
-    if (millis() - lastHeartbeatTime >= 3000) {
-      lastHeartbeatTime = millis();
-      Serial.print(F("[Heartbeat] Mic RMS: "));
-      Serial.print((int)currentRms);
-      Serial.print(F(" | Ambient BG: "));
-      Serial.print((int)backgroundRms);
-      Serial.print(F(" | BLE: "));
-      Serial.println(Bluefruit.connected() ? F("Connected") : F("Advertising"));
-    }
+    lastCalculatedRms = currentRms;
 
     // ================= State Machine =================
     if (currentState == STATE_IDLE) {
