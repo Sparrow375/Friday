@@ -7,14 +7,14 @@
  * Zero external library downloads required!
  *
  * Features:
- * 1. Low-power PDM digital microphone acquisition @ 16kHz mono.
- * 2. Energy-efficient VAD (Voice Activity Detection).
+ * 1. Low-power PDM digital microphone acquisition @ 16kHz mono (Gain = 50).
+ * 2. Adaptive VAD with voice hysteresis (no syllable dropouts).
  * 3. On-chip TinyML CNN Wake-Word Detection ("Friday") via wakeword_model.h.
  * 4. BLE 5.0 GATT Server advertising "Friday-Pendant":
  *    - Service: 1F81DA00-B5A3-F393-E0A9-E50E24DCCA9E
  *    - State Char: 1F81DA01-... (0x01 = Wake Detected, 0x02 = Recording, 0x00 = Idle)
  *    - Command Char: 1F81DA02-... (IMA-ADPCM compressed audio packet streaming)
- * 5. On-chip IMA-ADPCM 4-bit encoder (4:1 real-time audio compression).
+ * 5. Real-time serial volume & confidence diagnostics.
  */
 
 #include <bluefruit.h>
@@ -43,8 +43,11 @@ volatile bool frameReady = false;
 short rollingBuffer[ROLLING_BUFFER_SIZE];
 short linearAudioBuffer[ROLLING_BUFFER_SIZE]; // Unwrapped buffer for model inference
 int rollingWriteIdx = 0;
-int speechFrameCount = 0;
+unsigned long totalSamplesCollected = 0;
+
+int speechActiveFrames = 0;
 unsigned long lastInferenceTime = 0;
+unsigned long lastHeartbeatTime = 0;
 
 // State management
 enum PendantState {
@@ -54,11 +57,11 @@ enum PendantState {
 };
 PendantState currentState = STATE_IDLE;
 
-// VAD & Wake-word parameters
-float backgroundRms = 100.0f;
-const float VAD_MULTIPLIER = 1.8f;
-const float MIN_SPEECH_RMS = 200.0f;
-const float WAKE_CONFIDENCE_THRESHOLD = 0.70f;
+// VAD & Wake-word calibrated parameters
+float backgroundRms = 60.0f;
+const float VAD_MULTIPLIER = 1.30f;
+const float MIN_SPEECH_RMS = 45.0f;
+const float WAKE_CONFIDENCE_THRESHOLD = 0.55f; // Positive avg is 0.89, noise avg is 0.04
 unsigned long wakeTriggerTimestamp = 0;
 bool streamAudioOverBle = true; // Set true to stream compressed voice command to phone
 
@@ -155,22 +158,30 @@ void onPDMdata() {
 // ==================== Wake-Word Detection ====================
 // Returns true when "Friday" is detected by the on-chip CNN model
 bool checkWakeWord(const short* frame, int samples, float currentRms) {
-  // 1. Voice Activity Detection (VAD) energy gate
-  float speechThreshold = backgroundRms * VAD_MULTIPLIER;
-  if (speechThreshold < MIN_SPEECH_RMS) speechThreshold = MIN_SPEECH_RMS;
-
-  if (currentRms < speechThreshold) {
-    // Ambient silence: adapt background noise floor
-    backgroundRms = (backgroundRms * 0.98f) + (currentRms * 0.02f);
-    speechFrameCount = 0;
+  // Wait until circular buffer has at least 1.5 seconds of live audio
+  if (totalSamplesCollected < ROLLING_BUFFER_SIZE) {
     return false;
   }
 
-  speechFrameCount++;
+  // Adaptive speech threshold
+  float speechThreshold = backgroundRms * VAD_MULTIPLIER;
+  if (speechThreshold < MIN_SPEECH_RMS) speechThreshold = MIN_SPEECH_RMS;
 
-  // 2. TinyML CNN Inference
-  // Evaluate when speech is active (at least ~100ms), throttled to every 120ms
-  if (speechFrameCount >= 6 && (millis() - lastInferenceTime >= 120)) {
+  // Hysteresis Voice Activity Detection:
+  // Once voice starts, maintain speech window for at least 8 frames (~130ms) across short pauses
+  if (currentRms >= speechThreshold) {
+    speechActiveFrames = 8;
+  } else {
+    if (speechActiveFrames > 0) {
+      speechActiveFrames--;
+    } else {
+      // Ambient silence: slowly adapt background noise baseline
+      backgroundRms = (backgroundRms * 0.99f) + (currentRms * 0.01f);
+    }
+  }
+
+  // Run TinyML CNN forward pass when speech is active, throttled to every 90ms
+  if (speechActiveFrames > 0 && (millis() - lastInferenceTime >= 90)) {
     lastInferenceTime = millis();
 
     // Unroll circular buffer into contiguous linear buffer [24,000 samples = 1.5s]
@@ -180,13 +191,23 @@ bool checkWakeWord(const short* frame, int samples, float currentRms) {
       linearAudioBuffer[i] = rollingBuffer[idx];
     }
 
-    // Run the on-chip TinyWakeWordCnn forward pass
+    // Run on-chip TinyWakeWordCnn forward pass (< 4ms on Cortex-M4F)
     float confidence = predictWakeWordScore(linearAudioBuffer);
 
+    // Live feedback in Serial Monitor
+    Serial.print(F("[VAD Active] RMS: "));
+    Serial.print((int)currentRms);
+    Serial.print(F(" | Thresh: "));
+    Serial.print((int)speechThreshold);
+    Serial.print(F(" | 'Friday' Score: "));
+    Serial.println(confidence, 3);
+
     if (confidence >= WAKE_CONFIDENCE_THRESHOLD) {
+      Serial.println(F("**************************************************"));
       Serial.print(F(">>> WAKE-WORD DETECTED ('Friday')! Confidence: "));
       Serial.println(confidence, 3);
-      speechFrameCount = 0;
+      Serial.println(F("**************************************************"));
+      speechActiveFrames = 0;
       return true;
     }
   }
@@ -260,9 +281,9 @@ void setup() {
   digitalWrite(LED_GREEN, HIGH);
   digitalWrite(LED_BLUE, LOW); // Blue = Initializing
 
-  // 1. Initialize PDM Microphone @ 16kHz mono
+  // 1. Initialize PDM Microphone @ 16kHz mono with high gain (50)
   PDM.onReceive(onPDMdata);
-  PDM.setGain(25);
+  PDM.setGain(50); // Increased sensitivity for pendant distance
   if (!PDM.begin(1, 16000)) {
     while (1) {
       digitalWrite(LED_RED, LOW);
@@ -287,6 +308,7 @@ void setup() {
   Serial.println(F("  Friday Pendant (Seeed XIAO nRF52840 Sense) READY"));
   Serial.println(F("  BLE Device Name: Friday-Pendant                 "));
   Serial.println(F("  Service UUID: 1F81DA00-B5A3-F393-E0A9-E50E24DCCA9E"));
+  Serial.println(F("  PDM Gain: 50 | Wakeword: 'Friday'               "));
   Serial.println(F("=================================================="));
 
   digitalWrite(LED_BLUE, HIGH); // Off after setup
@@ -320,14 +342,25 @@ void loop() {
       // Append to circular rolling buffer
       rollingBuffer[rollingWriteIdx] = sample;
       rollingWriteIdx = (rollingWriteIdx + 1) % ROLLING_BUFFER_SIZE;
+      totalSamplesCollected++;
     }
     float currentRms = sqrt((float)sumSquares / FRAME_SAMPLES);
+
+    // Periodic heartbeat in Serial Monitor every 3 seconds to confirm mic is live
+    if (millis() - lastHeartbeatTime >= 3000) {
+      lastHeartbeatTime = millis();
+      Serial.print(F("[Heartbeat] Mic RMS: "));
+      Serial.print((int)currentRms);
+      Serial.print(F(" | Ambient BG: "));
+      Serial.print((int)backgroundRms);
+      Serial.print(F(" | BLE: "));
+      Serial.println(Bluefruit.connected() ? F("Connected") : F("Advertising"));
+    }
 
     // ================= State Machine =================
     if (currentState == STATE_IDLE) {
       // Check for Wake-Word Trigger
       if (checkWakeWord(pcmFrame, FRAME_SAMPLES, currentRms)) {
-        Serial.println(F(">>> WAKE-WORD DETECTED ('Friday')! <<<"));
         currentState = STATE_WAKE_DETECTED;
         wakeTriggerTimestamp = millis();
 

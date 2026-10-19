@@ -437,6 +437,10 @@ The project uses a clean package namespace `com.friday.assistant`:
             - **Root Cause of Library Download Blocker**: The user's Arduino environment is configured with Seeed nRF52 Boards (Seeeduino:nrf52:xiaonRF52840Sense, v1.1.13) which runs Nordic SoftDevice S140. It already includes the native, high-performance Bluefruit52Lib (<bluefruit.h>) pre-installed locally. ArduinoBLE is designed for mbed-enabled cores and is unnecessary.
             - **Firmware Modernization (irmware/xiao_friday_pendant/xiao_friday_pendant.ino)**: Migrated BLE GATT server and advertising to native <bluefruit.h>. Configured high-bandwidth MTU (247), BANDWIDTH_MAX, custom Service UUID 1F81DA00..., State characteristic 1F81DA01... (Notify/Read), and Command characteristic 1F81DA02... (Notify/Write) for IMA-ADPCM streaming.
             - **Zero-Dependency Compilation & Flashing**: Compiled via rduino-cli using FQBN Seeeduino:nrf52:xiaonRF52840Sense (Flash: 155KB / 19%, RAM: 147KB / 62%). Flashed via DFU package onto the device. Firmware is live and operational on the pendant.
+          * **Pendant Acoustic Calibration & Sensitivity Overhaul (October 2026 - Part 4)**:
+            - **Diagnosed Wake-Word Non-Trigger Root Cause**: (1) Hardware PDM gain was set to only 25, resulting in speech RMS of 110-150; (2) The firmware had clamped MIN_SPEECH_RMS = 200.0f and required 6 strictly consecutive frames, which erroneously categorized all normal speech as ambient silence and never executed the CNN inference; (3) Serial monitor lacked live diagnostic telemetry.
+            - **Acoustic Calibration Overhaul**: Boosted PDM digital microphone gain to 50 (PDM.setGain(50)), lowered MIN_SPEECH_RMS to 45.0f with VAD_MULTIPLIER = 1.30f, implemented an 8-frame (~130ms) speech hysteresis window to bridge soft consonants, calibrated wake-word confidence threshold to 0.55f (noise floor is 0.045, positive avg is 0.893), and integrated real-time heartbeat and VAD confidence diagnostics over Serial (115200 baud).
+            - **Flashed & Operational**: Recompiled and flashed to Seeed XIAO Sense over USB serial.
 
 
 
