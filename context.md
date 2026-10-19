@@ -433,6 +433,10 @@ The project uses a clean package namespace `com.friday.assistant`:
            - **Zero-Dependency C++ Header (`firmware/xiao_friday_pendant/wakeword_model.h`)**: Generated standalone C++ inference engine embedding fixed-table Hanning window, 16 Mel filterbanks, 512-point Radix-2 Real FFT, standardized Log-Mel conversion, and CNN layers with zero dynamic heap allocations.
            - **Pendant Firmware Integration (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino`)**: Upgraded circular buffer to 24,000 samples (1.5s). Integrated `checkWakeWord` with dual-stage gating: VAD energy filter -> 100ms speech duration check -> 120ms throttled CNN inference (`predictWakeWordScore(linearAudioBuffer)` >= 0.70 threshold).
            - **Model Benchmark Tool (`scripts/test_pendant_model.py`)**: Verified precision (97.9%), recall (88.5%), and false alarm rejection (50/51 negative samples cleanly rejected).
+          * **Native Bluefruit52Lib Migration & Hardware Flashing (October 2026 - Part 3)**:
+            - **Root Cause of Library Download Blocker**: The user's Arduino environment is configured with Seeed nRF52 Boards (Seeeduino:nrf52:xiaonRF52840Sense, v1.1.13) which runs Nordic SoftDevice S140. It already includes the native, high-performance Bluefruit52Lib (<bluefruit.h>) pre-installed locally. ArduinoBLE is designed for mbed-enabled cores and is unnecessary.
+            - **Firmware Modernization (irmware/xiao_friday_pendant/xiao_friday_pendant.ino)**: Migrated BLE GATT server and advertising to native <bluefruit.h>. Configured high-bandwidth MTU (247), BANDWIDTH_MAX, custom Service UUID 1F81DA00..., State characteristic 1F81DA01... (Notify/Read), and Command characteristic 1F81DA02... (Notify/Write) for IMA-ADPCM streaming.
+            - **Zero-Dependency Compilation & Flashing**: Compiled via rduino-cli using FQBN Seeeduino:nrf52:xiaonRF52840Sense (Flash: 155KB / 19%, RAM: 147KB / 62%). Flashed via DFU package onto the device. Firmware is live and operational on the pendant.
 
 
 

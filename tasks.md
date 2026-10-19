@@ -12,4 +12,6 @@
 - [x] 10. Generate zero-dependency C++ inference engine (`firmware/xiao_friday_pendant/wakeword_model.h`) with weights and feature extractor <!-- id: 9 -->
 - [x] 11. Wire `predictWakeWord()` into `firmware/xiao_friday_pendant/xiao_friday_pendant.ino` for real-time on-chip wake-word detection <!-- id: 10 -->
 - [x] 12. Evaluate model metrics via `scripts/test_pendant_model.py` and test on recorded dataset <!-- id: 11 -->
-- [x] 13. Update `context.md` and commit/push to git <!-- id: 12 -->
+- [x] 13. Migrate pendant firmware from `ArduinoBLE` to native `Bluefruit52Lib` (zero library downloads required) <!-- id: 12 -->
+- [x] 14. Compile and flash production wake-word pendant firmware to XIAO nRF52840 Sense <!-- id: 13 -->
+- [ ] 15. Verify live wake-word detection and Android BLE connection <!-- id: 14 -->

@@ -2,23 +2,22 @@
  * Project Friday - Seeed Studio XIAO nRF52840 Sense
  * Always-On Wake-Word Pendant Firmware
  *
- * Board: "Seeed Studio XIAO nRF52840 Sense" (Seeed nRF52 mbed-enabled Boards)
- * Required Libraries (Install via Arduino Library Manager):
- * - ArduinoBLE (by Arduino)
- * - PDM (included with Seeed nRF52 mbed board package)
+ * Board: "Seeed Studio XIAO nRF52840 Sense" (Seeed nRF52 Boards)
+ * Core:  Seeeduino:nrf52 (includes Bluefruit52Lib and PDM pre-installed)
+ * Zero external library downloads required!
  *
  * Features:
  * 1. Low-power PDM digital microphone acquisition @ 16kHz mono.
  * 2. Energy-efficient VAD (Voice Activity Detection).
- * 3. Wake-Word Detection trigger & TinyML inference slot.
- * 4. BLE GATT Server advertising "Friday-Pendant":
+ * 3. On-chip TinyML CNN Wake-Word Detection ("Friday") via wakeword_model.h.
+ * 4. BLE 5.0 GATT Server advertising "Friday-Pendant":
  *    - Service: 1F81DA00-B5A3-F393-E0A9-E50E24DCCA9E
  *    - State Char: 1F81DA01-... (0x01 = Wake Detected, 0x02 = Recording, 0x00 = Idle)
  *    - Command Char: 1F81DA02-... (IMA-ADPCM compressed audio packet streaming)
  * 5. On-chip IMA-ADPCM 4-bit encoder (4:1 real-time audio compression).
  */
 
-#include <ArduinoBLE.h>
+#include <bluefruit.h>
 #include <PDM.h>
 #include "wakeword_model.h"
 
@@ -28,8 +27,8 @@
 #define COMMAND_CHAR_UUID   "1F81DA02-B5A3-F393-E0A9-E50E24DCCA9E"
 
 BLEService fridayService(SERVICE_UUID);
-BLEByteCharacteristic stateCharacteristic(STATE_CHAR_UUID, BLERead | BLENotify);
-BLECharacteristic commandCharacteristic(COMMAND_CHAR_UUID, BLERead | BLENotify | BLEWrite, 244);
+BLECharacteristic stateCharacteristic(STATE_CHAR_UUID);
+BLECharacteristic commandCharacteristic(COMMAND_CHAR_UUID);
 
 // ==================== Audio Buffers ====================
 #define SAMPLE_RATE 16000
@@ -195,6 +194,60 @@ bool checkWakeWord(const short* frame, int samples, float currentRms) {
   return false;
 }
 
+// ==================== BLE GATT Configuration ====================
+void setupGatt() {
+  fridayService.begin();
+
+  // State Characteristic: Read | Notify
+  stateCharacteristic.setProperties(CHR_PROPS_READ | CHR_PROPS_NOTIFY);
+  stateCharacteristic.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  stateCharacteristic.setFixedLen(1);
+  stateCharacteristic.begin();
+  stateCharacteristic.write8((uint8_t)STATE_IDLE);
+
+  // Command Characteristic: Read | Notify | Write
+  commandCharacteristic.setProperties(CHR_PROPS_READ | CHR_PROPS_NOTIFY | CHR_PROPS_WRITE);
+  commandCharacteristic.setPermission(SECMODE_OPEN, SECMODE_OPEN);
+  commandCharacteristic.setMaxLen(244);
+  commandCharacteristic.begin();
+}
+
+void startAdv(void) {
+  Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+  Bluefruit.Advertising.addTxPower();
+
+  // Primary advertisement packet includes the Service UUID
+  Bluefruit.Advertising.addService(fridayService);
+
+  // Secondary Scan Response packet includes the Device Name
+  Bluefruit.ScanResponse.addName();
+
+  Bluefruit.Advertising.restartOnDisconnect(true);
+  Bluefruit.Advertising.setInterval(32, 244); // 20ms fast, 152.5ms slow
+  Bluefruit.Advertising.setFastTimeout(30);   // 30 seconds
+  Bluefruit.Advertising.start(0);             // 0 = advertise forever
+}
+
+void connect_callback(uint16_t conn_handle) {
+  BLEConnection* conn = Bluefruit.Connection(conn_handle);
+  char central_name[32] = { 0 };
+  if (conn) {
+    conn->getPeerName(central_name, sizeof(central_name));
+    conn->requestDataLengthUpdate();
+    conn->requestMtuExchange(247);
+  }
+  Serial.print(F("BLE Connected: "));
+  Serial.println(central_name);
+  digitalWrite(LED_BLUE, LOW); // Steady blue
+}
+
+void disconnect_callback(uint16_t conn_handle, uint8_t reason) {
+  (void) conn_handle;
+  Serial.print(F("BLE Disconnected, reason = 0x"));
+  Serial.println(reason, HEX);
+  digitalWrite(LED_BLUE, HIGH);
+}
+
 // ==================== Setup ====================
 void setup() {
   Serial.begin(115200);
@@ -219,28 +272,16 @@ void setup() {
     }
   }
 
-  // 2. Initialize Bluetooth LE
-  if (!BLE.begin()) {
-    while (1) {
-      digitalWrite(LED_RED, LOW);
-      delay(300);
-      digitalWrite(LED_RED, HIGH);
-      delay(300);
-    }
-  }
+  // 2. Initialize Bluetooth LE via native Bluefruit52Lib
+  Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
+  Bluefruit.begin();
+  Bluefruit.setTxPower(4); // +4 dBm
+  Bluefruit.setName("Friday-Pendant");
+  Bluefruit.Periph.setConnectCallback(connect_callback);
+  Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
 
-  BLE.setLocalName("Friday-Pendant");
-  BLE.setDeviceName("Friday-Pendant");
-  BLE.setAdvertisedService(fridayService);
-
-  fridayService.addCharacteristic(stateCharacteristic);
-  fridayService.addCharacteristic(commandCharacteristic);
-  BLE.addService(fridayService);
-
-  stateCharacteristic.writeValue((uint8_t)STATE_IDLE);
-
-  // Start advertising
-  BLE.advertise();
+  setupGatt();
+  startAdv();
 
   Serial.println(F("=================================================="));
   Serial.println(F("  Friday Pendant (Seeed XIAO nRF52840 Sense) READY"));
@@ -253,10 +294,8 @@ void setup() {
 
 // ==================== Main Loop ====================
 void loop() {
-  BLEDevice central = BLE.central();
-
   // LED indication based on connection status
-  if (central && central.connected()) {
+  if (Bluefruit.connected()) {
     // Steady Blue = BLE Connected
     digitalWrite(LED_BLUE, LOW);
   } else {
@@ -293,7 +332,8 @@ void loop() {
         wakeTriggerTimestamp = millis();
 
         // 1. Notify Phone immediately (< 15ms over BLE)
-        stateCharacteristic.writeValue((uint8_t)STATE_WAKE_DETECTED);
+        stateCharacteristic.write8((uint8_t)STATE_WAKE_DETECTED);
+        stateCharacteristic.notify8((uint8_t)STATE_WAKE_DETECTED);
 
         // 2. Visual feedback: GREEN LED
         digitalWrite(LED_GREEN, LOW);
@@ -302,7 +342,7 @@ void loop() {
         // Reset ADPCM encoder for clean audio transmission
         resetAdpcm();
 
-        if (streamAudioOverBle && central && central.connected()) {
+        if (streamAudioOverBle && Bluefruit.connected()) {
           // Send Audio Header: 0x01 | totalChunks(2B) | totalBytes(4B) | sampleRate(2B)
           // Stream 2.5 seconds = 40,000 samples @ 16kHz = 156 chunks of 256 samples
           uint16_t totalChunks = 156;
@@ -320,16 +360,18 @@ void loop() {
           header[7] = (rate >> 8) & 0xFF;
           header[8] = rate & 0xFF;
 
-          commandCharacteristic.writeValue(header, sizeof(header));
+          commandCharacteristic.notify(header, sizeof(header));
           currentState = STATE_RECORDING_VOICE;
-          stateCharacteristic.writeValue((uint8_t)STATE_RECORDING_VOICE);
+          stateCharacteristic.write8((uint8_t)STATE_RECORDING_VOICE);
+          stateCharacteristic.notify8((uint8_t)STATE_RECORDING_VOICE);
           digitalWrite(LED_GREEN, HIGH);
           digitalWrite(LED_RED, LOW); // Red = Recording
         } else {
           // If not streaming audio, let phone listen via its own mic
           delay(800);
           currentState = STATE_IDLE;
-          stateCharacteristic.writeValue((uint8_t)STATE_IDLE);
+          stateCharacteristic.write8((uint8_t)STATE_IDLE);
+          stateCharacteristic.notify8((uint8_t)STATE_IDLE);
           digitalWrite(LED_GREEN, HIGH);
         }
       }
@@ -352,19 +394,20 @@ void loop() {
       packet[2] = chunkIndex & 0xFF;
       memcpy(&packet[3], adpcmPayload, ADPCM_PAYLOAD_SIZE);
 
-      commandCharacteristic.writeValue(packet, sizeof(packet));
+      commandCharacteristic.notify(packet, sizeof(packet));
       chunkIndex++;
 
       // Stop recording after 2.5 seconds or 156 chunks
       if (chunkIndex >= 156 || (millis() - recordingStartTime > 2800)) {
         // Send Audio End packet (0x03)
         uint8_t endPacket[1] = { 0x03 };
-        commandCharacteristic.writeValue(endPacket, 1);
+        commandCharacteristic.notify(endPacket, 1);
 
         Serial.println(F("Audio streaming complete. Returning to IDLE."));
         chunkIndex = 0;
         currentState = STATE_IDLE;
-        stateCharacteristic.writeValue((uint8_t)STATE_IDLE);
+        stateCharacteristic.write8((uint8_t)STATE_IDLE);
+        stateCharacteristic.notify8((uint8_t)STATE_IDLE);
         digitalWrite(LED_RED, HIGH);
         digitalWrite(LED_BLUE, LOW);
       }

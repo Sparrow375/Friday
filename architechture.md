@@ -67,8 +67,8 @@ graph TD
    - Runs a 1,697-parameter Depthwise Separable CNN on a 1.5-second (24,000 samples @ 16kHz) rolling circular buffer.
    - Extracts 16-band Log-Mel Spectrogram features (512 FFT with Hanning window, 384 hop, 62 frames) with zero dynamic memory allocation.
    - Pure C++ inference latency is ~3ms on Cortex-M4F @ 64MHz, achieving 97.9% precision and 98% negative rejection against background noise and conversational speech.
-4. **Stage 2: BLE GATT Server (`ArduinoBLE.h`)**:
-   - **Service UUID**: `1F81DA00-B5A3-F393-E0A9-E50E24DCCA9E`
+4. **Stage 2: BLE GATT Server (`bluefruit.h` via `Bluefruit52Lib`)**:
+   - Built on the Nordic SoftDevice S140 stack bundled directly with Seeed nRF52 Boards (zero external library downloads needed).
    - **State Characteristic UUID**: `1F81DA01-B5A3-F393-E0A9-E50E24DCCA9E` (Notify / Read)
      - `0x01`: Wake-Word Trigger detected.
      - `0x02`: Pendant is currently recording speech.
