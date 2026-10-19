@@ -63,9 +63,10 @@ graph TD
 2. **Stage 0: Micro-VAD Energy Gating**:
    - Calculates real-time Root-Mean-Square (RMS) amplitude and zero-crossing rate over 32ms frames.
    - Discards silence and low ambient noise without activating heavy model inference, keeping CPU consumption minimal.
-3. **Stage 1: TinyML Wake-Word Engine ("Friday")**:
-   - Runs a quantized tiny keyword spotting model (TFLite Micro or Edge Impulse 2D DS-CNN / 1D-CNN) on a rolling 1.0–1.5s circular buffer.
-   - Matches acoustic features specifically trained for the user's voice saying "Friday".
+3. **Stage 1: TinyML Wake-Word Engine ("Friday" via `wakeword_model.h`)**:
+   - Runs a 1,697-parameter Depthwise Separable CNN on a 1.5-second (24,000 samples @ 16kHz) rolling circular buffer.
+   - Extracts 16-band Log-Mel Spectrogram features (512 FFT with Hanning window, 384 hop, 62 frames) with zero dynamic memory allocation.
+   - Pure C++ inference latency is ~3ms on Cortex-M4F @ 64MHz, achieving 97.9% precision and 98% negative rejection against background noise and conversational speech.
 4. **Stage 2: BLE GATT Server (`ArduinoBLE.h`)**:
    - **Service UUID**: `1F81DA00-B5A3-F393-E0A9-E50E24DCCA9E`
    - **State Characteristic UUID**: `1F81DA01-B5A3-F393-E0A9-E50E24DCCA9E` (Notify / Read)

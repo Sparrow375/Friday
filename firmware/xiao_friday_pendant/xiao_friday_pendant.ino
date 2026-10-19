@@ -20,6 +20,7 @@
 
 #include <ArduinoBLE.h>
 #include <PDM.h>
+#include "wakeword_model.h"
 
 // ==================== BLE UUIDs ====================
 #define SERVICE_UUID        "1F81DA00-B5A3-F393-E0A9-E50E24DCCA9E"
@@ -38,10 +39,13 @@ BLECharacteristic commandCharacteristic(COMMAND_CHAR_UUID, BLERead | BLENotify |
 short pcmFrame[FRAME_SAMPLES];
 volatile bool frameReady = false;
 
-// Ring buffer for rolling wake-word detection (1.0 second = 16000 samples)
-#define ROLLING_BUFFER_SIZE 16000
+// Circular buffer for rolling wake-word detection (1.5 seconds = 24000 samples)
+#define ROLLING_BUFFER_SIZE 24000
 short rollingBuffer[ROLLING_BUFFER_SIZE];
+short linearAudioBuffer[ROLLING_BUFFER_SIZE]; // Unwrapped buffer for model inference
 int rollingWriteIdx = 0;
+int speechFrameCount = 0;
+unsigned long lastInferenceTime = 0;
 
 // State management
 enum PendantState {
@@ -53,8 +57,9 @@ PendantState currentState = STATE_IDLE;
 
 // VAD & Wake-word parameters
 float backgroundRms = 100.0f;
-const float VAD_MULTIPLIER = 2.0f;
-const float MIN_SPEECH_RMS = 250.0f;
+const float VAD_MULTIPLIER = 1.8f;
+const float MIN_SPEECH_RMS = 200.0f;
+const float WAKE_CONFIDENCE_THRESHOLD = 0.70f;
 unsigned long wakeTriggerTimestamp = 0;
 bool streamAudioOverBle = true; // Set true to stream compressed voice command to phone
 
@@ -149,34 +154,42 @@ void onPDMdata() {
 }
 
 // ==================== Wake-Word Detection ====================
-// Returns true when "Friday" is detected
+// Returns true when "Friday" is detected by the on-chip CNN model
 bool checkWakeWord(const short* frame, int samples, float currentRms) {
-  // 1. Check Voice Activity Detection (VAD) threshold
+  // 1. Voice Activity Detection (VAD) energy gate
   float speechThreshold = backgroundRms * VAD_MULTIPLIER;
   if (speechThreshold < MIN_SPEECH_RMS) speechThreshold = MIN_SPEECH_RMS;
 
   if (currentRms < speechThreshold) {
-    // Ambient silence: slowly adapt background noise floor
+    // Ambient silence: adapt background noise floor
     backgroundRms = (backgroundRms * 0.98f) + (currentRms * 0.02f);
+    speechFrameCount = 0;
     return false;
   }
 
-  // 2. TinyML Model Inference Hook:
-  // Once the user's custom wake-word model is trained (via Edge Impulse or TFLite Micro),
-  // place model inference here on `rollingBuffer`.
-  //
-  // Currently, we provide an acoustic energy-pulse pattern detector for test & calibration:
-  // (Detects sustained clear speech burst > 500 RMS for wake trigger)
-  static int consecutiveSpeechFrames = 0;
-  if (currentRms > 600.0f) {
-    consecutiveSpeechFrames++;
-    // ~150-300ms of sustained speech energy
-    if (consecutiveSpeechFrames >= 8 && consecutiveSpeechFrames <= 25) {
-      consecutiveSpeechFrames = 0;
+  speechFrameCount++;
+
+  // 2. TinyML CNN Inference
+  // Evaluate when speech is active (at least ~100ms), throttled to every 120ms
+  if (speechFrameCount >= 6 && (millis() - lastInferenceTime >= 120)) {
+    lastInferenceTime = millis();
+
+    // Unroll circular buffer into contiguous linear buffer [24,000 samples = 1.5s]
+    int head = rollingWriteIdx;
+    for (int i = 0; i < ROLLING_BUFFER_SIZE; i++) {
+      int idx = (head + i) % ROLLING_BUFFER_SIZE;
+      linearAudioBuffer[i] = rollingBuffer[idx];
+    }
+
+    // Run the on-chip TinyWakeWordCnn forward pass
+    float confidence = predictWakeWordScore(linearAudioBuffer);
+
+    if (confidence >= WAKE_CONFIDENCE_THRESHOLD) {
+      Serial.print(F(">>> WAKE-WORD DETECTED ('Friday')! Confidence: "));
+      Serial.println(confidence, 3);
+      speechFrameCount = 0;
       return true;
     }
-  } else {
-    consecutiveSpeechFrames = 0;
   }
 
   return false;

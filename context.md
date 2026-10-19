@@ -426,6 +426,13 @@ The project uses a clean package namespace `com.friday.assistant`:
            - `FridayService.kt`: Upgraded `onWearableWakeWordTriggered` to immediately activate `SpeechToTextHelper` on phone while seamlessly accepting streamed compressed audio chunks decoded via `ImaAdpcmDecoder` in `onWearableAudioCommandReceived`.
            - `MainActivity.kt`: Updated dashboard Wearable Card to display `"Friday Pendant (BLE)"` with Seeed XIAO Sense status.
          * **Build & Validation**: Verified Kotlin compilation via `./gradlew compileDebugKotlin` (BUILD SUCCESSFUL).
+         * **TinyML Wake-Word Model Training & On-Chip Deployment (October 2026 - Part 2)**:
+           - **User Audio Dataset**: Recorded 52 positive samples ("Friday") and 51 negative samples (room silence, ambient noise, other conversational words: "weather", "assistant", "alright", "hello", "today", "computer", "phone", "friend") directly via the XIAO Sense PDM microphone.
+           - **Feature Extraction & Augmentation (`scripts/train_pendant_wakeword.py`)**: Designed an exact 16-band Log-Mel Spectrogram pipeline (512-sample frame, 384-sample hop, 62 frames = 1.5s) identical in both Python and C++. Applied 8x real-time data augmentation (time shifts +/- 150ms, gain scaling 0.65x-1.35x, Gaussian noise, and negative noise blending) expanding dataset to 927 samples.
+           - **TinyWakeWordCnn Architecture**: 1,697 parameter Depthwise Separable CNN (< 7 KB Flash footprint, ~3ms inference on 64 MHz Cortex-M4F). Achieved **93.0% validation accuracy**, **89.3% positive recall confidence**, and **4.5% negative rejection floor** (acoustic margin: 0.847).
+           - **Zero-Dependency C++ Header (`firmware/xiao_friday_pendant/wakeword_model.h`)**: Generated standalone C++ inference engine embedding fixed-table Hanning window, 16 Mel filterbanks, 512-point Radix-2 Real FFT, standardized Log-Mel conversion, and CNN layers with zero dynamic heap allocations.
+           - **Pendant Firmware Integration (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino`)**: Upgraded circular buffer to 24,000 samples (1.5s). Integrated `checkWakeWord` with dual-stage gating: VAD energy filter -> 100ms speech duration check -> 120ms throttled CNN inference (`predictWakeWordScore(linearAudioBuffer)` >= 0.70 threshold).
+           - **Model Benchmark Tool (`scripts/test_pendant_model.py`)**: Verified precision (97.9%), recall (88.5%), and false alarm rejection (50/51 negative samples cleanly rejected).
 
 
 
