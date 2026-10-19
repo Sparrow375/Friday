@@ -820,7 +820,7 @@ class MainActivity : ComponentActivity() {
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = "Wearable Device (BLE)",
+                                text = "Friday Pendant (BLE)",
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White,
                                 fontSize = 15.sp
@@ -856,9 +856,9 @@ class MainActivity : ComponentActivity() {
                         }
                         Text(
                             text = if (bleConnectionState == com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.CONNECTED) {
-                                "Paired with ${bleDeviceName ?: "Friday-Wearable"} (Pi Zero 2 W)"
+                                "Paired with ${bleDeviceName ?: "Friday-Pendant"} (Seeed XIAO Sense)"
                             } else {
-                                "Offloads wake-word & speech capture to Pi wearable"
+                                "Offloads always-on wake-word & speech capture to pendant"
                             },
                             color = SilverText,
                             style = MaterialTheme.typography.labelSmall

@@ -403,6 +403,29 @@ The project uses a clean package namespace `com.friday.assistant`:
             3. **Tier 3 (DuckDuckGo Lite Organic Search)**: Scrapes clean snippets from `https://lite.duckduckgo.com/lite/` (`searchDuckDuckGoLite`), reliably delivering how-to steps (e.g. homemade pizza recipe) and biographies.
             4. **Tier 4 (Browser Fallback)**: Opens Google Search directly in the browser (`openBrowserSearch`) so the user can interact with Google's full AI Overview.
           - Verified via PC test harness (`scripts/test_web_search.py`): 10/12 test queries returned direct concise answers; complex search terms cleanly fell through to browser search.
+       - **Seeed Studio XIAO nRF52840 Sense Wearable Pendant & Always-On Wake-Word Architecture (October 2026)**:
+         * **Hardware & System Architecture (`architechture.md`)**:
+           - Created formal `architechture.md` documenting end-to-end topology, hardware specifications for Seeed Studio XIAO nRF52840 Sense (MSM261D3526H1CPM PDM mic, Nordic nRF52840 BLE 5.0, LiPo battery charging), firmware stage breakdown, Android BLE Central subsystem, and dual-mode interaction flows (Pendant Wake + Phone Mic vs Pendant Wake + BLE Audio Streaming).
+         * **Microphone Verification & Audio Calibration (`firmware/xiao_mic_test/xiao_mic_test.ino`)**:
+           - Developed an Arduino test sketch utilizing `<PDM.h>` configured for 16kHz mono capture with configurable gain (`PDM.setGain(25)`).
+           - Implemented real-time RMS volume metering with dynamic ASCII bar graph and Serial Plotter toggle ('p').
+           - Added RGB LED state indications: Blue (listening/idle) and Green (speech detected above VAD threshold).
+         * **Pendant Audio Streaming & Dataset Collection Firmware (`firmware/xiao_audio_recorder/xiao_audio_recorder.ino`)**:
+           - Implemented a low-latency serial streaming protocol synchronized with PC commands (`START <duration_ms>`).
+           - Streams raw 16-bit PCM binary audio with `AUDIO_START` / `AUDIO_END` framing and visual LED recording indicators.
+         * **Interactive PC Dataset Recorder Tool (`scripts/record_pendant_samples.py`)**:
+           - Developed a Python dataset recording CLI connecting directly to the XIAO via USB Serial (e.g., `COM5`).
+           - Provides guided countdowns and captures 1.5-second audio clips directly from the pendant mic into `dataset/pendant_wakeword/positive/` ("Friday") and `dataset/pendant_wakeword/negative/` (ambient noise, other words).
+           - Automatically validates audio RMS energy to ensure recordings are not silent.
+         * **Production BLE Pendant Firmware (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino`)**:
+           - Combines PDM continuous DMA acquisition, background micro-VAD energy threshold adaptation, and an on-chip Intel/DVI IMA-ADPCM 4-bit encoder (4:1 audio compression).
+           - Establishes a BLE GATT Server advertising as `"Friday-Pendant"` (`1F81DA00-B5A3-F393-E0A9-E50E24DCCA9E`) with State Characteristic (`1F81DA01...`) and chunked Command Characteristic (`1F81DA02...`).
+           - Includes plug-in inference hook for the trained TinyML wake-word model.
+         * **Android BLE Integration Overhaul (`FridayBleWearableManager.kt`, `FridayService.kt`, `MainActivity.kt`)**:
+           - `FridayBleWearableManager.kt`: Extended scan filters and match predicates to automatically detect `"Friday-Pendant"` and match by Service UUID.
+           - `FridayService.kt`: Upgraded `onWearableWakeWordTriggered` to immediately activate `SpeechToTextHelper` on phone while seamlessly accepting streamed compressed audio chunks decoded via `ImaAdpcmDecoder` in `onWearableAudioCommandReceived`.
+           - `MainActivity.kt`: Updated dashboard Wearable Card to display `"Friday Pendant (BLE)"` with Seeed XIAO Sense status.
+         * **Build & Validation**: Verified Kotlin compilation via `./gradlew compileDebugKotlin` (BUILD SUCCESSFUL).
 
 
 

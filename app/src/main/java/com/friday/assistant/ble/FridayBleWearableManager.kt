@@ -32,7 +32,7 @@ import java.io.ByteArrayOutputStream
 import java.util.UUID
 
 /**
- * Manages Bluetooth Low Energy (BLE) connection to the Friday Wearable detection device (Pi Zero 2 W).
+ * Manages Bluetooth Low Energy (BLE) connection to the Friday Pendant (Seeed Studio XIAO nRF52840 Sense).
  * Handles:
  * 1. Automatic background scanning and reconnection
  * 2. High MTU negotiation (512) for ultra-fast audio packet transfer
@@ -56,7 +56,8 @@ class FridayBleWearableManager private constructor(private val context: Context)
         val COMMAND_CHAR_UUID: UUID = UUID.fromString("1F81DA02-B5A3-F393-E0A9-E50E24DCCA9E")
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
-        const val DEVICE_NAME = "Friday-Wearable"
+        const val DEVICE_NAME = "Friday-Pendant"
+        const val LEGACY_DEVICE_NAME = "Friday-Wearable"
 
         @Volatile
         private var instance: FridayBleWearableManager? = null
@@ -147,7 +148,8 @@ class FridayBleWearableManager private constructor(private val context: Context)
 
         val filters = listOf(
             ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build(),
-            ScanFilter.Builder().setDeviceName(DEVICE_NAME).build()
+            ScanFilter.Builder().setDeviceName(DEVICE_NAME).build(),
+            ScanFilter.Builder().setDeviceName(LEGACY_DEVICE_NAME).build()
         )
 
         val settings = ScanSettings.Builder()
@@ -194,7 +196,14 @@ class FridayBleWearableManager private constructor(private val context: Context)
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             val device = result?.device ?: return
             val name = device.name ?: result.scanRecord?.deviceName
-            FridayLogger.i(TAG, "Found target BLE device: $name (${device.address})")
+            val serviceUuids = result.scanRecord?.serviceUuids
+
+            val isMatch = (name?.contains("Friday", ignoreCase = true) == true) ||
+                    (serviceUuids?.any { it.uuid == SERVICE_UUID } == true)
+
+            if (!isMatch) return
+
+            FridayLogger.i(TAG, "Found target BLE pendant: $name (${device.address})")
 
             stopScan()
             connectToDevice(device)

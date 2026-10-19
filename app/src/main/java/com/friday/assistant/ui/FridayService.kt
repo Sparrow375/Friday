@@ -654,13 +654,18 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 try { tts?.stop() } catch (e: Exception) { Log.e(TAG, "Error stopping TTS", e) }
             }
             overlayManager?.show()
-            transitionToState(PipelineState.LISTENING, statusMessage = "Listening to Wearable...")
+            transitionToState(PipelineState.LISTENING, statusMessage = "Listening to Pendant...")
+
+            // Dual-mode capture: start phone STT immediately so speech is captured with zero delay.
+            // If the pendant streams audio over BLE, onWearableAudioCommandReceived will process the BLE audio stream.
+            speechToTextHelper.startListening()
         }
     }
 
     private fun onWearableAudioCommandReceived(audioSamples: FloatArray) {
         serviceScope.launch {
-            transitionToState(PipelineState.THINKING, statusMessage = "Processing wearable speech...")
+            speechToTextHelper.onIdle() // Hand over from phone mic to pendant audio stream
+            transitionToState(PipelineState.THINKING, statusMessage = "Processing pendant speech...")
             val whisperEngine = FridayApplication.whisperEngine
             if (!whisperEngine.isModelLoaded()) {
                 val whisperPath = modelManager.getWhisperModelPath()
@@ -676,11 +681,11 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             }
 
             if (transcribed.isNotBlank()) {
-                com.friday.assistant.core.FridayLogger.i(TAG, "Wearable speech transcribed: '$transcribed'")
+                com.friday.assistant.core.FridayLogger.i(TAG, "Pendant speech transcribed: '$transcribed'")
                 executeAgentQuery(transcribed)
             } else {
-                com.friday.assistant.core.FridayLogger.w(TAG, "Wearable audio transcription was blank")
-                overlayManager?.updateState(PipelineState.IDLE, "Could not recognize wearable speech")
+                com.friday.assistant.core.FridayLogger.w(TAG, "Pendant audio transcription was blank")
+                overlayManager?.updateState(PipelineState.IDLE, "Could not recognize pendant speech")
                 kotlinx.coroutines.delay(2000)
                 transitionToState(PipelineState.IDLE)
                 overlayManager?.dismiss()
