@@ -467,7 +467,7 @@ The project uses a clean package namespace `com.friday.assistant`:
               5. **Expanded Dataset & High-Accuracy Retraining (`scripts/prepare_extended_dataset.py`, `scripts/train_pendant_wakeword.py`)**: Generated 672 synthetic phonetic confusables ("freeday", "friend", "fire", "frida", "freddy", common command phrases, noise), expanding the negative dataset to 723 samples. Retrained `TinyWakeWordCnn` (35 epochs, 92.7% validation accuracy, 98.8% negative rejection floor) and exported updated weights to `wakeword_model.h`.
               6. **Two-Frame Temporal Confirmation in Firmware (`xiao_friday_pendant.ino`)**: Calibrated `MIN_SPEECH_RMS = 60.0f`, `VAD_MULTIPLIER = 1.40f`, requiring either 2 consecutive frames with confidence >= 0.72 within 160ms or a single frame >= 0.86, eliminating transient false alarms on non-target speech.
             - **Build & Verification Status**:
-              - Pendant firmware compiled cleanly via `arm-none-eabi-g++` (0 errors).
+              - Pendant firmware compiled cleanly via `arm-none-eabi-g++` (0 errors) after restoring zero-copy `predictWakeWordScoreCircular()` and `extractFeaturesCircular()` in `wakeword_model.h` and `train_pendant_wakeword.py`.
               - Android Kotlin & JNI compiled and assembled cleanly (`assembleDebug` BUILD SUCCESSFUL in 2m 17s).
 
 

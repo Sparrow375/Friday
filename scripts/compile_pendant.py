@@ -13,6 +13,10 @@ header = '#include <Arduino.h>\n#line 1 "F:\\\\Avaneesh\\\\projects\\\\Friday\\\
 with open(sketch_cpp, "w") as f:
     f.write(header + ino_code)
 
+header_h = r"F:\Avaneesh\projects\Friday\firmware\xiao_friday_pendant\wakeword_model.h"
+cached_h = r"C:\Users\Avaneesh\AppData\Local\arduino\sketches\183D72687E44651266881E761012BE03\sketch\wakeword_model.h"
+shutil.copy2(header_h, cached_h)
+
 cmd = [
     r"C:\Users\Avaneesh\AppData\Local\Arduino15\packages\Seeeduino\tools\arm-none-eabi-gcc\9-2019q4/bin/arm-none-eabi-g++",
     "-mcpu=cortex-m4", "-mthumb", "-c", "-g", "-Werror=return-type", "-mfloat-abi=hard", "-mfpu=fpv4-sp-d16",
