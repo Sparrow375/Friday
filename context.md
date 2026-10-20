@@ -469,6 +469,29 @@ The project uses a clean package namespace `com.friday.assistant`:
             - **Build & Verification Status**:
               - Pendant firmware compiled cleanly via `arm-none-eabi-g++` (0 errors) after restoring zero-copy `predictWakeWordScoreCircular()` and `extractFeaturesCircular()` in `wakeword_model.h` and `train_pendant_wakeword.py`.
               - Android Kotlin & JNI compiled and assembled cleanly (`assembleDebug` BUILD SUCCESSFUL in 2m 17s).
+          * **Seeed XIAO Sense VAD Voice Streaming & Phone Local STT Real-Time Display (October 2026 - Part 8)**:
+            - **User Goal**: Establish a debug pipeline isolating chip audio acquisition, BLE transmission, phone-side local STT (Whisper), and real-time display on the phone screen without false-trigger dependencies.
+            - **Firmware Upgrades (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino`)**:
+              1. **Automatic VAD Speech Streaming Mode**: Added `debugVadStreamingMode` (enabled by default). When user begins speaking (`lastCalculatedRms >= speechThreshold` for 2+ consecutive frames), the chip immediately transitions to `STATE_RECORDING_VOICE`, writes `0x02` to `STATE_CHAR_UUID`, sends Audio Header `0x01` with a 200ms pre-roll circular buffer offset, and turns on the red recording LED.
+              2. **Flow-Controlled Audio Chunking**: Continuously streams 4-bit IMA-ADPCM packets (`0x02`, 128 bytes/frame) over BLE with SoftDevice TX backpressure flow control (4ms yield on buffer full).
+              3. **Dynamic Silence End Detection**: Finishes streaming when speech ceases (> 450ms silence / 28 frames after at least 12 frames of speech) or upon reaching max limit (4.5s / 280 chunks). Drains residual samples and dispatches `0x03` Audio End sentinel with 5x retry.
+              4. **Bidirectional Control & Echo**: Implemented `command_write_callback` on `COMMAND_CHAR_UUID` allowing the phone to toggle modes (`0x0A` for VAD streaming, `0x0B` for wake-word only) and echo recognized transcripts back for USB Serial Monitor output (`[Phone STT Echo]: ...`).
+            - **Android BLE Manager Overhaul (`FridayBleWearableManager.kt`)**:
+              1. Added live streaming state flows: `isAudioStreaming`, `streamChunksReceived`, `lastTranscribedText`, `lastAudioDurationMs`.
+              2. Added callbacks `onAudioStreamStarted` and `onAudioChunkReceived` to notify UI in real time as packets flow across BLE.
+              3. Added helper methods `updateLastTranscribed(text)` and `sendTextToWearable(text)`.
+            - **Service & Local STT Pipeline (`FridayService.kt`)**:
+              1. Shows floating overlay on voice stream arrival with dynamic status ("Receiving chip voice over BLE...") and real-time audio amplitude waveforms.
+              2. On stream completion, decodes 4-bit ADPCM into 16kHz float PCM and executes offline `whisper.cpp` speech-to-text.
+              3. Cleaned and validated transcript is immediately rendered on the overlay ("Chip Voice Transcribed: “...”") and echoed back to the chip over BLE.
+              4. Added `wearable_debug_transcript_only` preference (default true) which holds the transcript visible for 5 seconds without triggering automated actions or web searches.
+            - **Dashboard UI (`MainActivity.kt`)**:
+              1. Enhanced Wearable card with real-time streaming badge (`● Streaming Chip Voice: X chunks (~Y ms)`).
+              2. Added live chip transcription card displaying the recognized text and local Whisper latency.
+              3. Added toggle for "Debug Mode (Display Only)" vs full assistant execution.
+            - **Validation**:
+              1. Pendant firmware compiled with 0 errors via `arm-none-eabi-g++` (`scripts/compile_pendant.py`).
+              2. Android application compiled cleanly (`./gradlew compileDebugKotlin` BUILD SUCCESSFUL in 40s).
 
 
 

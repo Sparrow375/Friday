@@ -174,6 +174,13 @@ class MainActivity : ComponentActivity() {
         val bleWearableManager = remember { com.friday.assistant.ble.FridayBleWearableManager.getInstance(context) }
         val bleConnectionState by bleWearableManager.connectionState.collectAsState()
         val bleDeviceName by bleWearableManager.deviceName.collectAsState()
+        val isBleStreaming by bleWearableManager.isAudioStreaming.collectAsState()
+        val bleChunksReceived by bleWearableManager.streamChunksReceived.collectAsState()
+        val bleLastTranscribed by bleWearableManager.lastTranscribedText.collectAsState()
+        val bleLastDurationMs by bleWearableManager.lastAudioDurationMs.collectAsState()
+        var wearableDebugOnly by remember {
+            mutableStateOf(context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("wearable_debug_transcript_only", true))
+        }
 
         var useLlm by remember { 
             mutableStateOf(context.getSharedPreferences("friday_model_prefs", Context.MODE_PRIVATE).getBoolean("use_llm", true)) 
@@ -906,6 +913,122 @@ class MainActivity : ComponentActivity() {
                             checkedTrackColor = NeonBlue.copy(alpha = 0.5f)
                         )
                     )
+                }
+
+                if (bleWearableEnabled) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 12.dp),
+                        color = Color.White.copy(alpha = 0.1f)
+                    )
+
+                    // Live Audio Streaming Indicator
+                    if (isBleStreaming) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp),
+                            color = Color(0xFFEF4444).copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(10.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.4f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .background(Color(0xFFEF4444), CircleShape)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Streaming Chip Voice: $bleChunksReceived chunks (~${bleChunksReceived * 16} ms)",
+                                    color = Color(0xFFEF4444),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+
+                    // Live Transcribed Text from Chip
+                    if (bleLastTranscribed.isNotBlank()) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 10.dp),
+                            color = Color(0xFF0F172A).copy(alpha = 0.8f),
+                            shape = RoundedCornerShape(10.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, NeonCyan.copy(alpha = 0.35f))
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Live Chip Speech-To-Text:",
+                                        color = NeonCyan,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
+                                    )
+                                    if (bleLastDurationMs > 0) {
+                                        Text(
+                                            text = "${bleLastDurationMs}ms (Local Whisper)",
+                                            color = SilverText,
+                                            fontSize = 10.sp
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "“$bleLastTranscribed”",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        }
+                    }
+
+                    // Debug Mode (Display Only) Toggle
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Debug Mode (Display Only)",
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                fontSize = 13.sp
+                            )
+                            Text(
+                                text = "Show chip voice transcripts on screen without executing search/actions",
+                                color = SilverText,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                        Switch(
+                            checked = wearableDebugOnly,
+                            onCheckedChange = { checked ->
+                                wearableDebugOnly = checked
+                                context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                                    .edit().putBoolean("wearable_debug_transcript_only", checked).apply()
+                                Toast.makeText(
+                                    context,
+                                    if (checked) "Wearable Debug: Display Only" else "Wearable Debug: Full Execution",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = NeonCyan,
+                                checkedTrackColor = NeonBlue.copy(alpha = 0.5f)
+                            )
+                        )
+                    }
                 }
             }
 

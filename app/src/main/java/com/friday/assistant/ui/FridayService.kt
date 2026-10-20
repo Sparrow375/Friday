@@ -165,10 +165,16 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             }
         }
 
-        // 8. Setup BLE Wearable Manager (Pi Zero 2 W)
+        // 8. Setup BLE Wearable Manager (Seeed Studio XIAO nRF52840 Sense)
         bleWearableManager = com.friday.assistant.ble.FridayBleWearableManager.getInstance(this).apply {
             onWakeWordDetected = {
                 onWearableWakeWordTriggered()
+            }
+            onAudioStreamStarted = {
+                onWearableAudioStreamStarted()
+            }
+            onAudioChunkReceived = { chunkIdx ->
+                onWearableAudioChunkReceived(chunkIdx)
             }
             onCommandAudioReceived = { audioSamples ->
                 onWearableAudioCommandReceived(audioSamples)
@@ -659,8 +665,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         if (!prefs.getBoolean("assistant_enabled", true)) return
 
         val now = System.currentTimeMillis()
-        if (now - lastWearableWakeTriggerMs < 3000L) {
-            com.friday.assistant.core.FridayLogger.d(TAG, "Ignoring wearable wake trigger — inside 3s cooldown (${now - lastWearableWakeTriggerMs}ms)")
+        if (now - lastWearableWakeTriggerMs < 2000L) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "Ignoring wearable wake trigger — inside cooldown (${now - lastWearableWakeTriggerMs}ms)")
             return
         }
         if (pipelineState.value == PipelineState.THINKING || pipelineState.value == PipelineState.SPEAKING) {
@@ -675,10 +681,38 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 try { tts?.stop() } catch (e: Exception) { Log.e(TAG, "Error stopping TTS", e) }
             }
             overlayManager?.show()
-            transitionToState(PipelineState.LISTENING, statusMessage = "Listening to Pendant...")
+            transitionToState(PipelineState.LISTENING, statusMessage = "Listening to Pendant (Chip)...", transcriptText = "Say command into pendant...")
+        }
+    }
 
-            // Voice is taken directly FROM the CHIP over BLE.
-            // Do NOT start phone SpeechRecognizer microphone so phone mic does not compete.
+    private fun onWearableAudioStreamStarted() {
+        val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("assistant_enabled", true)) return
+
+        serviceScope.launch {
+            if (pipelineState.value == PipelineState.SPEAKING) {
+                try { tts?.stop() } catch (e: Exception) { Log.e(TAG, "Error stopping TTS", e) }
+            }
+            overlayManager?.show()
+            transitionToState(
+                PipelineState.LISTENING,
+                statusMessage = "Receiving chip voice over BLE...",
+                transcriptText = "Listening to Seeed XIAO Sense..."
+            )
+        }
+    }
+
+    private fun onWearableAudioChunkReceived(chunkIdx: Int) {
+        if (pipelineState.value == PipelineState.LISTENING) {
+            val pseudoAmp = ((chunkIdx % 8) / 8.0f) * 0.7f + 0.3f
+            overlayManager?.updateAmplitude(pseudoAmp)
+            if (chunkIdx % 12 == 0) {
+                overlayManager?.updateState(
+                    PipelineState.LISTENING,
+                    "Streaming from chip (${chunkIdx} chunks)...",
+                    trans = "Speaking into Seeed XIAO Sense..."
+                )
+            }
         }
     }
 
@@ -702,16 +736,16 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             com.friday.assistant.core.FridayLogger.i(TAG, "Received pendant audio: ${audioSamples.size} samples (${audioSamples.size / 16000.0f}s), RMS: $rms, MaxPeak: $maxPeak")
 
             // Require minimal speech energy — prevents transcribing silence which causes Whisper hallucinations
-            if (rms < 0.008f || maxPeak < 0.035f) {
+            if (rms < 0.005f || maxPeak < 0.025f) {
                 com.friday.assistant.core.FridayLogger.w(TAG, "Pendant audio is below speech threshold (RMS=$rms, Peak=$maxPeak) — ignoring silence")
-                overlayManager?.updateState(PipelineState.IDLE, "No speech detected")
+                overlayManager?.updateState(PipelineState.IDLE, "No speech detected on chip")
                 kotlinx.coroutines.delay(1200)
                 transitionToState(PipelineState.IDLE)
                 overlayManager?.dismiss()
                 return@launch
             }
 
-            transitionToState(PipelineState.THINKING, statusMessage = "Processing pendant speech...")
+            transitionToState(PipelineState.THINKING, statusMessage = "Transcribing chip voice (Local STT)...")
             val whisperEngine = FridayApplication.whisperEngine
             if (!whisperEngine.isModelLoaded()) {
                 val whisperPath = modelManager.getWhisperModelPath()
@@ -730,12 +764,46 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             val cleanTranscribed = cleanAndValidateTranscript(rawTranscribed)
 
             if (cleanTranscribed.isNotBlank()) {
-                com.friday.assistant.core.FridayLogger.i(TAG, "Pendant speech cleanly transcribed: '$cleanTranscribed'")
-                executeAgentQuery(cleanTranscribed)
+                com.friday.assistant.core.FridayLogger.i(TAG, "★ Chip speech cleanly transcribed: '$cleanTranscribed'")
+                bleWearableManager?.updateLastTranscribed(cleanTranscribed)
+
+                // Echo back to chip over BLE so it prints to the chip's Serial Monitor
+                bleWearableManager?.sendTextToWearable(cleanTranscribed)
+
+                val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                val debugOnly = prefs.getBoolean("wearable_debug_transcript_only", true)
+
+                if (debugOnly) {
+                    // Debug Mode: Real-time display on phone screen without executing commands/web search
+                    com.friday.assistant.core.FridayLogger.i(TAG, "Debug Mode: Displaying transcript on phone: '$cleanTranscribed'")
+                    overlayManager?.updateState(
+                        PipelineState.IDLE,
+                        "Chip Voice Transcribed",
+                        trans = cleanTranscribed,
+                        resp = "“$cleanTranscribed”"
+                    )
+                    // Keep visible for 5 seconds so user can read what was recognized
+                    kotlinx.coroutines.delay(5000L)
+                    transitionToState(PipelineState.IDLE)
+                    overlayManager?.dismiss()
+                } else {
+                    overlayManager?.updateState(
+                        PipelineState.THINKING,
+                        "Processing command...",
+                        trans = cleanTranscribed,
+                        resp = cleanTranscribed
+                    )
+                    executeAgentQuery(cleanTranscribed)
+                }
             } else {
                 com.friday.assistant.core.FridayLogger.w(TAG, "Pendant transcription was invalid or hallucinated: '$rawTranscribed'")
-                overlayManager?.updateState(PipelineState.IDLE, "Could not understand pendant speech")
-                kotlinx.coroutines.delay(1500)
+                overlayManager?.updateState(
+                    PipelineState.IDLE,
+                    "Could not understand chip voice",
+                    trans = if (rawTranscribed.isNotBlank()) "Raw: $rawTranscribed" else "",
+                    resp = ""
+                )
+                kotlinx.coroutines.delay(1800)
                 transitionToState(PipelineState.IDLE)
                 overlayManager?.dismiss()
             }

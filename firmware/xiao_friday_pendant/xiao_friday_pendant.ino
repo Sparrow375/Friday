@@ -58,6 +58,7 @@ unsigned long wakeTriggerTimestamp = 0;
 unsigned long wakeCooldownUntil = 0;          // Cooldown to prevent recursive re-triggering
 static int consecutiveWakeHits = 0;
 bool streamAudioOverBle = true; // Stream compressed voice command to phone
+bool debugVadStreamingMode = true; // Debug mode: Automatic VAD voice streaming without wake-word
 
 // ==================== IMA-ADPCM Encoder ====================
 static const int STEP_TABLE[89] = {
@@ -244,6 +245,28 @@ bool checkWakeWord(float currentRms) {
   return false;
 }
 
+// Command characteristic write callback (phone can send control codes or echo back transcripts)
+void command_write_callback(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
+  (void) conn_hdl;
+  (void) chr;
+  if (len == 0 || data == NULL) return;
+
+  if (data[0] == 0x0A) {
+    debugVadStreamingMode = true;
+    Serial.println(F("[BLE Command] VAD Audio Streaming Mode ENABLED (No Wake-Word needed)"));
+  } else if (data[0] == 0x0B) {
+    debugVadStreamingMode = false;
+    Serial.println(F("[BLE Command] Wake-Word Only Mode ENABLED"));
+  } else {
+    // Phone echoes back transcribed text for serial debugging
+    Serial.print(F("[Phone STT Echo]: "));
+    for (uint16_t i = 0; i < len; i++) {
+      Serial.print((char)data[i]);
+    }
+    Serial.println();
+  }
+}
+
 // ==================== BLE GATT Configuration ====================
 void setupGatt() {
   fridayService.begin();
@@ -259,6 +282,7 @@ void setupGatt() {
   commandCharacteristic.setProperties(CHR_PROPS_READ | CHR_PROPS_NOTIFY | CHR_PROPS_WRITE);
   commandCharacteristic.setPermission(SECMODE_OPEN, SECMODE_OPEN);
   commandCharacteristic.setMaxLen(244);
+  commandCharacteristic.setWriteCallback(command_write_callback);
   commandCharacteristic.begin();
 }
 
@@ -408,75 +432,143 @@ void loop() {
 
     // ================= State Machine =================
     if (currentState == STATE_IDLE) {
-      // Check for Wake-Word Trigger
-      if (checkWakeWord(lastCalculatedRms)) {
-        currentState = STATE_WAKE_DETECTED;
-        wakeTriggerTimestamp = millis();
+      if (debugVadStreamingMode && Bluefruit.connected() && (millis() >= wakeCooldownUntil)) {
+        // Adaptive speech threshold
+        float speechThreshold = backgroundRms * VAD_MULTIPLIER;
+        if (speechThreshold < MIN_SPEECH_RMS) speechThreshold = MIN_SPEECH_RMS;
 
-        // 1. Notify Phone immediately (< 15ms over BLE)
-        stateCharacteristic.write8((uint8_t)STATE_WAKE_DETECTED);
-        stateCharacteristic.notify8((uint8_t)STATE_WAKE_DETECTED);
+        static int vadSpeechHits = 0;
+        if (lastCalculatedRms >= speechThreshold) {
+          vadSpeechHits++;
+          if (vadSpeechHits >= 2) {
+            vadSpeechHits = 0;
+            currentState = STATE_RECORDING_VOICE;
 
-        // 2. Visual feedback: GREEN LED
-        digitalWrite(LED_GREEN, LOW);
-        digitalWrite(LED_BLUE, HIGH);
+            Serial.print(F("\n>>> [VAD Active] Speech detected (RMS: "));
+            Serial.print((int)lastCalculatedRms);
+            Serial.print(F(" >= Thresh: "));
+            Serial.print((int)speechThreshold);
+            Serial.println(F("). Streaming voice to phone over BLE..."));
 
-        // Reset ADPCM encoder for clean audio transmission
-        resetAdpcm();
+            // 1. Notify phone of recording state immediately (< 15ms over BLE)
+            stateCharacteristic.write8((uint8_t)STATE_RECORDING_VOICE);
+            stateCharacteristic.notify8((uint8_t)STATE_RECORDING_VOICE);
 
-        if (streamAudioOverBle && Bluefruit.connected()) {
-          // Send Audio Header: 0x01 | totalChunks(2B) | totalBytes(4B) | sampleRate(2B)
-          // Stream 2.5 seconds = 40,000 samples @ 16kHz = 156 chunks of 256 samples
-          uint16_t totalChunks = 156;
-          uint32_t totalBytes = totalChunks * ADPCM_PAYLOAD_SIZE;
-          uint16_t rate = SAMPLE_RATE;
+            // 2. Reset ADPCM encoder for clean audio transmission
+            resetAdpcm();
 
-          uint8_t header[9];
-          header[0] = 0x01; // Audio Header packet type
-          header[1] = (totalChunks >> 8) & 0xFF;
-          header[2] = totalChunks & 0xFF;
-          header[3] = (totalBytes >> 24) & 0xFF;
-          header[4] = (totalBytes >> 16) & 0xFF;
-          header[5] = (totalBytes >> 8) & 0xFF;
-          header[6] = totalBytes & 0xFF;
-          header[7] = (rate >> 8) & 0xFF;
-          header[8] = rate & 0xFF;
+            // 3. Send Audio Header: 0x01 | totalChunks(2B) | totalBytes(4B) | sampleRate(2B)
+            uint16_t totalChunks = 0; // Dynamic VAD stream length
+            uint32_t totalBytes = 0;
+            uint16_t rate = SAMPLE_RATE;
 
-          // Retry header up to 5 times to ensure phone central receives stream metadata
-          for (int r = 0; r < 5; r++) {
-            if (commandCharacteristic.notify(header, sizeof(header))) break;
-            delay(5);
+            uint8_t header[9];
+            header[0] = 0x01; // Audio Header packet type
+            header[1] = (totalChunks >> 8) & 0xFF;
+            header[2] = totalChunks & 0xFF;
+            header[3] = (totalBytes >> 24) & 0xFF;
+            header[4] = (totalBytes >> 16) & 0xFF;
+            header[5] = (totalBytes >> 8) & 0xFF;
+            header[6] = totalBytes & 0xFF;
+            header[7] = (rate >> 8) & 0xFF;
+            header[8] = rate & 0xFF;
+
+            for (int r = 0; r < 5; r++) {
+              if (commandCharacteristic.notify(header, sizeof(header))) break;
+              delay(4);
+            }
+
+            // Visual feedback: Red LED active during recording
+            digitalWrite(LED_GREEN, HIGH);
+            digitalWrite(LED_RED, LOW);
+
+            // 200ms pre-roll: rewind 3,200 samples so initial syllable is preserved
+            int preRoll = 3200;
+            streamingReadIdx = (rollingWriteIdx - preRoll + ROLLING_BUFFER_SIZE) % ROLLING_BUFFER_SIZE;
           }
-
-          currentState = STATE_RECORDING_VOICE;
-          stateCharacteristic.write8((uint8_t)STATE_RECORDING_VOICE);
-          stateCharacteristic.notify8((uint8_t)STATE_RECORDING_VOICE);
-          digitalWrite(LED_GREEN, HIGH);
-          digitalWrite(LED_RED, LOW); // Red = Recording
-
-          streamingReadIdx = rollingWriteIdx;
         } else {
-          // If not streaming audio, let phone listen via its own mic
-          delay(800);
-          currentState = STATE_IDLE;
-          wakeCooldownUntil = millis() + 3000;
-          stateCharacteristic.write8((uint8_t)STATE_IDLE);
-          stateCharacteristic.notify8((uint8_t)STATE_IDLE);
-          digitalWrite(LED_GREEN, HIGH);
+          vadSpeechHits = 0;
+          // Ambient silence: slowly adapt background baseline
+          backgroundRms = (backgroundRms * 0.99f) + (lastCalculatedRms * 0.01f);
+        }
+      } else if (!debugVadStreamingMode) {
+        // Normal Wake-Word Trigger Check
+        if (checkWakeWord(lastCalculatedRms)) {
+          currentState = STATE_WAKE_DETECTED;
+          wakeTriggerTimestamp = millis();
+
+          stateCharacteristic.write8((uint8_t)STATE_WAKE_DETECTED);
+          stateCharacteristic.notify8((uint8_t)STATE_WAKE_DETECTED);
+
+          digitalWrite(LED_GREEN, LOW);
+          digitalWrite(LED_BLUE, HIGH);
+
+          resetAdpcm();
+
+          if (streamAudioOverBle && Bluefruit.connected()) {
+            uint16_t totalChunks = 156;
+            uint32_t totalBytes = totalChunks * ADPCM_PAYLOAD_SIZE;
+            uint16_t rate = SAMPLE_RATE;
+
+            uint8_t header[9];
+            header[0] = 0x01;
+            header[1] = (totalChunks >> 8) & 0xFF;
+            header[2] = totalChunks & 0xFF;
+            header[3] = (totalBytes >> 24) & 0xFF;
+            header[4] = (totalBytes >> 16) & 0xFF;
+            header[5] = (totalBytes >> 8) & 0xFF;
+            header[6] = totalBytes & 0xFF;
+            header[7] = (rate >> 8) & 0xFF;
+            header[8] = rate & 0xFF;
+
+            for (int r = 0; r < 5; r++) {
+              if (commandCharacteristic.notify(header, sizeof(header))) break;
+              delay(5);
+            }
+
+            currentState = STATE_RECORDING_VOICE;
+            stateCharacteristic.write8((uint8_t)STATE_RECORDING_VOICE);
+            stateCharacteristic.notify8((uint8_t)STATE_RECORDING_VOICE);
+            digitalWrite(LED_GREEN, HIGH);
+            digitalWrite(LED_RED, LOW);
+
+            streamingReadIdx = rollingWriteIdx;
+          } else {
+            delay(800);
+            currentState = STATE_IDLE;
+            wakeCooldownUntil = millis() + 3000;
+            stateCharacteristic.write8((uint8_t)STATE_IDLE);
+            stateCharacteristic.notify8((uint8_t)STATE_IDLE);
+            digitalWrite(LED_GREEN, HIGH);
+          }
         }
       }
     } else if (currentState == STATE_RECORDING_VOICE) {
       static uint16_t chunkIndex = 0;
       static unsigned long recordingStartTime = 0;
+      static int silenceFrames = 0;
+      static int speechFrames = 0;
 
       if (chunkIndex == 0) {
         recordingStartTime = millis();
+        silenceFrames = 0;
+        speechFrames = 0;
+      }
+
+      float speechThreshold = backgroundRms * VAD_MULTIPLIER;
+      if (speechThreshold < MIN_SPEECH_RMS) speechThreshold = MIN_SPEECH_RMS;
+
+      if (lastCalculatedRms >= speechThreshold) {
+        speechFrames++;
+        silenceFrames = 0;
+      } else {
+        silenceFrames++;
       }
 
       int currentHead = rollingWriteIdx;
       int availableSamples = (currentHead - streamingReadIdx + ROLLING_BUFFER_SIZE) % ROLLING_BUFFER_SIZE;
 
-      while (availableSamples >= FRAME_SAMPLES && chunkIndex < 156) {
+      while (availableSamples >= FRAME_SAMPLES && chunkIndex < 350) {
         short chunk[FRAME_SAMPLES];
         for (int i = 0; i < FRAME_SAMPLES; i++) {
           chunk[i] = rollingBuffer[(streamingReadIdx + i) % ROLLING_BUFFER_SIZE];
@@ -499,25 +591,72 @@ void loop() {
           streamingReadIdx = (streamingReadIdx + FRAME_SAMPLES) % ROLLING_BUFFER_SIZE;
           availableSamples -= FRAME_SAMPLES;
         } else {
-          // BLE TX queue full - wait briefly for stack to transmit without dropping packet
+          // BLE TX buffer full - wait briefly for SoftDevice stack to transmit
           delay(4);
           break;
         }
       }
 
-      // Stop recording after 2.5 seconds or 156 chunks
-      if (chunkIndex >= 156 || (millis() - recordingStartTime > 2800)) {
-        // Send Audio End packet (0x03) with retry
+      // Check for completion of spoken phrase
+      bool finishStreaming = false;
+      if (debugVadStreamingMode) {
+        // Finish when user stops speaking for ~450ms (28 frames) after at least 12 frames of speech (~190ms),
+        // or when max utterance limit (4.5s / 280 chunks) is reached
+        if (speechFrames >= 12 && silenceFrames >= 28) {
+          finishStreaming = true;
+        } else if (chunkIndex >= 280 || (millis() - recordingStartTime > 4500)) {
+          finishStreaming = true;
+        }
+      } else {
+        if (chunkIndex >= 156 || (millis() - recordingStartTime > 2800)) {
+          finishStreaming = true;
+        }
+      }
+
+      if (finishStreaming) {
+        // Drain any remaining buffered samples
+        currentHead = rollingWriteIdx;
+        availableSamples = (currentHead - streamingReadIdx + ROLLING_BUFFER_SIZE) % ROLLING_BUFFER_SIZE;
+        while (availableSamples >= FRAME_SAMPLES && chunkIndex < 350) {
+          short chunk[FRAME_SAMPLES];
+          for (int i = 0; i < FRAME_SAMPLES; i++) {
+            chunk[i] = rollingBuffer[(streamingReadIdx + i) % ROLLING_BUFFER_SIZE];
+          }
+          uint8_t adpcmPayload[ADPCM_PAYLOAD_SIZE];
+          encodeFrame(chunk, adpcmPayload, FRAME_SAMPLES);
+          uint8_t packet[3 + ADPCM_PAYLOAD_SIZE];
+          packet[0] = 0x02;
+          packet[1] = (chunkIndex >> 8) & 0xFF;
+          packet[2] = chunkIndex & 0xFF;
+          memcpy(&packet[3], adpcmPayload, ADPCM_PAYLOAD_SIZE);
+          if (commandCharacteristic.notify(packet, sizeof(packet))) {
+            chunkIndex++;
+            streamingReadIdx = (streamingReadIdx + FRAME_SAMPLES) % ROLLING_BUFFER_SIZE;
+            availableSamples -= FRAME_SAMPLES;
+          } else {
+            delay(4);
+            break;
+          }
+        }
+
+        // Send Audio End sentinel packet (0x03) with 5x retry
         uint8_t endPacket[1] = { 0x03 };
         for (int r = 0; r < 5; r++) {
           if (commandCharacteristic.notify(endPacket, 1)) break;
           delay(5);
         }
 
-        Serial.println(F("Audio streaming complete. Returning to IDLE."));
+        Serial.print(F("[Pendant BLE] Voice streaming complete. Chunks sent: "));
+        Serial.print(chunkIndex);
+        Serial.print(F(" (~"));
+        Serial.print(chunkIndex * 16);
+        Serial.println(F(" ms). Returning to IDLE."));
+
         chunkIndex = 0;
+        silenceFrames = 0;
+        speechFrames = 0;
         currentState = STATE_IDLE;
-        wakeCooldownUntil = millis() + 3500; // 3.5s cooldown after streaming to prevent recursion
+        wakeCooldownUntil = millis() + 800; // 800ms cooldown after speech
         stateCharacteristic.write8((uint8_t)STATE_IDLE);
         stateCharacteristic.notify8((uint8_t)STATE_IDLE);
         digitalWrite(LED_RED, HIGH);

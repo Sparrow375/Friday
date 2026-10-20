@@ -80,9 +80,12 @@ graph TD
      - `0x01`: Audio Header (`totalChunks`, `totalBytes`, `sampleRate`) with 5x retry.
      - `0x02`: Audio Chunk (`chunkIndex` + IMA-ADPCM compressed payload) with flow control (preserves un-notified packets on TX buffer backpressure).
      - `0x03`: Audio End transmission sentinel with 5x retry.
+     - `0x0A` / `0x0B` (Write): Mode toggle (`0x0A`: VAD streaming debug mode; `0x0B`: wake-word only).
+     - Text write: Phone echoes recognized speech back to chip for USB Serial output.
 5. **Stage 3: Fast Audio Compression (IMA-ADPCM)**:
    - Compresses 16-bit linear PCM down to 4 bits per sample (4:1 compression ratio).
    - 1 second of 16kHz audio = 8,000 bytes. Zero-loss transmission ensures pristine audio fidelity for phone speech-to-text.
+   - 200ms pre-roll circular buffer preserves initial consonants before VAD trigger.
 
 ---
 
@@ -169,3 +172,14 @@ The Android application is organized under package namespace `com.friday.assista
 3. Phone immediately wakes screen, shows glowing overlay, and activates `SpeechToTextHelper.startListening()`.
 4. User speaks command naturally towards their phone; phone's beamforming mic array captures command in real-time.
 5. Command is parsed and executed instantly with zero audio packet transfer delay.
+
+### Scenario C: Wearable VAD Voice Streaming + Local Phone STT (Debug Mode)
+1. User speaks into the Seeed XIAO pendant microphone (no wake-word required).
+2. Pendant detects energy above dynamic speech threshold (`currentRms >= speechThreshold` for 2+ consecutive frames).
+3. Pendant writes `0x02` (`STATE_RECORDING_VOICE`) to `STATE_CHAR_UUID` and immediately sends Audio Header (`0x01`) with 200ms pre-roll.
+4. Pendant compresses 16kHz audio using 4-bit IMA-ADPCM (128 bytes/frame) and streams packets (`0x02`) over BLE with flow control.
+5. Phone receives chunks in real time, displays streaming indicator and visual audio waveforms on the overlay and in `MainActivity`.
+6. When user stops speaking (silence > 450ms), pendant sends `0x03` (Audio End) and returns to idle.
+7. Phone reassembles audio, decodes via `ImaAdpcmDecoder`, and runs local speech-to-text via `whisper.cpp`.
+8. Phone immediately displays the transcribed text on the floating overlay and dashboard, and echoes the text back to the chip over BLE for Serial Monitor logging.
+

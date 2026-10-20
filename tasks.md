@@ -22,3 +22,8 @@
   - [x] Syllable hysteresis expansion to 16 frames (~250ms) to bridge natural pauses in "Friday"
   - [x] Added live FPS meter in Heartbeat telemetry (`~62.5 fps`) <!-- id: 15 -->
 - [ ] 17. Upload updated firmware to Seeed XIAO Sense, verify 62.5 fps audio stream and live wake-word triggers (> 0.85) on "Friday" <!-- id: 16 -->
+- [x] 18. Upgrade Pendant Firmware for VAD-triggered speech audio streaming (no wake-word required in debug mode) over BLE with flow control <!-- id: 17 -->
+- [x] 19. Update Android BLE Manager & FridayService to stream pendant audio into local STT (Whisper) and display real-time transcribed text on phone overlay/screen <!-- id: 18 -->
+- [x] 20. Add live wearable debug card / transcript display on MainActivity dashboard for real-time monitoring <!-- id: 19 -->
+- [x] 21. Verify firmware compilation & Android assembleDebug build <!-- id: 20 -->
+
