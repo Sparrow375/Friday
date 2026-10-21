@@ -13,6 +13,7 @@ import android.speech.RecognitionService
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
+import com.friday.assistant.core.FridayLogger
 import java.util.Locale
 
 class SpeechToTextHelper(
@@ -64,7 +65,7 @@ class SpeechToTextHelper(
             emptyList()
         }
 
-        // Filter out our own app package to avoid binding to our own stub RecognitionService
+        // Filter out our own app package to avoid binding circularly to Friday's own empty stub
         val externalServices = resolveInfos.filter {
             it.serviceInfo != null && it.serviceInfo.packageName != context.packageName
         }
@@ -74,12 +75,35 @@ class SpeechToTextHelper(
             pkg.contains("google") || pkg.contains("samsung")
         } ?: externalServices.firstOrNull()
 
-        val recognizer = if (preferredService != null) {
-            val componentName = ComponentName(preferredService.serviceInfo.packageName, preferredService.serviceInfo.name)
-            Log.i(TAG, "Binding SpeechRecognizer to external service: $componentName")
-            SpeechRecognizer.createSpeechRecognizer(context, componentName)
+        var targetComponent: ComponentName? = if (preferredService != null) {
+            ComponentName(preferredService.serviceInfo.packageName, preferredService.serviceInfo.name)
         } else {
-            Log.w(TAG, "No external RecognitionService found; falling back to default factory")
+            // Known OEM system recognition services as fallback probes
+            val candidates = listOf(
+                ComponentName("com.google.android.googlequicksearchbox", "com.google.android.voicesearch.serviceapi.GoogleRecognitionService"),
+                ComponentName("com.samsung.android.bixby.agent", "com.samsung.android.bixby.agent.speech.RecognitionService"),
+                ComponentName("com.samsung.android.svoiceime", "com.samsung.android.svoiceime.service.SpeechRecognitionService")
+            )
+            candidates.firstOrNull { candidate ->
+                try {
+                    pm.getServiceInfo(candidate, 0)
+                    true
+                } catch (_: Exception) {
+                    false
+                }
+            }
+        }
+
+        val recognizer = if (targetComponent != null) {
+            FridayLogger.i(TAG, "Binding SpeechRecognizer to external service: $targetComponent")
+            try {
+                SpeechRecognizer.createSpeechRecognizer(context, targetComponent)
+            } catch (e: Exception) {
+                FridayLogger.e(TAG, "Failed to create recognizer for $targetComponent, falling back", e)
+                SpeechRecognizer.createSpeechRecognizer(context)
+            }
+        } else {
+            FridayLogger.w(TAG, "No external RecognitionService found; using default factory")
             SpeechRecognizer.createSpeechRecognizer(context)
         }
 
@@ -93,9 +117,9 @@ class SpeechToTextHelper(
             if (speechRecognizer == null) {
                 try {
                     speechRecognizer = createEngine()
-                    Log.i(TAG, "SpeechRecognizer pre-warmed successfully")
+                    FridayLogger.i(TAG, "SpeechRecognizer pre-warmed successfully")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to pre-warm SpeechRecognizer", e)
+                    FridayLogger.e(TAG, "Failed to pre-warm SpeechRecognizer", e)
                 }
             }
         }
@@ -182,7 +206,7 @@ class SpeechToTextHelper(
             earlyCommitFired = false
             lastPartialText = ""
             lastPartialChangeMs = 0L
-            Log.i(TAG, "Starting native speech recognizer")
+            FridayLogger.i(TAG, "Starting native speech recognizer")
 
             try {
                 if (speechRecognizer == null) {
@@ -210,7 +234,7 @@ class SpeechToTextHelper(
                 isListening = true
                 onStateChanged(PipelineState.LISTENING)
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to start speech recognition", e)
+                FridayLogger.e(TAG, "Failed to start speech recognition", e)
                 destroyRecognizer()
                 onStateChanged(PipelineState.IDLE)
             }
@@ -219,13 +243,13 @@ class SpeechToTextHelper(
 
     private fun buildRecognitionListener() = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
-            Log.d(TAG, "Speech recognizer ready")
+            FridayLogger.i(TAG, "Speech recognizer ready and listening for voice")
             isListening = true
             onStateChanged(PipelineState.LISTENING)
         }
 
         override fun onBeginningOfSpeech() {
-            Log.d(TAG, "Beginning of speech")
+            FridayLogger.i(TAG, "Beginning of speech detected by mic")
         }
 
         override fun onRmsChanged(rmsdB: Float) {
@@ -236,7 +260,7 @@ class SpeechToTextHelper(
         override fun onBufferReceived(buffer: ByteArray?) {}
 
         override fun onEndOfSpeech() {
-            Log.d(TAG, "End of speech detected")
+            FridayLogger.i(TAG, "End of speech detected")
             if (!earlyCommitFired) {
                 onStateChanged(PipelineState.PROCESSING)
             }
@@ -245,7 +269,7 @@ class SpeechToTextHelper(
         override fun onError(error: Int) {
             if (earlyCommitFired) return
             val message = getErrorMessage(error)
-            Log.e(TAG, "Speech recognition error: $message ($error)")
+            FridayLogger.e(TAG, "Speech recognition error: $message ($error)")
             mainHandler.post {
                 isListening = false
                 cancelEarlyCommitTimer()
@@ -311,7 +335,7 @@ class SpeechToTextHelper(
                 cancelEarlyCommitTimer()
                 isListening = false
                 if (finalResultText.isNotBlank()) {
-                    Log.i(TAG, "Speech recognition final result (corrected): '$finalResultText'")
+                    FridayLogger.i(TAG, "Speech recognition final result (corrected): '$finalResultText'")
                     onFinalResult(finalResultText)
                 } else {
                     onStateChanged(PipelineState.IDLE)
@@ -325,7 +349,7 @@ class SpeechToTextHelper(
             if (!matches.isNullOrEmpty()) {
                 val rawText = matches[0]
                 val text = com.friday.assistant.intelligence.ContactHelper.correctTranscript(context, rawText)
-                Log.d(TAG, "Speech recognition partial result: '$text'")
+                FridayLogger.d(TAG, "Speech recognition partial: '$text'")
                 onTranscriptUpdate(text)
                 scheduleEarlyCommitCheck(text)
             }

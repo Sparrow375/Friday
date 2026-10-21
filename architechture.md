@@ -70,16 +70,16 @@ graph TD
    - Multi-tier temporal verification: Requires either a single high-confidence detection (`score >= 0.86`) or two consecutive frames (`score >= 0.72` within 160ms) to trigger, eliminating single-frame transient false alarms.
    - Enforces a 3.5s cooldown after wake-word detection or audio streaming to prevent recursive self-triggering loops.
 4. **Stage 2: BLE GATT Server (`bluefruit.h` via `Bluefruit52Lib`)**:
-   - Built on the Nordic SoftDevice S140 stack bundled directly with Seeed nRF52 Boards.
+   - Built on the Nordic SoftDevice S140 stack bundled directly with Seeed nRF52 Boards, configured with `Bluefruit.configPrphBandwidth(BANDWIDTH_MAX)` to support MTU 247.
    - **State Characteristic UUID**: `1F81DA01-B5A3-F393-E0A9-E50E24DCCA9E` (Notify / Read)
      - `0x01`: Wake-Word Trigger detected.
      - `0x02`: Pendant is currently recording speech.
      - `0x00`: Pendant in Idle / Listening state.
    - **Command Characteristic UUID**: `1F81DA02-B5A3-F393-E0A9-E50E24DCCA9E` (Notify / Write)
      - `0x00`: Direct plain text command (if on-device STT is available).
-     - `0x01`: Audio Header (`totalChunks`, `totalBytes`, `sampleRate`) with 5x retry.
-     - `0x02`: Audio Chunk (`chunkIndex` + IMA-ADPCM compressed payload) with flow control (preserves un-notified packets on TX buffer backpressure).
-     - `0x03`: Audio End transmission sentinel with 5x retry.
+     - `0x01`: Audio Header (`totalChunks`, `totalBytes`, `sampleRate = 16000`) with 5x retry.
+     - `0x02`: Audio Chunk (`chunkIndex` + IMA-ADPCM compressed payload). Dynamically adapts chunk size based on negotiated MTU: full 128-byte ADPCM payload (256 samples) when MTU >= 134; 16-byte ADPCM payload (32 samples = 19B packet) when MTU < 134, completely eliminating packet truncation.
+     - `0x03`: Audio End transmission sentinel with 20x retry.
      - `0x0A` / `0x0B` (Write): Mode toggle (`0x0A`: VAD streaming debug mode; `0x0B`: wake-word only).
      - Text write: Phone echoes recognized speech back to chip for USB Serial output.
 5. **Stage 3: Fast Audio Compression (IMA-ADPCM)**:
@@ -98,7 +98,8 @@ The Android application is organized under package namespace `com.friday.assista
   - Central BLE manager operating in the background.
   - Automatic low-latency scanning (`ScanFilter` matching `Friday-Pendant`, `Friday-Wearable`, and `SERVICE_UUID`).
   - Negotiates MTU 512 and requests `CONNECTION_PRIORITY_HIGH` (11.25–15ms connection intervals) for maximum packet throughput.
-  - Automatically re-subscribes to GATT notifications on connection and manages exponential-backoff reconnections.
+  - Sequential GATT CCCD subscription queue: Ensures descriptor writes for `STATE_CHAR_UUID` and `COMMAND_CHAR_UUID` complete sequentially via `onDescriptorWrite()`, eliminating GATT collision drops.
+  - Platform deduplication: Binds deprecated `onCharacteristicChanged` exclusively on Android < 13 to eliminate double-firing and stale buffer reads on Samsung One UI (Android 14/15).
   - Robust streaming architecture: Decodes 4-bit IMA-ADPCM chunks per-frame for real-time RMS volume metering and emits partial audio frames.
   - Watchdog & delivery resilience: Automatically finalizes and dispatches collected audio upon receiving `0x03` Audio End sentinel, `0x00` (IDLE) state update, or after a 1200ms silence watchdog timer to prevent UI freezes.
   - Dispatches `onWakeWordDetected`, `onAudioStreamStarted`, `onAudioChunkReceived`, `onCommandAudioReceived`, and `onCommandTextReceived` to `FridayService`.

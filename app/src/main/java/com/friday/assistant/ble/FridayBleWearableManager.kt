@@ -315,6 +315,8 @@ class FridayBleWearableManager private constructor(private val context: Context)
             gatt?.discoverServices()
         }
 
+        private val pendingSubscriptions = java.util.ArrayDeque<BluetoothGattCharacteristic>()
+
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS || gatt == null) {
@@ -328,39 +330,61 @@ class FridayBleWearableManager private constructor(private val context: Context)
                 return
             }
 
-            FridayLogger.i(TAG, "Found Friday Wearable Service! Subscribing to characteristics...")
+            FridayLogger.i(TAG, "Found Friday Wearable Service! Subscribing to characteristics sequentially...")
 
-            // Subscribe to State characteristic (0x01 = Wake detected)
+            pendingSubscriptions.clear()
             val stateChar = service.getCharacteristic(STATE_CHAR_UUID)
-            if (stateChar != null) {
-                enableNotifications(gatt, stateChar)
-            }
+            val commandChar = service.getCharacteristic(COMMAND_CHAR_UUID)
 
-            // Subscribe to Command characteristic (Audio/text payload)
-            mainHandler.postDelayed({
-                val commandChar = service.getCharacteristic(COMMAND_CHAR_UUID)
-                if (commandChar != null) {
-                    enableNotifications(gatt, commandChar)
-                }
-            }, 300L)
+            if (stateChar != null) pendingSubscriptions.add(stateChar)
+            if (commandChar != null) pendingSubscriptions.add(commandChar)
+
+            subscribeNextCharacteristic(gatt)
         }
 
         @SuppressLint("MissingPermission")
-        private fun enableNotifications(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            val registered = gatt.setCharacteristicNotification(characteristic, true)
-            FridayLogger.d(TAG, "setCharacteristicNotification on ${characteristic.uuid}: $registered")
+        private fun subscribeNextCharacteristic(gatt: BluetoothGatt) {
+            val char = pendingSubscriptions.pollFirst() ?: run {
+                FridayLogger.i(TAG, "All wearable characteristics subscribed successfully! Ready for wake-word and audio.")
+                return
+            }
 
-            val descriptor = characteristic.getDescriptor(CCCD_UUID)
+            val registered = gatt.setCharacteristicNotification(char, true)
+            FridayLogger.d(TAG, "setCharacteristicNotification on ${char.uuid}: $registered")
+
+            val descriptor = char.getDescriptor(CCCD_UUID)
             if (descriptor != null) {
-                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                gatt.writeDescriptor(descriptor)
-                FridayLogger.d(TAG, "Wrote CCCD notification descriptor for: ${characteristic.uuid}")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                } else {
+                    @Suppress("DEPRECATION")
+                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    @Suppress("DEPRECATION")
+                    gatt.writeDescriptor(descriptor)
+                }
+                FridayLogger.d(TAG, "Writing CCCD notification descriptor for: ${char.uuid}")
+            } else {
+                subscribeNextCharacteristic(gatt)
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onDescriptorWrite(gatt: BluetoothGatt?, descriptor: BluetoothGattDescriptor?, status: Int) {
+            FridayLogger.d(TAG, "onDescriptorWrite for ${descriptor?.characteristic?.uuid}, status=$status")
+            if (gatt != null) {
+                mainHandler.post {
+                    subscribeNextCharacteristic(gatt)
+                }
             }
         }
 
         @Deprecated("Deprecated in Java")
         override fun onCharacteristicChanged(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?) {
-            handleCharacteristicUpdate(characteristic)
+            // Android 13+ (Tiramisu+) uses onCharacteristicChanged(gatt, characteristic, value).
+            // Only process here on older Android versions to prevent double invocation and reading stale cached buffers!
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                handleCharacteristicUpdate(characteristic)
+            }
         }
 
         override fun onCharacteristicChanged(
@@ -455,36 +479,42 @@ class FridayBleWearableManager private constructor(private val context: Context)
                 val packetType = value[0].toInt() and 0xFF
                 when (packetType) {
                     0x00 -> {
-                        // Direct text command (e.g., if Pi did ASR locally)
-                        val text = String(value, 1, value.size - 1, Charsets.UTF_8).trim()
-                        if (text.isNotBlank() && !text.contains("\uFFFD") && text.any { it.isLetter() }) {
-                            FridayLogger.i(TAG, "Received direct text command from wearable: '$text'")
-                            mainHandler.post {
-                                onCommandTextReceived?.invoke(text)
+                        // Direct text command (only if non-binary printable text with at least 2 letters)
+                        if (value.size > 2) {
+                            val text = String(value, 1, value.size - 1, Charsets.UTF_8).trim()
+                            val isClean = text.isNotBlank() && !text.contains("\uFFFD") && text.count { it.isLetter() } >= 2
+                            if (isClean) {
+                                FridayLogger.i(TAG, "Received direct text command from wearable: '$text'")
+                                mainHandler.post {
+                                    onCommandTextReceived?.invoke(text)
+                                }
                             }
-                        } else {
-                            FridayLogger.w(TAG, "Ignored invalid/corrupted text packet from wearable (raw size: ${value.size})")
                         }
                     }
 
                     0x01 -> {
-                        // Audio Header: 0x01 | totalChunks (2B) | totalBytes (4B) | sampleRate (2B)
-                        if (value.size >= 9) {
-                            expectedChunks = ((value[1].toInt() and 0xFF) shl 8) or (value[2].toInt() and 0xFF)
-                            expectedBytes = ((value[3].toInt() and 0xFF) shl 24) or
-                                    ((value[4].toInt() and 0xFF) shl 16) or
-                                    ((value[5].toInt() and 0xFF) shl 8) or
-                                    (value[6].toInt() and 0xFF)
-                            sampleRate = ((value[7].toInt() and 0xFF) shl 8) or (value[8].toInt() and 0xFF)
+                        // Audio Header: 0x01 | totalChunks (2B) | totalBytes (4B) | sampleRate (2B) = exactly 9 bytes
+                        if (value.size == 9) {
+                            val rate = ((value[7].toInt() and 0xFF) shl 8) or (value[8].toInt() and 0xFF)
+                            if (rate == 16000) {
+                                expectedChunks = ((value[1].toInt() and 0xFF) shl 8) or (value[2].toInt() and 0xFF)
+                                expectedBytes = ((value[3].toInt() and 0xFF) shl 24) or
+                                        ((value[4].toInt() and 0xFF) shl 16) or
+                                        ((value[5].toInt() and 0xFF) shl 8) or
+                                        (value[6].toInt() and 0xFF)
+                                sampleRate = rate
 
-                            _isAudioStreaming.value = true
-                            _streamChunksReceived.value = 0
-                            audioBufferAccumulator.reset()
-                            resetStreamTimeout()
-                            FridayLogger.i(TAG, "Incoming Wearable Audio: $expectedChunks chunks, $expectedBytes bytes @ ${sampleRate}Hz")
+                                _isAudioStreaming.value = true
+                                _streamChunksReceived.value = 0
+                                audioBufferAccumulator.reset()
+                                resetStreamTimeout()
+                                FridayLogger.i(TAG, "Incoming Wearable Audio Header: $expectedChunks chunks, $expectedBytes bytes @ ${sampleRate}Hz")
 
-                            mainHandler.post {
-                                onAudioStreamStarted?.invoke()
+                                mainHandler.post {
+                                    onAudioStreamStarted?.invoke()
+                                }
+                            } else {
+                                FridayLogger.w(TAG, "Ignored invalid audio header (rate: $rate != 16000Hz)")
                             }
                         }
                     }

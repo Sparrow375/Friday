@@ -309,9 +309,12 @@ void connect_callback(uint16_t conn_handle) {
     conn->getPeerName(central_name, sizeof(central_name));
     conn->requestDataLengthUpdate();
     conn->requestMtuExchange(247);
+    Serial.print(F("BLE Connected: "));
+    Serial.print(central_name);
+    Serial.print(F(" (Negotiating MTU, current: "));
+    Serial.print(conn->getMtu());
+    Serial.println(F(")"));
   }
-  Serial.print(F("BLE Connected: "));
-  Serial.println(central_name);
   digitalWrite(LED_BLUE, LOW); // Steady blue
 }
 
@@ -359,8 +362,9 @@ void setup() {
   PDM.setGain(45); // Set gain AFTER begin()
   Serial.println(F("OK!"));
 
-  // 2. Initialize Bluetooth LE with standard safe memory footprint
+  // 2. Initialize Bluetooth LE with high bandwidth (MTU 247, connection interval 7.5-15ms)
   Serial.print(F("[2/3] Initializing Bluefruit LE... "));
+  Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
   if (!Bluefruit.begin()) {
     Serial.println(F("FAILED!"));
   } else {
@@ -568,28 +572,33 @@ void loop() {
       int currentHead = rollingWriteIdx;
       int availableSamples = (currentHead - streamingReadIdx + ROLLING_BUFFER_SIZE) % ROLLING_BUFFER_SIZE;
 
-      while (availableSamples >= FRAME_SAMPLES && chunkIndex < 350) {
-        short chunk[FRAME_SAMPLES];
-        for (int i = 0; i < FRAME_SAMPLES; i++) {
+      BLEConnection* activeConn = Bluefruit.Connection(Bluefruit.connHandle());
+      uint16_t connMtu = activeConn ? activeConn->getMtu() : 23;
+      int frameSamples = (connMtu >= 134) ? 256 : 32;
+      int payloadBytes = frameSamples / 2;
+
+      while (availableSamples >= frameSamples && chunkIndex < 500) {
+        short chunk[256];
+        for (int i = 0; i < frameSamples; i++) {
           chunk[i] = rollingBuffer[(streamingReadIdx + i) % ROLLING_BUFFER_SIZE];
         }
 
-        // Encode 256 samples to 128 ADPCM bytes
-        uint8_t adpcmPayload[ADPCM_PAYLOAD_SIZE];
-        encodeFrame(chunk, adpcmPayload, FRAME_SAMPLES);
+        // Encode samples to ADPCM bytes (4-bit per sample)
+        uint8_t adpcmPayload[128];
+        encodeFrame(chunk, adpcmPayload, frameSamples);
 
-        // Construct packet: 0x02 | chunkIdx(2B) | payload(128B) = 131 bytes
-        uint8_t packet[3 + ADPCM_PAYLOAD_SIZE];
+        // Construct packet: 0x02 | chunkIdx(2B) | payload
+        uint8_t packet[3 + 128];
         packet[0] = 0x02; // Audio Chunk
         packet[1] = (chunkIndex >> 8) & 0xFF;
         packet[2] = chunkIndex & 0xFF;
-        memcpy(&packet[3], adpcmPayload, ADPCM_PAYLOAD_SIZE);
+        memcpy(&packet[3], adpcmPayload, payloadBytes);
 
-        bool sent = commandCharacteristic.notify(packet, sizeof(packet));
+        bool sent = commandCharacteristic.notify(packet, 3 + payloadBytes);
         if (sent) {
           chunkIndex++;
-          streamingReadIdx = (streamingReadIdx + FRAME_SAMPLES) % ROLLING_BUFFER_SIZE;
-          availableSamples -= FRAME_SAMPLES;
+          streamingReadIdx = (streamingReadIdx + frameSamples) % ROLLING_BUFFER_SIZE;
+          availableSamples -= frameSamples;
         } else {
           // BLE TX buffer full - wait briefly for SoftDevice stack to transmit
           delay(4);
@@ -607,11 +616,11 @@ void loop() {
           finishStreaming = true;
         } else if (speechFrames == 0 && silenceFrames >= 32) {
           finishStreaming = true;
-        } else if (chunkIndex >= 220 || (millis() - recordingStartTime > 3500)) {
+        } else if (chunkIndex >= 300 || (millis() - recordingStartTime > 3500)) {
           finishStreaming = true;
         }
       } else {
-        if (chunkIndex >= 156 || (millis() - recordingStartTime > 2800)) {
+        if (chunkIndex >= 200 || (millis() - recordingStartTime > 2800)) {
           finishStreaming = true;
         }
       }
@@ -620,22 +629,22 @@ void loop() {
         // Drain any remaining buffered samples
         currentHead = rollingWriteIdx;
         availableSamples = (currentHead - streamingReadIdx + ROLLING_BUFFER_SIZE) % ROLLING_BUFFER_SIZE;
-        while (availableSamples >= FRAME_SAMPLES && chunkIndex < 350) {
-          short chunk[FRAME_SAMPLES];
-          for (int i = 0; i < FRAME_SAMPLES; i++) {
+        while (availableSamples >= frameSamples && chunkIndex < 500) {
+          short chunk[256];
+          for (int i = 0; i < frameSamples; i++) {
             chunk[i] = rollingBuffer[(streamingReadIdx + i) % ROLLING_BUFFER_SIZE];
           }
-          uint8_t adpcmPayload[ADPCM_PAYLOAD_SIZE];
-          encodeFrame(chunk, adpcmPayload, FRAME_SAMPLES);
-          uint8_t packet[3 + ADPCM_PAYLOAD_SIZE];
+          uint8_t adpcmPayload[128];
+          encodeFrame(chunk, adpcmPayload, frameSamples);
+          uint8_t packet[3 + 128];
           packet[0] = 0x02;
           packet[1] = (chunkIndex >> 8) & 0xFF;
           packet[2] = chunkIndex & 0xFF;
-          memcpy(&packet[3], adpcmPayload, ADPCM_PAYLOAD_SIZE);
-          if (commandCharacteristic.notify(packet, sizeof(packet))) {
+          memcpy(&packet[3], adpcmPayload, payloadBytes);
+          if (commandCharacteristic.notify(packet, 3 + payloadBytes)) {
             chunkIndex++;
-            streamingReadIdx = (streamingReadIdx + FRAME_SAMPLES) % ROLLING_BUFFER_SIZE;
-            availableSamples -= FRAME_SAMPLES;
+            streamingReadIdx = (streamingReadIdx + frameSamples) % ROLLING_BUFFER_SIZE;
+            availableSamples -= frameSamples;
           } else {
             delay(10);
             break;

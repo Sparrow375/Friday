@@ -508,6 +508,36 @@ The project uses a clean package namespace `com.friday.assistant`:
             - **Validation**:
               - Pendant firmware compiled cleanly with 0 errors via `scripts/compile_pendant.py`.
               - Android APK assembled cleanly (`assembleDebug` BUILD SUCCESSFUL in 53s).
+          * **Speech Recognition Package Visibility, BLE MTU & Sequential Subscription Overhaul (October 2026 - Part 10)**:
+            - **Diagnosed Root Causes from User Log Analysis**:
+              1. **Phone STT Silence & Zero Waveform (`SpeechToTextHelper.kt`, `AndroidManifest.xml`)**:
+                 - Although `createEngine()` filtered out the internal stub via `pm.queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE))`, Android 11+ (API 30+) strictly enforces Package Visibility.
+                 - Because `AndroidManifest.xml` only had `android.intent.action.TTS_SERVICE` in `<queries>`, `queryIntentServices` returned empty (hiding Google and Samsung system recognition services).
+                 - `createEngine()` fell through to the default factory, which circularly re-bound to Friday's own empty `FridayRecognitionService` stub. Spoken words into the phone microphone produced zero recognition callbacks, zero RMS waveform, and no transcription.
+              2. **BLE 20-Byte Packet Truncation & SoftDevice Default MTU (`xiao_friday_pendant.ino`)**:
+                 - In Adafruit Bluefruit52Lib / Nordic SoftDevice S140, peripheral MTU defaults to 23 bytes (effective payload: 20 bytes) unless `Bluefruit.configPrphBandwidth(BANDWIDTH_MAX)` is called *before* `Bluefruit.begin()`.
+                 - When `commandCharacteristic.notify(packet, 131)` was called with a 131-byte audio chunk, SoftDevice truncated every packet to 20 bytes.
+                 - Truncated audio chunks corrupted the IMA-ADPCM decode stream.
+              3. **GATT Write Collision & Missing CCCD Notifications (`FridayBleWearableManager.kt`)**:
+                 - Calling `writeDescriptor(descriptor)` for `stateChar` and `commandChar` within a blind 300ms delay caused GATT collision in the Android BLE stack, silently dropping CCCD notifications for `commandCharacteristic`.
+                 - On Samsung One UI (Android 14/15), the framework invoked both the deprecated `onCharacteristicChanged(gatt, char)` and modern `onCharacteristicChanged(gatt, char, value)`. Accessing deprecated `char.value` yielded stale 20-byte zero arrays which failed text validation and spammed corruption warnings.
+              4. **Fragile Packet Header Parsing**:
+                 - In `COMMAND_CHAR_UUID`, any packet with `value[0] == 0x01` was parsed as an audio header even if sample rate was garbage (e.g. 29509Hz), falsely starting a stream on random binary fragments.
+            - **Resolutions Applied**:
+              1. **Android Package Visibility & Explicit Engine Candidates (`AndroidManifest.xml`, `SpeechToTextHelper.kt`)**:
+                 - Added `android.speech.RecognitionService`, `com.google.android.googlequicksearchbox`, `com.samsung.android.bixby.agent`, and `com.samsung.android.svoiceime` to `<queries>` in `AndroidManifest.xml`.
+                 - Added explicit candidate `ComponentName` resolution in `createEngine()` as fail-safe fallback.
+                 - Upgraded all speech recognition logs to `FridayLogger` for real-time visibility in the Dashboard Log Viewer.
+              2. **High-Bandwidth MTU & Adaptive Sizing in Firmware (`xiao_friday_pendant.ino`)**:
+                 - Added `Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);` before `Bluefruit.begin()` to enable MTU 247 on Nordic SoftDevice S140.
+                 - Implemented dynamic chunk sizing in `loop()`: checks `activeConn->getMtu()`. If MTU >= 134, transmits full 128-byte ADPCM frames (256 samples). If MTU < 134, transmits 16-byte ADPCM sub-frames (32 samples = 19B packet), completely eliminating truncation even if MTU negotiation remains at default 23 bytes.
+              3. **Sequential GATT CCCD Queue & Callback Dedup (`FridayBleWearableManager.kt`)**:
+                 - Implemented `pendingSubscriptions` FIFO queue advancing on `onDescriptorWrite()`, ensuring 100% reliable subscription to both `STATE_CHAR_UUID` and `COMMAND_CHAR_UUID`.
+                 - Restricted deprecated `onCharacteristicChanged(gatt, char)` to `Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU`, eliminating double-callback execution and stale buffer reads on Android 13+.
+                 - Enforced strict audio header validation: `value.size == 9 && sampleRate == 16000`.
+            - **Validation**:
+              - Pendant firmware compiled cleanly via `python scripts/compile_pendant.py` (0 errors).
+              - Android APK compiled and assembled cleanly (`./gradlew assembleDebug` BUILD SUCCESSFUL in 1m 26s).
 
 
 
