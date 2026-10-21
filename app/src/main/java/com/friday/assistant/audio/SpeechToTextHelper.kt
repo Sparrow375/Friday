@@ -1,11 +1,15 @@
 package com.friday.assistant.audio
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.speech.RecognitionListener
+import android.speech.RecognitionService
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
@@ -43,13 +47,52 @@ class SpeechToTextHelper(
     private var earlyCommitFired = false
     private var earlyCommitRunnable: Runnable? = null
 
+    private fun createEngine(): SpeechRecognizer {
+        val pm = context.packageManager
+        val recognitionIntent = Intent(RecognitionService.SERVICE_INTERFACE)
+        val resolveInfos = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.queryIntentServices(
+                    recognitionIntent,
+                    PackageManager.ResolveInfoFlags.of(0)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                pm.queryIntentServices(recognitionIntent, 0)
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        // Filter out our own app package to avoid binding to our own stub RecognitionService
+        val externalServices = resolveInfos.filter {
+            it.serviceInfo != null && it.serviceInfo.packageName != context.packageName
+        }
+
+        val preferredService = externalServices.firstOrNull {
+            val pkg = it.serviceInfo.packageName.lowercase(Locale.getDefault())
+            pkg.contains("google") || pkg.contains("samsung")
+        } ?: externalServices.firstOrNull()
+
+        val recognizer = if (preferredService != null) {
+            val componentName = ComponentName(preferredService.serviceInfo.packageName, preferredService.serviceInfo.name)
+            Log.i(TAG, "Binding SpeechRecognizer to external service: $componentName")
+            SpeechRecognizer.createSpeechRecognizer(context, componentName)
+        } else {
+            Log.w(TAG, "No external RecognitionService found; falling back to default factory")
+            SpeechRecognizer.createSpeechRecognizer(context)
+        }
+
+        return recognizer.apply {
+            setRecognitionListener(buildRecognitionListener())
+        }
+    }
+
     fun warmUp() {
         mainHandler.post {
             if (speechRecognizer == null) {
                 try {
-                    speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-                        setRecognitionListener(buildRecognitionListener())
-                    }
+                    speechRecognizer = createEngine()
                     Log.i(TAG, "SpeechRecognizer pre-warmed successfully")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to pre-warm SpeechRecognizer", e)
@@ -143,9 +186,7 @@ class SpeechToTextHelper(
 
             try {
                 if (speechRecognizer == null) {
-                    speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-                        setRecognitionListener(buildRecognitionListener())
-                    }
+                    speechRecognizer = createEngine()
                 }
 
                 playChimeIfEnabled()

@@ -600,11 +600,14 @@ void loop() {
       // Check for completion of spoken phrase
       bool finishStreaming = false;
       if (debugVadStreamingMode) {
-        // Finish when user stops speaking for ~450ms (28 frames) after at least 12 frames of speech (~190ms),
-        // or when max utterance limit (4.5s / 280 chunks) is reached
-        if (speechFrames >= 12 && silenceFrames >= 28) {
+        // Finish when user stops speaking for ~350ms (22 frames) after at least 4 frames of speech (~65ms),
+        // or if silence continues for ~500ms (32 frames) with minimal speech (avoids streaming 4.5s of empty silence),
+        // or when max utterance limit (3.5s / 220 chunks) is reached
+        if (speechFrames >= 4 && silenceFrames >= 22) {
           finishStreaming = true;
-        } else if (chunkIndex >= 280 || (millis() - recordingStartTime > 4500)) {
+        } else if (speechFrames == 0 && silenceFrames >= 32) {
+          finishStreaming = true;
+        } else if (chunkIndex >= 220 || (millis() - recordingStartTime > 3500)) {
           finishStreaming = true;
         }
       } else {
@@ -634,16 +637,16 @@ void loop() {
             streamingReadIdx = (streamingReadIdx + FRAME_SAMPLES) % ROLLING_BUFFER_SIZE;
             availableSamples -= FRAME_SAMPLES;
           } else {
-            delay(4);
+            delay(10);
             break;
           }
         }
 
-        // Send Audio End sentinel packet (0x03) with 5x retry
+        // Send Audio End sentinel packet (0x03) with robust retry and SoftDevice queue yield
         uint8_t endPacket[1] = { 0x03 };
-        for (int r = 0; r < 5; r++) {
+        for (int r = 0; r < 20; r++) {
           if (commandCharacteristic.notify(endPacket, 1)) break;
-          delay(5);
+          delay(15);
         }
 
         Serial.print(F("[Pendant BLE] Voice streaming complete. Chunks sent: "));
@@ -657,8 +660,13 @@ void loop() {
         speechFrames = 0;
         currentState = STATE_IDLE;
         wakeCooldownUntil = millis() + 800; // 800ms cooldown after speech
+
         stateCharacteristic.write8((uint8_t)STATE_IDLE);
-        stateCharacteristic.notify8((uint8_t)STATE_IDLE);
+        for (int r = 0; r < 10; r++) {
+          if (stateCharacteristic.notify8((uint8_t)STATE_IDLE)) break;
+          delay(10);
+        }
+
         digitalWrite(LED_RED, HIGH);
         digitalWrite(LED_BLUE, LOW);
       }

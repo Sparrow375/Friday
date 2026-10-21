@@ -492,6 +492,22 @@ The project uses a clean package namespace `com.friday.assistant`:
             - **Validation**:
               1. Pendant firmware compiled with 0 errors via `arm-none-eabi-g++` (`scripts/compile_pendant.py`).
               2. Android application compiled cleanly (`./gradlew compileDebugKotlin` BUILD SUCCESSFUL in 40s).
+          * **Phone & Pendant Live Speech-to-Text Diagnosis & Real-Time Streaming Overhaul (October 2026 - Part 9)**:
+            - **Diagnosed Root Causes**:
+              1. **Phone STT Circular Deadlock (`SpeechToTextHelper.kt`)**: Because Friday registered as Android Default Digital Assistant with `FridayRecognitionService` stub in `interaction_service.xml`, calling `SpeechRecognizer.createSpeechRecognizer(context)` bound circularly to Friday's own empty stub instead of the system's real engine. Speech was never captured or processed.
+              2. **Pendant Stream Freeze at 84 Chunks (`FridayBleWearableManager.kt`, `xiao_friday_pendant.ino`)**: When `0x03` Audio End sentinels dropped under BLE TX congestion, the phone never finalized the audio buffer and remained stuck in `LISTENING` state displaying static text (`Streaming from chip (84 chunks)...`). Furthermore, when the chip notified `STATE_IDLE` (0x00), the manager previously ignored accumulated audio bytes.
+              3. **No Live Transcription During Streaming (`FridayService.kt`)**: The overlay previously rendered a static placeholder (`"Speaking into Seeed XIAO Sense..."`) and pseudo-amplitude while streaming, running STT only after full stream conclusion.
+              4. **Model Deletion Loop (`ModelManager.kt`, `build.gradle.kts`)**: Compressed `.bin`/`.onnx` APK assets caused `getAssetSize()` to throw or return buffer chunks (~64KB), triggering a continuous delete-and-re-copy loop of the 32MB Whisper model on UI recomposition.
+              5. **VAD Speech Dilution in Firmware (`xiao_friday_pendant.ino`)**: Requiring `speechFrames >= 12` caused short spoken commands (<190ms) to fail early completion and stream 4.5 seconds of empty silence, diluting RMS below the speech threshold.
+            - **Resolutions Applied**:
+              1. **External SpeechRecognizer Engine Binding (`SpeechToTextHelper.kt`)**: Added `createEngine()` querying installed `RecognitionService` implementations and explicitly binding to Google (`com.google.android.googlequicksearchbox`) or Samsung (`com.samsung.android.bixby.agent`) via `ComponentName`, completely bypassing the internal stub. Added automatic listening trigger on dashboard overlay open.
+              2. **Zero-Stall Stream Watchdog & IDLE Finalization (`FridayBleWearableManager.kt`)**: Added `finalizeAudioStream()` triggered by `0x03` sentinel, `STATE_IDLE` (`0x00`) arrival with buffered audio, or a 1200ms silence watchdog timer. Added `CONNECTION_PRIORITY_HIGH` request on BLE connection.
+              3. **Real-Time Streaming STT & True RMS Waveform (`FridayService.kt`)**: Decoded ADPCM per-chunk into float PCM, calculating real-time RMS to drive dynamic waveform amplitude. Implemented an asynchronous background Whisper partial transcription runner executing every ~20 chunks (~320ms) to display live spoken words on the overlay in real time.
+              4. **Asset Compression & Model Cache Protection (`build.gradle.kts`, `ModelManager.kt`)**: Added `noCompress += listOf("bin", "onnx", "tflite", "gguf")` to `androidResources`. Updated `isWhisperLoaded()` and `getWhisperModelPath()` to check file existence and size (>10MB) rather than re-copying.
+              5. **Firmware VAD Calibration & Sentinel Resilience (`xiao_friday_pendant.ino`)**: Calibrated speech threshold to `speechFrames >= 4` (~65ms) and `silenceFrames >= 22` (~350ms), and upgraded `0x03` sentinel transmission to 20 retries with 15ms queue-yielding delays.
+            - **Validation**:
+              - Pendant firmware compiled cleanly with 0 errors via `scripts/compile_pendant.py`.
+              - Android APK assembled cleanly (`assembleDebug` BUILD SUCCESSFUL in 53s).
 
 
 

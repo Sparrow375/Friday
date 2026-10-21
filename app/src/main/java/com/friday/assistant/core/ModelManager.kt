@@ -119,9 +119,8 @@ class ModelManager(private val context: Context) {
 
     fun getWhisperModelPath(): String {
         val file = File(context.filesDir, "ggml-tiny-q5_1.bin")
-        val assetSize = getAssetSize("ggml-tiny-q5_1.bin")
-        if (!file.exists() || (assetSize > 0 && file.length() != assetSize)) {
-            Log.i(TAG, "Whisper model mismatch or missing (local size: ${file.length()}, asset size: $assetSize). Copying.")
+        if (!file.exists() || file.length() < 10_000_000L) {
+            Log.i(TAG, "Whisper model missing or incomplete (local size: ${file.length()}). Copying.")
             file.delete()
             copyModelFromAssets("ggml-tiny-q5_1.bin", file)
         }
@@ -130,9 +129,8 @@ class ModelManager(private val context: Context) {
 
     fun getSpeakerModelPath(): String {
         val file = File(context.filesDir, SPEAKER_MODEL_NAME)
-        val assetSize = getAssetSize(SPEAKER_MODEL_NAME)
-        if (!file.exists() || (assetSize > 0 && file.length() != assetSize)) {
-            Log.i(TAG, "Speaker model mismatch or missing (local size: ${file.length()}, asset size: $assetSize). Copying.")
+        if (!file.exists() || file.length() < 5_000_000L) {
+            Log.i(TAG, "Speaker model missing or incomplete (local size: ${file.length()}). Copying.")
             file.delete()
             copyModelFromAssets(SPEAKER_MODEL_NAME, file)
         }
@@ -141,9 +139,8 @@ class ModelManager(private val context: Context) {
 
     fun getWakeWordModelPath(): String {
         val file = File(context.filesDir, WAKEWORD_MODEL_NAME)
-        val assetSize = getAssetSize(WAKEWORD_MODEL_NAME)
-        if (!file.exists() || (assetSize > 0 && file.length() != assetSize)) {
-            Log.i(TAG, "Wake-word model mismatch or missing (local size: ${file.length()}, asset size: $assetSize). Copying.")
+        if (!file.exists() || file.length() < 100_000L) {
+            Log.i(TAG, "Wake-word model missing or incomplete (local size: ${file.length()}). Copying.")
             file.delete()
             copyModelFromAssets(WAKEWORD_MODEL_NAME, file)
         }
@@ -157,24 +154,18 @@ class ModelManager(private val context: Context) {
     }
 
     fun isWhisperLoaded(): Boolean {
-        val path = getWhisperModelPath()
-        val file = File(path)
-        val assetSize = getAssetSize("ggml-tiny-q5_1.bin")
-        return file.exists() && (assetSize <= 0 || file.length() == assetSize)
+        val file = File(context.filesDir, "ggml-tiny-q5_1.bin")
+        return file.exists() && file.length() > 10_000_000L
     }
 
     fun isSpeakerLoaded(): Boolean {
-        val path = getSpeakerModelPath()
-        val file = File(path)
-        val assetSize = getAssetSize(SPEAKER_MODEL_NAME)
-        return file.exists() && (assetSize <= 0 || file.length() == assetSize)
+        val file = File(context.filesDir, SPEAKER_MODEL_NAME)
+        return file.exists() && file.length() > 5_000_000L
     }
 
     fun isWakeWordLoaded(): Boolean {
-        val path = getWakeWordModelPath()
-        val file = File(path)
-        val assetSize = getAssetSize(WAKEWORD_MODEL_NAME)
-        return file.exists() && (assetSize <= 0 || file.length() == assetSize)
+        val file = File(context.filesDir, WAKEWORD_MODEL_NAME)
+        return file.exists() && file.length() > 100_000L
     }
 
     fun isNluLoaded(): Boolean {

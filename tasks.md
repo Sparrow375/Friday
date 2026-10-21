@@ -25,5 +25,14 @@
 - [x] 18. Upgrade Pendant Firmware for VAD-triggered speech audio streaming (no wake-word required in debug mode) over BLE with flow control <!-- id: 17 -->
 - [x] 19. Update Android BLE Manager & FridayService to stream pendant audio into local STT (Whisper) and display real-time transcribed text on phone overlay/screen <!-- id: 18 -->
 - [x] 20. Add live wearable debug card / transcript display on MainActivity dashboard for real-time monitoring <!-- id: 19 -->
-- [x] 21. Verify firmware compilation & Android assembleDebug build <!-- id: 20 -->
-
+- [x] 22. Fix Phone Live Speech-to-Text (`SpeechToTextHelper.kt`): Target external SpeechRecognizer engine (Google / Samsung) via ComponentName to avoid binding to Friday's own empty `FridayRecognitionService` stub; auto-start listening on dashboard overlay open <!-- id: 21 -->
+- [x] 23. Fix Pendant Live Transcription & Streaming Delivery:
+  - Eliminate Whisper model delete/re-copy loop in `ModelManager.kt` and disable AAPT compression for `.bin`/`.onnx` in `build.gradle.kts`
+  - Implement real-time partial transcription and real RMS audio metering during BLE chunk streaming
+  - Implement stream finalization on `STATE_IDLE` (0x00) and packet silence timeout to prevent UI freezes
+  - Request `CONNECTION_PRIORITY_HIGH` on Android BLE connection for maximum throughput <!-- id: 22 -->
+- [x] 24. Optimize Pendant Firmware (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino`):
+  - Calibrate speech/silence thresholds (`speechFrames >= 4`, `silenceFrames >= 25`) to prevent diluting short voice commands with silence
+  - Enhance `0x03` sentinel packet transmission with backpressure yielding <!-- id: 23 -->
+- [x] 25. Verify Android build compilation (`assembleDebug`) and pendant firmware compilation <!-- id: 24 -->
+- [x] 26. Update `context.md`, `architechture.md`, commit and push to git <!-- id: 25 -->

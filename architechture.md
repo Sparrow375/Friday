@@ -97,9 +97,11 @@ The Android application is organized under package namespace `com.friday.assista
 - **`FridayBleWearableManager.kt`**:
   - Central BLE manager operating in the background.
   - Automatic low-latency scanning (`ScanFilter` matching `Friday-Pendant`, `Friday-Wearable`, and `SERVICE_UUID`).
-  - Negotiates MTU 512 for high-throughput packet transfers.
+  - Negotiates MTU 512 and requests `CONNECTION_PRIORITY_HIGH` (11.25–15ms connection intervals) for maximum packet throughput.
   - Automatically re-subscribes to GATT notifications on connection and manages exponential-backoff reconnections.
-  - Dispatches `onWakeWordDetected`, `onCommandAudioReceived`, and `onCommandTextReceived` to `FridayService`.
+  - Robust streaming architecture: Decodes 4-bit IMA-ADPCM chunks per-frame for real-time RMS volume metering and emits partial audio frames.
+  - Watchdog & delivery resilience: Automatically finalizes and dispatches collected audio upon receiving `0x03` Audio End sentinel, `0x00` (IDLE) state update, or after a 1200ms silence watchdog timer to prevent UI freezes.
+  - Dispatches `onWakeWordDetected`, `onAudioStreamStarted`, `onAudioChunkReceived`, `onCommandAudioReceived`, and `onCommandTextReceived` to `FridayService`.
 - **`ImaAdpcmDecoder.kt`**:
   - High-performance, zero-allocation Kotlin audio decoder converting 4-bit ADPCM packets back to standard 16kHz float PCM `[-1.0f, 1.0f]`.
 
@@ -109,10 +111,11 @@ The Android application is organized under package namespace `com.friday.assista
   - Manages assistant lifecycle: `IDLE` -> `LISTENING` -> `THINKING` -> `SPEAKING`.
   - Coordinates microphone ownership, audio focus (`AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK` during listening, `EXCLUSIVE` during TTS).
   - Wearable activation routing: Does not activate phone microphone on wearable trigger; instead holds for BLE audio stream from the chip.
+  - Live Streaming Speech-to-Text: Runs background partial Whisper transcription every ~20 chunks (~320ms) during BLE voice streaming, displaying words on the overlay in real time.
   - Anti-recursion cooldown: Enforces 3.0s cooldown and state validation to reject echo self-triggers.
   - Transcript Sanitizer (`cleanAndValidateTranscript`): Strips Whisper hallucination tokens (`[BLANK_AUDIO]`, `(music)`, `Thank you.`), rejects replacement characters (`\uFFFD`, `ï¿½`, `%08`), and requires >= 70% alphanumeric content before routing queries to NLU or web search.
 - **`OverlayManager.kt` & Compose Overlays**:
-  - WindowManager `TYPE_ACCESSIBILITY_OVERLAY` rendering glowing glassmorphic bubble, interactive typewriter text, source chips, and real-time audio waveforms.
+  - WindowManager `TYPE_ACCESSIBILITY_OVERLAY` rendering glowing glassmorphic bubble, interactive typewriter text, source chips, and real-time audio waveforms driven by true microphone RMS volume.
   - Non-intrusive: top-anchored, passes through background touch events unless text input is requested.
 - **`MainActivity.kt`**:
   - Dashboard featuring live diagnostics for Wearable BLE connectivity, model health checks, and quick toggle controls.
@@ -120,10 +123,11 @@ The Android application is organized under package namespace `com.friday.assista
 ### 4.3 Audio & Speech Recognition Pipeline (`audio/`)
 - **`SpeechToTextHelper.kt`**:
   - Reusable, low-latency Android `SpeechRecognizer` wrapper providing real-time partial word updates and RMS amplitude callbacks for phone-side interactions (volume key gestures, digital assistant power button).
+  - Explicitly targets external system recognition services (Google `com.google.android.googlequicksearchbox` or Samsung `com.samsung.android.bixby.agent`) via `ComponentName`, bypassing Friday's internal `RecognitionService` assistant registration stub.
 - **`WhisperEngine.kt`**:
   - JNI bridge to `whisper.cpp` capable of offline transcription of raw audio buffers received from the BLE pendant.
   - Configured with hallucination suppression parameters (`suppress_blank = true`, `suppress_nst = true`, `no_context = true`, `single_segment = true`, `temperature = 0.0f`).
-  - Gated by audio RMS energy check (`rms >= 0.008f`, `maxPeak >= 0.035f`) to eliminate transcription of silence/noise.
+  - Gated by audio RMS energy check (`rms >= 0.003f`, `maxPeak >= 0.015f`) to eliminate transcription of silence/noise.
 - **`SpeakerVerifier.kt`**:
   - ONNX ECAPA-TDNN embedding extractor to authenticate the user's voiceprint.
 

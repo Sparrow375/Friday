@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 
@@ -62,8 +63,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             instance?.reloadBleWearableInternal()
         }
 
-        fun showOverlay() {
-            instance?.showOverlay()
+        fun showOverlay(startListening: Boolean = true) {
+            instance?.showOverlay(startListening)
         }
 
         fun triggerGestureActivation() {
@@ -173,8 +174,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             onAudioStreamStarted = {
                 onWearableAudioStreamStarted()
             }
-            onAudioChunkReceived = { chunkIdx ->
-                onWearableAudioChunkReceived(chunkIdx)
+            onAudioChunkReceived = { chunkIdx, chunkSamples ->
+                onWearableAudioChunkReceived(chunkIdx, chunkSamples)
             }
             onCommandAudioReceived = { audioSamples ->
                 onWearableAudioCommandReceived(audioSamples)
@@ -659,6 +660,9 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     }
 
     private var lastWearableWakeTriggerMs = 0L
+    private var partialWhisperJob: kotlinx.coroutines.Job? = null
+    private val streamingAudioBuffer = java.util.ArrayList<FloatArray>()
+    private var lastPartialTranscribeChunk = 0
 
     private fun onWearableWakeWordTriggered() {
         val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
@@ -689,6 +693,10 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
         if (!prefs.getBoolean("assistant_enabled", true)) return
 
+        streamingAudioBuffer.clear()
+        lastPartialTranscribeChunk = 0
+        partialWhisperJob?.cancel()
+
         serviceScope.launch {
             if (pipelineState.value == PipelineState.SPEAKING) {
                 try { tts?.stop() } catch (e: Exception) { Log.e(TAG, "Error stopping TTS", e) }
@@ -702,21 +710,65 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun onWearableAudioChunkReceived(chunkIdx: Int) {
+    private fun onWearableAudioChunkReceived(chunkIdx: Int, chunkSamples: FloatArray) {
         if (pipelineState.value == PipelineState.LISTENING) {
-            val pseudoAmp = ((chunkIdx % 8) / 8.0f) * 0.7f + 0.3f
-            overlayManager?.updateAmplitude(pseudoAmp)
-            if (chunkIdx % 12 == 0) {
+            // 1. Calculate actual RMS energy from real PCM samples to drive glowing waveform
+            var sumSq = 0.0f
+            for (s in chunkSamples) {
+                sumSq += s * s
+            }
+            val rms = kotlin.math.sqrt(sumSq / chunkSamples.size)
+            val normalizedAmp = (rms * 6.0f).coerceIn(0.08f, 1.0f)
+            overlayManager?.updateAmplitude(normalizedAmp)
+
+            streamingAudioBuffer.add(chunkSamples)
+
+            // 2. Real-time partial transcription every ~20 chunks (~320ms)
+            if (chunkIdx - lastPartialTranscribeChunk >= 20 && partialWhisperJob?.isActive != true) {
+                lastPartialTranscribeChunk = chunkIdx
+                val totalSamples = streamingAudioBuffer.sumOf { it.size }
+                val snapshot = FloatArray(totalSamples)
+                var offset = 0
+                for (arr in streamingAudioBuffer) {
+                    System.arraycopy(arr, 0, snapshot, offset, arr.size)
+                    offset += arr.size
+                }
+
+                partialWhisperJob = serviceScope.launch(Dispatchers.Default) {
+                    val whisperEngine = FridayApplication.whisperEngine
+                    if (!whisperEngine.isModelLoaded()) {
+                        val whisperPath = modelManager.getWhisperModelPath()
+                        if (java.io.File(whisperPath).exists()) {
+                            whisperEngine.loadModel(whisperPath)
+                        }
+                    }
+                    if (whisperEngine.isModelLoaded() && snapshot.size >= 4000) {
+                        val rawPartial = whisperEngine.transcribe(snapshot).trim()
+                        val cleanPartial = cleanAndValidateTranscript(rawPartial, isPartial = true)
+                        if (cleanPartial.isNotBlank() && pipelineState.value == PipelineState.LISTENING) {
+                            withContext(Dispatchers.Main) {
+                                overlayManager?.updateState(
+                                    PipelineState.LISTENING,
+                                    "Streaming from chip (${chunkIdx} chunks)...",
+                                    trans = cleanPartial
+                                )
+                            }
+                        }
+                    }
+                }
+            } else if (chunkIdx % 12 == 0) {
                 overlayManager?.updateState(
                     PipelineState.LISTENING,
-                    "Streaming from chip (${chunkIdx} chunks)...",
-                    trans = "Speaking into Seeed XIAO Sense..."
+                    "Streaming from chip (${chunkIdx} chunks)..."
                 )
             }
         }
     }
 
     private fun onWearableAudioCommandReceived(audioSamples: FloatArray) {
+        partialWhisperJob?.cancel()
+        streamingAudioBuffer.clear()
+
         serviceScope.launch {
             if (audioSamples.isEmpty()) {
                 com.friday.assistant.core.FridayLogger.w(TAG, "Received empty pendant audio buffer")
@@ -736,7 +788,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             com.friday.assistant.core.FridayLogger.i(TAG, "Received pendant audio: ${audioSamples.size} samples (${audioSamples.size / 16000.0f}s), RMS: $rms, MaxPeak: $maxPeak")
 
             // Require minimal speech energy — prevents transcribing silence which causes Whisper hallucinations
-            if (rms < 0.005f || maxPeak < 0.025f) {
+            if (rms < 0.003f || maxPeak < 0.015f) {
                 com.friday.assistant.core.FridayLogger.w(TAG, "Pendant audio is below speech threshold (RMS=$rms, Peak=$maxPeak) — ignoring silence")
                 overlayManager?.updateState(PipelineState.IDLE, "No speech detected on chip")
                 kotlinx.coroutines.delay(1200)
@@ -820,7 +872,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun cleanAndValidateTranscript(raw: String): String {
+    private fun cleanAndValidateTranscript(raw: String, isPartial: Boolean = false): String {
         var text = raw.trim()
         // Strip Whisper bracketed tokens e.g. [BLANK_AUDIO], (music), [applause]
         text = text.replace(Regex("\\[.*?\\]"), "").replace(Regex("\\(.*?\\)"), "").trim()
@@ -836,20 +888,31 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         )
         if (hallucinations.any { lower == it || lower.startsWith(it) }) return ""
 
-        // Alphanumeric ratio check (guards against garbled Unicode symbol trains)
-        val alphaCount = text.count { it.isLetterOrDigit() || it.isWhitespace() }
-        if (alphaCount.toFloat() / text.length < 0.70f) return ""
+        if (!isPartial) {
+            // Alphanumeric ratio check (guards against garbled Unicode symbol trains)
+            val alphaCount = text.count { it.isLetterOrDigit() || it.isWhitespace() }
+            if (alphaCount.toFloat() / text.length < 0.70f) return ""
+        }
 
         return text
     }
 
-    fun showOverlay() {
+    fun showOverlay(startListening: Boolean = true) {
         val enabled = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("assistant_enabled", true)
         if (!enabled) {
             com.friday.assistant.core.FridayLogger.d(TAG, "Assistant is disabled by preference; not showing overlay")
             return
         }
         overlayManager?.show()
+        if (startListening) {
+            serviceScope.launch {
+                if (pipelineState.value == PipelineState.SPEAKING) {
+                    try { tts?.stop() } catch (e: Exception) { Log.e(TAG, "Error stopping TTS", e) }
+                }
+                transitionToState(PipelineState.LISTENING)
+                speechToTextHelper.startListening()
+            }
+        }
     }
 
     /** Called by ScreenshotTool before dispatching the capture action. */

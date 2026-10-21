@@ -109,7 +109,7 @@ class FridayBleWearableManager private constructor(private val context: Context)
     // Callbacks for Friday Service
     var onWakeWordDetected: (() -> Unit)? = null
     var onAudioStreamStarted: (() -> Unit)? = null
-    var onAudioChunkReceived: ((Int) -> Unit)? = null
+    var onAudioChunkReceived: ((Int, FloatArray) -> Unit)? = null
     var onCommandAudioReceived: ((FloatArray) -> Unit)? = null
     var onCommandTextReceived: ((String) -> Unit)? = null
 
@@ -292,8 +292,9 @@ class FridayBleWearableManager private constructor(private val context: Context)
         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
             FridayLogger.d(TAG, "onConnectionStateChange: status=$status, newState=$newState")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                FridayLogger.i(TAG, "Connected to Friday-Wearable GATT server. Requesting MTU 512...")
+                FridayLogger.i(TAG, "Connected to Friday-Wearable GATT server. Requesting MTU 512 and High Priority...")
                 _connectionState.value = ConnectionState.CONNECTED
+                gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                 gatt?.requestMtu(512)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 FridayLogger.w(TAG, "Disconnected from Friday-Wearable GATT server.")
@@ -378,6 +379,41 @@ class FridayBleWearableManager private constructor(private val context: Context)
         handleCharacteristicBytes(characteristic.uuid, value)
     }
 
+    private val streamTimeoutRunnable = Runnable {
+        if (_isAudioStreaming.value || audioBufferAccumulator.size() > 0) {
+            FridayLogger.w(TAG, "Wearable audio stream silence timeout reached (no chunks for 1200ms) - finalizing buffer")
+            finalizeAudioStream()
+        }
+    }
+
+    private fun resetStreamTimeout() {
+        mainHandler.removeCallbacks(streamTimeoutRunnable)
+        mainHandler.postDelayed(streamTimeoutRunnable, 1200L)
+    }
+
+    private fun finalizeAudioStream() {
+        mainHandler.removeCallbacks(streamTimeoutRunnable)
+        if (!_isAudioStreaming.value && audioBufferAccumulator.size() == 0) return
+
+        _isAudioStreaming.value = false
+        val chunks = _streamChunksReceived.value
+        _lastAudioDurationMs.value = chunks * 16
+
+        val compressedBytes = audioBufferAccumulator.toByteArray()
+        audioBufferAccumulator.reset()
+        FridayLogger.i(TAG, "Wearable audio stream finalized: ${compressedBytes.size} compressed bytes ($chunks chunks)")
+
+        if (compressedBytes.isNotEmpty()) {
+            scope.launch(Dispatchers.Default) {
+                val decodedSamples = ImaAdpcmDecoder.decode(compressedBytes)
+                FridayLogger.i(TAG, "Decoded IMA ADPCM -> ${decodedSamples.size} float PCM samples (${decodedSamples.size / 16000.0f}s)")
+                mainHandler.post {
+                    onCommandAudioReceived?.invoke(decodedSamples)
+                }
+            }
+        }
+    }
+
     private fun handleCharacteristicBytes(uuid: UUID, value: ByteArray) {
         if (value.isEmpty()) return
 
@@ -397,13 +433,20 @@ class FridayBleWearableManager private constructor(private val context: Context)
                         FridayLogger.d(TAG, "★ Wearable reported VOICE RECORDING started!")
                         _isAudioStreaming.value = true
                         _streamChunksReceived.value = 0
+                        audioBufferAccumulator.reset()
+                        resetStreamTimeout()
                         mainHandler.post {
                             onAudioStreamStarted?.invoke()
                         }
                     }
                     0x00 -> {
                         FridayLogger.d(TAG, "Wearable is idle.")
-                        _isAudioStreaming.value = false
+                        if (audioBufferAccumulator.size() > 0) {
+                            FridayLogger.i(TAG, "Wearable signaled IDLE while ${audioBufferAccumulator.size()} audio bytes remain in buffer; finalizing stream")
+                            finalizeAudioStream()
+                        } else {
+                            _isAudioStreaming.value = false
+                        }
                     }
                 }
             }
@@ -437,6 +480,7 @@ class FridayBleWearableManager private constructor(private val context: Context)
                             _isAudioStreaming.value = true
                             _streamChunksReceived.value = 0
                             audioBufferAccumulator.reset()
+                            resetStreamTimeout()
                             FridayLogger.i(TAG, "Incoming Wearable Audio: $expectedChunks chunks, $expectedBytes bytes @ ${sampleRate}Hz")
 
                             mainHandler.post {
@@ -449,35 +493,24 @@ class FridayBleWearableManager private constructor(private val context: Context)
                         // Audio Chunk: 0x02 | chunkIndex (2B) | chunkPayload
                         if (value.size > 3) {
                             val chunkIdx = ((value[1].toInt() and 0xFF) shl 8) or (value[2].toInt() and 0xFF)
-                            audioBufferAccumulator.write(value, 3, value.size - 3)
+                            val payload = value.copyOfRange(3, value.size)
+                            audioBufferAccumulator.write(payload, 0, payload.size)
                             _streamChunksReceived.value = _streamChunksReceived.value + 1
                             _isAudioStreaming.value = true
 
+                            resetStreamTimeout()
+
+                            val chunkSamples = ImaAdpcmDecoder.decode(payload)
                             mainHandler.post {
-                                onAudioChunkReceived?.invoke(chunkIdx)
+                                onAudioChunkReceived?.invoke(chunkIdx, chunkSamples)
                             }
                         }
                     }
 
                     0x03 -> {
-                        // Audio End: 0x03 -> Decode and dispatch!
-                        _isAudioStreaming.value = false
-                        val chunks = _streamChunksReceived.value
-                        _lastAudioDurationMs.value = chunks * 16
-
-                        val compressedBytes = audioBufferAccumulator.toByteArray()
-                        audioBufferAccumulator.reset()
-                        FridayLogger.i(TAG, "Wearable audio transmission complete: received ${compressedBytes.size} compressed bytes ($chunks chunks)")
-
-                        if (compressedBytes.isNotEmpty()) {
-                            scope.launch(Dispatchers.Default) {
-                                val decodedSamples = ImaAdpcmDecoder.decode(compressedBytes)
-                                FridayLogger.i(TAG, "Decoded IMA ADPCM -> ${decodedSamples.size} float PCM samples (${decodedSamples.size / 16000.0f}s)")
-                                mainHandler.post {
-                                    onCommandAudioReceived?.invoke(decodedSamples)
-                                }
-                            }
-                        }
+                        // Audio End: 0x03 -> Finalize and dispatch!
+                        FridayLogger.i(TAG, "Wearable signaled end-of-audio sentinel (0x03)")
+                        finalizeAudioStream()
                     }
                 }
             }

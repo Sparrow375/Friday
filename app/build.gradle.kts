@@ -74,6 +74,10 @@ android {
       shaders = false
     }
 
+    androidResources {
+      noCompress += listOf("bin", "onnx", "tflite", "gguf")
+    }
+
     packaging {
       resources {
         excludes += "/META-INF/{AL2.0,LGPL2.1}"
