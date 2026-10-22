@@ -36,6 +36,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -178,6 +180,12 @@ class MainActivity : ComponentActivity() {
         val bleChunksReceived by bleWearableManager.streamChunksReceived.collectAsState()
         val bleLastTranscribed by bleWearableManager.lastTranscribedText.collectAsState()
         val bleLastDurationMs by bleWearableManager.lastAudioDurationMs.collectAsState()
+        val isManualRecording by bleWearableManager.isManualRecording.collectAsState()
+        val manualRecordingTimeLeftSec by bleWearableManager.manualRecordingTimeLeftSec.collectAsState()
+        val isTranscribing by bleWearableManager.isTranscribing.collectAsState()
+        val lastTranscribeDurationMs by bleWearableManager.lastTranscribeDurationMs.collectAsState()
+        var selectedManualDurationSec by remember { mutableStateOf(5) }
+        val clipboardManager = LocalClipboardManager.current
         var wearableDebugOnly by remember {
             mutableStateOf(context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("wearable_debug_transcript_only", true))
         }
@@ -921,12 +929,162 @@ class MainActivity : ComponentActivity() {
                         color = Color.White.copy(alpha = 0.1f)
                     )
 
-                    // Live Audio Streaming Indicator
-                    if (isBleStreaming) {
+                    // 1. Manual Recording Section
+                    Text(
+                        text = "Manual Pendant Audio Capture",
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        fontSize = 14.sp
+                    )
+                    Text(
+                        text = "Trigger on-chip voice recording and get fast offline Whisper transcription",
+                        color = SilverText,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Duration Selector Chips
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Duration:",
+                            color = SilverText,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        val durations = listOf(3, 5, 8, 10)
+                        durations.forEach { dur ->
+                            val isSelected = selectedManualDurationSec == dur
+                            Surface(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(enabled = !isManualRecording && !isTranscribing) {
+                                        selectedManualDurationSec = dur
+                                    },
+                                color = if (isSelected) NeonCyan.copy(alpha = 0.25f) else Color.DarkGray.copy(alpha = 0.35f),
+                                shape = RoundedCornerShape(8.dp),
+                                border = if (isSelected) androidx.compose.foundation.BorderStroke(1.dp, NeonCyan) else null
+                            ) {
+                                Text(
+                                    text = "${dur}s",
+                                    color = if (isSelected) NeonCyan else SilverText,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Big Interactive Action Button
+                    val isConnected = bleConnectionState == com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.CONNECTED
+                    if (isManualRecording) {
+                        // Active Recording State
+                        Button(
+                            onClick = { bleWearableManager.stopManualRecording() },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(12.dp)
+                                        .background(Color.White, CircleShape)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = "Recording Chip Mic (${manualRecordingTimeLeftSec}s) — Tap to Stop",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        }
+                    } else if (isTranscribing) {
+                        // Transcribing State
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(bottom = 8.dp),
+                                .height(52.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            color = NeonCyan.copy(alpha = 0.15f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, NeonCyan.copy(alpha = 0.4f))
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    color = NeonCyan,
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = "Transcribing with Local Whisper...",
+                                    color = NeonCyan,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+                    } else {
+                        // Ready to Record State
+                        Button(
+                            onClick = {
+                                if (isConnected) {
+                                    bleWearableManager.startManualRecording(selectedManualDurationSec)
+                                } else {
+                                    Toast.makeText(context, "Pendant is not connected", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isConnected) NeonBlue else SlateGray
+                            )
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Mic,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = if (isConnected) "Record from Pendant (${selectedManualDurationSec}s)" else "Pendant Offline (Connect to Record)",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        }
+                    }
+
+                    // Live Audio Streaming Indicator (during any stream)
+                    if (isBleStreaming && !isManualRecording) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
                             color = Color(0xFFEF4444).copy(alpha = 0.15f),
                             shape = RoundedCornerShape(10.dp),
                             border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.4f))
@@ -953,44 +1111,92 @@ class MainActivity : ComponentActivity() {
 
                     // Live Transcribed Text from Chip
                     if (bleLastTranscribed.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(10.dp))
                         Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 10.dp),
-                            color = Color(0xFF0F172A).copy(alpha = 0.8f),
-                            shape = RoundedCornerShape(10.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, NeonCyan.copy(alpha = 0.35f))
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Color(0xFF0F172A).copy(alpha = 0.85f),
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, NeonCyan.copy(alpha = 0.45f))
                         ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
+                            Column(modifier = Modifier.padding(14.dp)) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(
-                                        text = "Live Chip Speech-To-Text:",
-                                        color = NeonCyan,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp
-                                    )
-                                    if (bleLastDurationMs > 0) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .background(Color(0xFF10B981), CircleShape)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = "${bleLastDurationMs}ms (Local Whisper)",
+                                            text = "Chip Voice Transcription:",
+                                            color = NeonCyan,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                    val telemetry = buildString {
+                                        if (bleLastDurationMs > 0) append("${bleLastDurationMs}ms audio")
+                                        if (lastTranscribeDurationMs > 0) append(" • ${lastTranscribeDurationMs}ms STT")
+                                    }
+                                    if (telemetry.isNotEmpty()) {
+                                        Text(
+                                            text = telemetry,
                                             color = SilverText,
                                             fontSize = 10.sp
                                         )
                                     }
                                 }
-                                Spacer(modifier = Modifier.height(4.dp))
+                                Spacer(modifier = Modifier.height(6.dp))
                                 Text(
                                     text = "“$bleLastTranscribed”",
                                     color = Color.White,
                                     fontWeight = FontWeight.SemiBold,
-                                    fontSize = 14.sp
+                                    fontSize = 15.sp,
+                                    lineHeight = 21.sp
                                 )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            clipboardManager.setText(AnnotatedString(bleLastTranscribed))
+                                            Toast.makeText(context, "Copied transcription to clipboard", Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.weight(1f).height(36.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = SlateGray)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ContentCopy,
+                                            contentDescription = "Copy",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Copy", fontSize = 12.sp, color = Color.White)
+                                    }
+                                    Button(
+                                        onClick = {
+                                            bleWearableManager.updateLastTranscribed("")
+                                        },
+                                        modifier = Modifier.height(36.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)
+                                    ) {
+                                        Text("Clear", fontSize = 12.sp, color = SilverText)
+                                    }
+                                }
                             }
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     // Debug Mode (Display Only) Toggle
                     Row(
@@ -2089,6 +2295,19 @@ class MainActivity : ComponentActivity() {
         
         var isRecording by remember { mutableStateOf(false) }
         var partialTranscript by remember { mutableStateOf("") }
+
+        val bleWearableManager = remember { com.friday.assistant.ble.FridayBleWearableManager.getInstance(context) }
+        val bleConnectionState by bleWearableManager.connectionState.collectAsState()
+        val isPendantRecording by bleWearableManager.isManualRecording.collectAsState()
+        val pendantTimeLeft by bleWearableManager.manualRecordingTimeLeftSec.collectAsState()
+        val isPendantTranscribing by bleWearableManager.isTranscribing.collectAsState()
+        val pendantTranscript by bleWearableManager.lastTranscribedText.collectAsState()
+
+        LaunchedEffect(pendantTranscript) {
+            if (pendantTranscript.isNotBlank() && pendantTranscript != "(No speech detected)") {
+                textInput = pendantTranscript
+            }
+        }
         
         val listState = rememberLazyListState()
         
@@ -2355,6 +2574,60 @@ class MainActivity : ComponentActivity() {
                 }
             }
             
+            // Live pendant recording status
+            if (isPendantRecording || isPendantTranscribing) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                        .border(1.dp, if (isPendantRecording) AlertRed.copy(alpha = 0.6f) else NeonCyan.copy(alpha = 0.6f), RoundedCornerShape(14.dp)),
+                    colors = CardDefaults.cardColors(containerColor = GlassObsidian)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (isPendantRecording) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .background(AlertRed, CircleShape)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = "Pendant Mic: Recording (${pendantTimeLeft}s remaining)...",
+                                color = Color.White,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Button(
+                                onClick = { bleWearableManager.stopManualRecording() },
+                                colors = ButtonDefaults.buttonColors(containerColor = AlertRed),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier.height(28.dp)
+                            ) {
+                                Text("Stop", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        } else {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = NeonCyan,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = "Transcribing chip speech with Whisper...",
+                                color = NeonCyan,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+            
             // Text input box / Microphone controls
             Row(
                 modifier = Modifier
@@ -2384,7 +2657,7 @@ class MainActivity : ComponentActivity() {
                     )
                 )
                 
-                // Mic Button
+                // Phone Mic Button
                 IconButton(
                     onClick = {
                         if (isRecording) {
@@ -2402,6 +2675,33 @@ class MainActivity : ComponentActivity() {
                         contentDescription = "Voice Input",
                         tint = Color.White
                     )
+                }
+
+                // Pendant Record Button (if BLE wearable is connected)
+                if (bleConnectionState == com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.CONNECTED) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    IconButton(
+                        onClick = {
+                            if (isPendantRecording) {
+                                bleWearableManager.stopManualRecording()
+                            } else {
+                                bleWearableManager.startManualRecording(5)
+                            }
+                        },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(
+                                if (isPendantRecording) AlertRed else NeonCyan.copy(alpha = 0.2f),
+                                RoundedCornerShape(12.dp)
+                            )
+                            .border(1.dp, if (isPendantRecording) AlertRed else NeonCyan, RoundedCornerShape(12.dp))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.GraphicEq,
+                            contentDescription = "Pendant Voice Input",
+                            tint = if (isPendantRecording) Color.White else NeonCyan
+                        )
+                    }
                 }
                 
                 if (textInput.isNotBlank()) {

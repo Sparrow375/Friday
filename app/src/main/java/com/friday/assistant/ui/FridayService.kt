@@ -776,44 +776,41 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 return@launch
             }
 
-            // 1. Calculate RMS energy & peak amplitude to gate out silence / room murmur
-            var sumSq = 0.0
-            var maxPeak = 0.0f
-            for (s in audioSamples) {
-                val abs = kotlin.math.abs(s)
-                if (abs > maxPeak) maxPeak = abs
-                sumSq += (s * s)
-            }
-            val rms = kotlin.math.sqrt(sumSq / audioSamples.size).toFloat()
-            com.friday.assistant.core.FridayLogger.i(TAG, "Received pendant audio: ${audioSamples.size} samples (${audioSamples.size / 16000.0f}s), RMS: $rms, MaxPeak: $maxPeak")
-
-            // Require minimal speech energy — prevents transcribing silence which causes Whisper hallucinations
-            if (rms < 0.003f || maxPeak < 0.015f) {
-                com.friday.assistant.core.FridayLogger.w(TAG, "Pendant audio is below speech threshold (RMS=$rms, Peak=$maxPeak) — ignoring silence")
-                overlayManager?.updateState(PipelineState.IDLE, "No speech detected on chip")
-                kotlinx.coroutines.delay(1200)
-                transitionToState(PipelineState.IDLE)
-                overlayManager?.dismiss()
-                return@launch
-            }
-
-            transitionToState(PipelineState.THINKING, statusMessage = "Transcribing chip voice (Local STT)...")
-            val whisperEngine = FridayApplication.whisperEngine
-            if (!whisperEngine.isModelLoaded()) {
-                val whisperPath = modelManager.getWhisperModelPath()
-                if (java.io.File(whisperPath).exists()) {
-                    whisperEngine.loadModel(whisperPath)
-                }
-            }
-
-            val rawTranscribed = if (whisperEngine.isModelLoaded()) {
-                whisperEngine.transcribe(audioSamples).trim()
+            // Check if wearable manager has already transcribed this audio buffer
+            val existingTranscript = bleWearableManager?.lastTranscribedText?.value.orEmpty().trim()
+            var rawTranscribed = ""
+            val cleanTranscribed = if (existingTranscript.isNotBlank() && existingTranscript != "(No speech detected)") {
+                rawTranscribed = existingTranscript
+                existingTranscript
             } else {
-                ""
-            }
+                // Calculate RMS energy & peak amplitude to gate out silence / room murmur for autonomous streaming
+                var sumSq = 0.0
+                var maxPeak = 0.0f
+                for (s in audioSamples) {
+                    val abs = kotlin.math.abs(s)
+                    if (abs > maxPeak) maxPeak = abs
+                    sumSq += (s * s)
+                }
+                val rms = kotlin.math.sqrt(sumSq / audioSamples.size).toFloat()
+                com.friday.assistant.core.FridayLogger.i(TAG, "Received pendant audio: ${audioSamples.size} samples (${audioSamples.size / 16000.0f}s), RMS: $rms, MaxPeak: $maxPeak")
 
-            // 2. Clean and validate transcript against Whisper hallucinations & binary corruption
-            val cleanTranscribed = cleanAndValidateTranscript(rawTranscribed)
+                transitionToState(PipelineState.THINKING, statusMessage = "Transcribing chip voice (Local STT)...")
+                val whisperEngine = FridayApplication.whisperEngine
+                if (!whisperEngine.isModelLoaded()) {
+                    val whisperPath = modelManager.getWhisperModelPath()
+                    if (java.io.File(whisperPath).exists()) {
+                        whisperEngine.loadModel(whisperPath)
+                    }
+                }
+
+                rawTranscribed = if (whisperEngine.isModelLoaded()) {
+                    whisperEngine.transcribe(audioSamples).trim()
+                } else {
+                    ""
+                }
+
+                cleanAndValidateTranscript(rawTranscribed)
+            }
 
             if (cleanTranscribed.isNotBlank()) {
                 com.friday.assistant.core.FridayLogger.i(TAG, "★ Chip speech cleanly transcribed: '$cleanTranscribed'")

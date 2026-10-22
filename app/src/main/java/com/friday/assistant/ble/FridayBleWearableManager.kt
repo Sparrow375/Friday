@@ -21,7 +21,9 @@ import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.friday.assistant.core.FridayApplication
 import com.friday.assistant.core.FridayLogger
+import com.friday.assistant.core.ModelManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -106,6 +108,24 @@ class FridayBleWearableManager private constructor(private val context: Context)
     private val _lastAudioDurationMs = MutableStateFlow(0)
     val lastAudioDurationMs: StateFlow<Int> = _lastAudioDurationMs.asStateFlow()
 
+    // Manual recording StateFlows for UI
+    private val _isManualRecording = MutableStateFlow(false)
+    val isManualRecording: StateFlow<Boolean> = _isManualRecording.asStateFlow()
+
+    private val _manualRecordingDurationSec = MutableStateFlow(5)
+    val manualRecordingDurationSec: StateFlow<Int> = _manualRecordingDurationSec.asStateFlow()
+
+    private val _manualRecordingTimeLeftSec = MutableStateFlow(0)
+    val manualRecordingTimeLeftSec: StateFlow<Int> = _manualRecordingTimeLeftSec.asStateFlow()
+
+    private val _isTranscribing = MutableStateFlow(false)
+    val isTranscribing: StateFlow<Boolean> = _isTranscribing.asStateFlow()
+
+    private val _lastTranscribeDurationMs = MutableStateFlow(0L)
+    val lastTranscribeDurationMs: StateFlow<Long> = _lastTranscribeDurationMs.asStateFlow()
+
+    private var countdownJob: kotlinx.coroutines.Job? = null
+
     // Callbacks for Friday Service
     var onWakeWordDetected: (() -> Unit)? = null
     var onAudioStreamStarted: (() -> Unit)? = null
@@ -115,6 +135,101 @@ class FridayBleWearableManager private constructor(private val context: Context)
 
     fun updateLastTranscribed(text: String) {
         _lastTranscribedText.value = text
+    }
+
+    /**
+     * Starts manual voice recording from the pendant for [durationSec] seconds.
+     * Pendant lights Red LED and streams uncompressed IMA-ADPCM frames over BLE.
+     */
+    fun startManualRecording(durationSec: Int = 5) {
+        val gatt = activeGatt
+        if (gatt == null || _connectionState.value != ConnectionState.CONNECTED) {
+            FridayLogger.w(TAG, "Cannot start manual recording: Pendant not connected")
+            return
+        }
+        val service = gatt.getService(SERVICE_UUID)
+        val char = service?.getCharacteristic(COMMAND_CHAR_UUID)
+        if (char == null) {
+            FridayLogger.w(TAG, "Cannot start recording: COMMAND_CHAR_UUID not found")
+            return
+        }
+
+        val safeDuration = durationSec.coerceIn(1, 30)
+        _manualRecordingDurationSec.value = safeDuration
+        _manualRecordingTimeLeftSec.value = safeDuration
+        _isManualRecording.value = true
+        _lastTranscribedText.value = ""
+
+        // Reset buffer and chunk stats
+        audioBufferAccumulator.reset()
+        _streamChunksReceived.value = 0
+
+        val packet = byteArrayOf(0x05, safeDuration.toByte())
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(char, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+            } else {
+                @Suppress("DEPRECATION")
+                char.value = packet
+                @Suppress("DEPRECATION")
+                gatt.writeCharacteristic(char)
+            }
+            FridayLogger.i(TAG, "Sent START_MANUAL_RECORDING command (duration: ${safeDuration}s)")
+        } catch (e: Exception) {
+            FridayLogger.e(TAG, "Error writing start recording command: ${e.message}")
+        }
+
+        // Countdown timer in background
+        countdownJob?.cancel()
+        countdownJob = scope.launch {
+            var remaining = safeDuration
+            while (remaining > 0 && _isManualRecording.value) {
+                _manualRecordingTimeLeftSec.value = remaining
+                kotlinx.coroutines.delay(1000L)
+                remaining--
+            }
+            if (_isManualRecording.value) {
+                _manualRecordingTimeLeftSec.value = 0
+                // Time elapsed: request stop
+                stopManualRecording()
+            }
+        }
+    }
+
+    /**
+     * Stops manual recording early and triggers immediate transcription.
+     */
+    fun stopManualRecording() {
+        countdownJob?.cancel()
+        val gatt = activeGatt
+        if (gatt != null && _connectionState.value == ConnectionState.CONNECTED) {
+            val service = gatt.getService(SERVICE_UUID)
+            val char = service?.getCharacteristic(COMMAND_CHAR_UUID)
+            if (char != null) {
+                val packet = byteArrayOf(0x06)
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        gatt.writeCharacteristic(char, packet, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        char.value = packet
+                        @Suppress("DEPRECATION")
+                        gatt.writeCharacteristic(char)
+                    }
+                    FridayLogger.i(TAG, "Sent STOP_MANUAL_RECORDING command to pendant")
+                } catch (e: Exception) {
+                    FridayLogger.w(TAG, "Error writing stop recording command: ${e.message}")
+                }
+            }
+        }
+
+        mainHandler.postDelayed({
+            if (audioBufferAccumulator.size() > 0) {
+                finalizeAudioStream()
+            } else {
+                _isManualRecording.value = false
+            }
+        }, 300L)
     }
 
     fun sendTextToWearable(text: String) {
@@ -417,6 +532,10 @@ class FridayBleWearableManager private constructor(private val context: Context)
 
     private fun finalizeAudioStream() {
         mainHandler.removeCallbacks(streamTimeoutRunnable)
+        countdownJob?.cancel()
+        _isManualRecording.value = false
+        _manualRecordingTimeLeftSec.value = 0
+
         if (!_isAudioStreaming.value && audioBufferAccumulator.size() == 0) return
 
         _isAudioStreaming.value = false
@@ -428,14 +547,61 @@ class FridayBleWearableManager private constructor(private val context: Context)
         FridayLogger.i(TAG, "Wearable audio stream finalized: ${compressedBytes.size} compressed bytes ($chunks chunks)")
 
         if (compressedBytes.isNotEmpty()) {
+            _isTranscribing.value = true
             scope.launch(Dispatchers.Default) {
+                val startTime = System.currentTimeMillis()
                 val decodedSamples = ImaAdpcmDecoder.decode(compressedBytes)
                 FridayLogger.i(TAG, "Decoded IMA ADPCM -> ${decodedSamples.size} float PCM samples (${decodedSamples.size / 16000.0f}s)")
+
+                // Perform fast transcription using shared WhisperEngine
+                val whisper = FridayApplication.whisperEngine
+                if (!whisper.isModelLoaded()) {
+                    val modelManager = ModelManager(context)
+                    val modelPath = modelManager.getWhisperModelPath()
+                    if (java.io.File(modelPath).exists()) {
+                        whisper.loadModel(modelPath)
+                    }
+                }
+
+                var clean = ""
+                var raw = ""
+                if (whisper.isModelLoaded() && decodedSamples.isNotEmpty()) {
+                    raw = whisper.transcribe(decodedSamples).trim()
+                    clean = cleanTranscript(raw)
+                    val duration = System.currentTimeMillis() - startTime
+                    _lastTranscribeDurationMs.value = duration
+                    FridayLogger.i(TAG, "Whisper transcription finished in ${duration}ms: '$clean' (raw: '$raw')")
+                } else {
+                    FridayLogger.w(TAG, "Whisper engine could not transcribe: loaded=${whisper.isModelLoaded()}, samples=${decodedSamples.size}")
+                }
+
+                _isTranscribing.value = false
+                val finalText = if (clean.isNotBlank()) clean else if (raw.isNotBlank()) raw else "(No speech detected)"
+                _lastTranscribedText.value = finalText
+
+                if (clean.isNotBlank()) {
+                    sendTextToWearable(clean)
+                }
+
                 mainHandler.post {
                     onCommandAudioReceived?.invoke(decodedSamples)
                 }
             }
         }
+    }
+
+    private fun cleanTranscript(raw: String): String {
+        var text = raw.trim()
+        text = text.replace(Regex("\\[.*?\\]"), "").replace(Regex("\\(.*?\\)"), "").trim()
+        if (text.contains("\uFFFD") || text.contains("ï¿½") || text.contains("%08") || text.contains("\\x")) return ""
+        if (text.length < 2 || !text.any { it.isLetter() }) return ""
+        val lower = text.lowercase()
+        val hallucinations = listOf(
+            "thank you.", "thank you", "thanks for watching", "subtitles by",
+            "you", "bye.", "bye", "amara.org", "watching", "subscribe"
+        )
+        if (hallucinations.any { lower == it || lower.startsWith(it) }) return ""
+        return text
     }
 
     private fun handleCharacteristicBytes(uuid: UUID, value: ByteArray) {

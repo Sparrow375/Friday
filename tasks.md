@@ -35,4 +35,10 @@
   - Calibrate speech/silence thresholds (`speechFrames >= 4`, `silenceFrames >= 25`) to prevent diluting short voice commands with silence
   - Enhance `0x03` sentinel packet transmission with backpressure yielding <!-- id: 23 -->
 - [x] 25. Verify Android build compilation (`assembleDebug`) and pendant firmware compilation <!-- id: 24 -->
-- [x] 26. Update `context.md`, `architechture.md`, commit and push to git <!-- id: 25 -->
+- [x] 27. Update Pendant Firmware (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino`): Add manual record commands (`0x05` with duration in seconds, `0x06` for stop), streaming continuous 16kHz audio frames over BLE, and sending `0x03` sentinel on completion <!-- id: 26 -->
+- [x] 28. Enhance BLE Manager (`FridayBleWearableManager.kt`): Implement `startManualRecording(durationSec)` and `stopManualRecording()`, state flows for duration countdown/transcribing, and automatic local Whisper transcription upon stream completion <!-- id: 27 -->
+- [x] 29. Update `FridayService.kt`: Integrate fast transcription handover without energy-filtering rejections for manual recordings <!-- id: 28 -->
+- [x] 30. Upgrade Dashboard UI (`MainActivity.kt`): Add duration selection chips (3s, 5s, 10s), interactive manual record button with countdown, live streaming chunks, and fast transcript result card <!-- id: 29 -->
+- [x] 31. Upgrade Assistant Chat UI (`MainActivity.kt`): Add direct Pendant recording button to input bar for hands-free conversational queries <!-- id: 30 -->
+- [x] 32. Compile and verify pendant firmware via `scripts/compile_pendant.py` and Android build via `./gradlew assembleDebug` <!-- id: 31 -->
+- [x] 33. Update `context.md`, `architechture.md`, commit and push to git <!-- id: 32 -->

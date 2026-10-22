@@ -538,6 +538,32 @@ The project uses a clean package namespace `com.friday.assistant`:
             - **Validation**:
               - Pendant firmware compiled cleanly via `python scripts/compile_pendant.py` (0 errors).
               - Android APK compiled and assembled cleanly (`./gradlew assembleDebug` BUILD SUCCESSFUL in 1m 26s).
+          * **Pendant Manual Recording & Zero-Stall Speech-to-Text Pipeline (October 2026 - Part 11)**:
+            - **Problem Statement**:
+              - Autonomous on-chip VAD/wake-word streaming was fragile in noisy/variable conditions, frequently truncating short utterances prematurely on brief inter-word pauses (`speechFrames < 4` or `silenceFrames >= 22`) or failing STT threshold checks.
+              - The user requested a manual button in the app to record a duration from the pendant and then as quickly as possible provide the transcription once recording stops.
+            - **Firmware Implementation (`xiao_friday_pendant.ino`)**:
+              - Added manual recording opcodes over BLE GATT `commandCharacteristic`:
+                - `0x05 | durationSec`: `startManualRecording(durationSec)` immediately switches to `STATE_RECORDING_VOICE`, turns on User Red LED, resets ADPCM encoder, sends Audio Header, and begins streaming continuous 16kHz audio frames without VAD silence truncation.
+                - `0x06`: `stopManualRecording()` signals early termination.
+              - Replaced local `chunkIndex` with global `globalChunkIndex`, supporting durations up to 30 seconds (up to 2,000 chunks).
+              - Upon duration completion or stop command, smoothly drains remaining buffer samples, sends `0x03` Audio End sentinel packet (20x retry with backpressure yields), resets state to `STATE_IDLE` (`0x00`), and turns off Red LED (restoring Blue).
+            - **Android BLE Manager (`FridayBleWearableManager.kt`)**:
+              - Added `startManualRecording(durationSec: Int)` and `stopManualRecording()`.
+              - Introduced reactive StateFlows: `isManualRecording`, `manualRecordingDurationSec`, `manualRecordingTimeLeftSec`, `isTranscribing`, `lastTranscribeDurationMs`.
+              - Automated audio stream completion: upon stream finalization (`0x03` or `STATE_IDLE`), decodes IMA-ADPCM into 16kHz float PCM, executes offline Whisper transcription immediately on `Dispatchers.Default` using shared `WhisperEngine`, and updates `_lastTranscribedText` and `_lastTranscribeDurationMs`.
+              - Added `cleanTranscript()` helper guarding against bracketed Whisper hallucination tokens.
+            - **Service Handover (`FridayService.kt`)**:
+              - Integrated wearable manager pre-transcription handover: checks `bleWearableManager.lastTranscribedText`. If already transcribed, bypasses duplicate inference and silence gating, immediately presenting results on Compose overlay and dispatching queries.
+            - **UI Experience (`MainActivity.kt`)**:
+              - **Dashboard**: Added "Manual Pendant Audio Capture" card inside Wearable Voice Module featuring:
+                - Duration selector chips (`3s`, `5s`, `8s`, `10s`).
+                - Interactive action button toggling between Ready ("Record from Pendant (Xs)"), Recording (crimson pulsing with live seconds countdown and "Tap to Stop"), and Transcribing (cyan spinner).
+                - High-aesthetic Glassmorphism Transcript Card with audio/STT latency badges, large quoted text, and 1-tap "Copy" and "Clear" actions.
+              - **Assistant Chat**: Added dedicated Pendant Mic button (`Icons.Default.GraphicEq`) next to the phone mic in the input bar. Tapping records from the pendant for 5 seconds (or early stop), showing a live countdown card and auto-populating transcribed speech directly into the chat prompt.
+            - **Validation**:
+              - Pendant firmware compiled cleanly with 0 errors via `scripts/compile_pendant.py`.
+              - Android APK built and assembled cleanly (`assembleDebug` BUILD SUCCESSFUL in 31s).
 
 
 

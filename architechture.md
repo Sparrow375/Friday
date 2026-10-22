@@ -80,6 +80,8 @@ graph TD
      - `0x01`: Audio Header (`totalChunks`, `totalBytes`, `sampleRate = 16000`) with 5x retry.
      - `0x02`: Audio Chunk (`chunkIndex` + IMA-ADPCM compressed payload). Dynamically adapts chunk size based on negotiated MTU: full 128-byte ADPCM payload (256 samples) when MTU >= 134; 16-byte ADPCM payload (32 samples = 19B packet) when MTU < 134, completely eliminating packet truncation.
      - `0x03`: Audio End transmission sentinel with 20x retry.
+     - `0x05` (Write): Start manual recording (`0x05 | durationSec`). Streams continuous unmuted audio without VAD silence cutoff.
+     - `0x06` (Write): Stop manual recording early and finalize transmission immediately.
      - `0x0A` / `0x0B` (Write): Mode toggle (`0x0A`: VAD streaming debug mode; `0x0B`: wake-word only).
      - Text write: Phone echoes recognized speech back to chip for USB Serial output.
 5. **Stage 3: Fast Audio Compression (IMA-ADPCM)**:
