@@ -564,6 +564,24 @@ The project uses a clean package namespace `com.friday.assistant`:
             - **Validation**:
               - Pendant firmware compiled cleanly with 0 errors via `scripts/compile_pendant.py`.
               - Android APK built and assembled cleanly (`assembleDebug` BUILD SUCCESSFUL in 31s).
+          * **Autonomous Hands-Free Pendant Wake-Word Overhaul (November 2026 - Part 12)**:
+            - **Problem Statement**:
+              - Autonomous wake-word detection previously suffered from model underfitting (trained on only 52 positive samples) and a Conv2 height boundary bug (`ih >= 8` instead of `ih >= 16`) that zeroed out upper Mel frequency bands.
+              - Keeping the phone awake with an open mic was draining phone battery, requiring 100% on-chip autonomous wake-word detection on the XIAO nRF52840 Sense.
+            - **Synthetic Speech Generation (`scripts/generate_synthetic_pendant_dataset.py`)**:
+              - Synthesized 430 diverse positive "Friday" clips across 20 distinct neural voices (US, UK, Indian, Australian, Canadian, Irish accents, speed shifts -20% to +20%, pitch shifts -15Hz to +15Hz) and 1,874 negative/confuser clips using `edge-tts` and direct in-memory MP3 -> 16kHz mono PCM decoding via `miniaudio`.
+            - **TinyML Retraining & C++ Header Export (`scripts/train_pendant_wakeword.py`, `wakeword_model.h`)**:
+              - Corrected Conv2 boundary check to `ih >= 16` so full 16 Mel bands participate in inference.
+              - Trained `TinyWakeWordCnn` on 5,898 augmented spectrograms with `pos_weight = 1.75` and CosineAnnealingLR (87.0% validation accuracy, 94.3% negative rejection).
+              - Exported self-contained weights and circular feature extractor into `wakeword_model.h`.
+            - **Pendant Firmware Upgrades (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino`)**:
+              - Enabled autonomous wake-word listening by default (`debugVadStreamingMode = false`).
+              - Calibrated confidence thresholds: `WAKE_CONFIDENCE_STRICT = 0.75f` (instant trigger) and `WAKE_CONFIDENCE_MODERATE = 0.55f` (2-hit debounce).
+              - Reset `globalChunkIndex = 0` on wake trigger to prevent stale timestamp aborts.
+              - Calibrated dynamic silence detection (`speechFrames >= 4 && silenceFrames >= 40`, ~640ms pause) so spoken queries are not prematurely clipped.
+            - **Verification**:
+              - Verified native ARM compilation via `scripts/compile_pendant.py` with `arm-none-eabi-g++` (0 errors, 0 warnings).
+              - Verified ELF linking with Arduino core library `core.a` (memory footprint: 158KB Flash, 98KB BSS/RAM, 136KB heap headroom).
 
 
 

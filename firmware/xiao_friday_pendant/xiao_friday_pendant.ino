@@ -52,13 +52,13 @@ PendantState currentState = STATE_IDLE;
 float backgroundRms = 50.0f;
 const float VAD_MULTIPLIER = 1.40f;
 const float MIN_SPEECH_RMS = 60.0f;
-const float WAKE_CONFIDENCE_STRICT = 0.86f;   // Instant single-hit trigger
-const float WAKE_CONFIDENCE_MODERATE = 0.72f; // Requires 2 consecutive hits (~160ms)
+const float WAKE_CONFIDENCE_STRICT = 0.75f;   // Instant single-hit trigger
+const float WAKE_CONFIDENCE_MODERATE = 0.55f; // Requires 2 consecutive hits (~160ms)
 unsigned long wakeTriggerTimestamp = 0;
 unsigned long wakeCooldownUntil = 0;          // Cooldown to prevent recursive re-triggering
 static int consecutiveWakeHits = 0;
 bool streamAudioOverBle = true; // Stream compressed voice command to phone
-bool debugVadStreamingMode = true; // Debug mode: Automatic VAD voice streaming without wake-word
+bool debugVadStreamingMode = false; // Wake-Word Mode enabled by default (listen for 'Friday')
 
 // Manual recording state (commanded by phone)
 volatile bool manualRecordingActive = false;
@@ -598,6 +598,7 @@ void loop() {
             }
 
             currentState = STATE_RECORDING_VOICE;
+            globalChunkIndex = 0;
             stateCharacteristic.write8((uint8_t)STATE_RECORDING_VOICE);
             stateCharacteristic.notify8((uint8_t)STATE_RECORDING_VOICE);
             digitalWrite(LED_GREEN, HIGH);
@@ -691,7 +692,15 @@ void loop() {
           finishStreaming = true;
         }
       } else {
-        if (globalChunkIndex >= 200 || (millis() - recordingStartTime > 2800)) {
+        // Hands-Free Wake-Word triggered command mode:
+        // Automatically stop when the user finishes speaking (silence >= 40 frames = ~640ms after speech),
+        // or if silence continues for ~1.5s (90 frames) with no speech,
+        // or max duration 5 seconds (312 chunks)
+        if (speechFrames >= 4 && silenceFrames >= 40) {
+          finishStreaming = true;
+        } else if (speechFrames == 0 && silenceFrames >= 90) {
+          finishStreaming = true;
+        } else if (globalChunkIndex >= 312 || (millis() - recordingStartTime > 5000)) {
           finishStreaming = true;
         }
       }

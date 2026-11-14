@@ -358,7 +358,7 @@ static float forwardCnn() {
                 for (int ic = 0; ic < 8; ic++) {
                     for (int kh = -1; kh <= 1; kh++) {
                         int ih = in_h_center + kh;
-                        if (ih < 0 || ih >= 8) continue;
+                        if (ih < 0 || ih >= 16) continue;
                         for (int kw = -1; kw <= 1; kw++) {
                             int iw = in_w_center + kw;
                             if (iw < 0 || iw >= 31) continue;
@@ -531,27 +531,28 @@ def main():
 
     raw_pos = [load_wav(f) for f in pos_files]
     raw_neg = [load_wav(f) for f in neg_files]
-    noise_pool = [load_wav(f) for f in neg_files if "noise" in f.name]
+    # Use negative audio clips as background babble noise pool
+    noise_pool = [n for n in raw_neg if len(n) >= TOTAL_SAMPLES]
 
     # Pre-generate augmented spectrogram dataset in memory
     print("Extracting features with data augmentation...", flush=True)
     all_specs = []
     all_labels = []
 
-    # Positives + 14x augmentations
+    # Positives + 4x augmentations
     for p in raw_pos:
         all_specs.append(extract_log_mel_spectrogram(p))
         all_labels.append(1.0)
-        for _ in range(14):
+        for _ in range(4):
             aug = augment_audio(p, noise_pool)
             all_specs.append(extract_log_mel_spectrogram(aug))
             all_labels.append(1.0)
 
-    # Negatives + 2x augmentations
+    # Negatives + 1x augmentations
     for n in raw_neg:
         all_specs.append(extract_log_mel_spectrogram(n))
         all_labels.append(0.0)
-        for _ in range(2):
+        for _ in range(1):
             aug = augment_audio(n, noise_pool)
             all_specs.append(extract_log_mel_spectrogram(aug))
             all_labels.append(0.0)
@@ -581,10 +582,13 @@ def main():
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model Architecture: TinyWakeWordCnn ({total_params} parameters, ~{total_params * 4 / 1024:.2f} KB)", flush=True)
 
-    criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.002, weight_decay=2e-4)
+    # Weighted BCE loss to balance positive recall
+    pos_weight = torch.tensor([1.75])
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    optimizer = optim.Adam(model.parameters(), lr=0.003, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=60, eta_min=1e-4)
 
-    epochs = 35
+    epochs = 60
     best_val_acc = 0.0
     best_weights = None
 
@@ -624,6 +628,7 @@ def main():
                 val_total += len(labels)
 
         val_acc = val_correct / val_total
+        scheduler.step()
 
         if val_acc >= best_val_acc:
             best_val_acc = val_acc

@@ -42,3 +42,11 @@
 - [x] 31. Upgrade Assistant Chat UI (`MainActivity.kt`): Add direct Pendant recording button to input bar for hands-free conversational queries <!-- id: 30 -->
 - [x] 32. Compile and verify pendant firmware via `scripts/compile_pendant.py` and Android build via `./gradlew assembleDebug` <!-- id: 31 -->
 - [x] 33. Update `context.md`, `architechture.md`, commit and push to git <!-- id: 32 -->
+- [x] 34. Investigate live streaming vs 5-second test slot architecture & diagnose failure points <!-- id: 33 -->
+- [x] 35. Clarify & align with user on wake-word strategy: evaluate Whisper-based phone verification vs PC-synthesized on-chip TinyML <!-- id: 34 -->
+- [x] 36. Build synthetic dataset generator (`scripts/generate_synthetic_pendant_dataset.py`) using `edge-tts` & `miniaudio` (generating diverse positive "Friday" and hard negative clips) <!-- id: 35 -->
+- [x] 37. Fix `scripts/train_pendant_wakeword.py` (correct Conv2 height bound `ih >= 16`, train CNN on synthetic dataset, and export optimized `wakeword_model.h`) <!-- id: 36 -->
+- [x] 38. Update Pendant Firmware (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino`): set `debugVadStreamingMode = false`, fix `globalChunkIndex = 0` on wake detection, and tune silence duration <!-- id: 37 -->
+- [/] 39. Compile firmware via `scripts/compile_pendant.py` and provide sketch for user IDE upload to Seeed Studio XIAO nRF52840 Sense <!-- id: 38 -->
+- [ ] 40. Test live wake-word detection and hands-free command streaming with Android app <!-- id: 39 -->
+- [ ] 41. Update `context.md`, `architechture.md` (if modified), commit and push to git <!-- id: 40 -->

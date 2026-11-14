@@ -21,6 +21,7 @@ scripts/*.zip
 /current_device_logs.txt
 /notebookoutput.md
 /output/
+debug.md
 .kotlin/
 __pycache__/
 *.pyc
