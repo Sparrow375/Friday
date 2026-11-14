@@ -50,21 +50,14 @@ PendantState currentState = STATE_IDLE;
 
 // VAD & Wake-word calibrated parameters
 float backgroundRms = 50.0f;
-const float VAD_MULTIPLIER = 1.40f;
-const float MIN_SPEECH_RMS = 60.0f;
-const float WAKE_CONFIDENCE_STRICT = 0.75f;   // Instant single-hit trigger
-const float WAKE_CONFIDENCE_MODERATE = 0.55f; // Requires 2 consecutive hits (~160ms)
+const float VAD_MULTIPLIER = 1.45f;
+const float MIN_SPEECH_RMS = 85.0f;           // Calibrated floor to reject room murmurs & background babble
+const float WAKE_CONFIDENCE_STRICT = 0.85f;   // Instant single-hit trigger
+const float WAKE_CONFIDENCE_MODERATE = 0.72f; // Requires 2 consecutive hits (~160ms)
 unsigned long wakeTriggerTimestamp = 0;
 unsigned long wakeCooldownUntil = 0;          // Cooldown to prevent recursive re-triggering
 static int consecutiveWakeHits = 0;
-bool streamAudioOverBle = true; // Stream compressed voice command to phone
-bool debugVadStreamingMode = false; // Wake-Word Mode enabled by default (listen for 'Friday')
-
-// Manual recording state (commanded by phone)
-volatile bool manualRecordingActive = false;
-volatile uint8_t manualDurationSec = 5;
-volatile unsigned long manualRecordingEndTime = 0;
-volatile bool stopRecordingRequested = false;
+bool streamAudioOverBle = true;               // Stream compressed voice command to phone
 volatile uint16_t globalChunkIndex = 0;
 
 // ==================== IMA-ADPCM Encoder ====================
@@ -252,86 +245,18 @@ bool checkWakeWord(float currentRms) {
   return false;
 }
 
-// Manual recording commanded by phone over BLE
-void startManualRecording(uint8_t durationSec) {
-  manualRecordingActive = true;
-  manualDurationSec = (durationSec > 0 && durationSec <= 30) ? durationSec : 5;
-  manualRecordingEndTime = millis() + (manualDurationSec * 1000UL);
-  stopRecordingRequested = false;
-  globalChunkIndex = 0;
-
-  currentState = STATE_RECORDING_VOICE;
-  stateCharacteristic.write8((uint8_t)STATE_RECORDING_VOICE);
-  stateCharacteristic.notify8((uint8_t)STATE_RECORDING_VOICE);
-
-  resetAdpcm();
-
-  // Send Audio Header: 0x01 | totalChunks(2B) | totalBytes(4B) | sampleRate(2B)
-  uint16_t estimatedChunks = (manualDurationSec * 1000) / 16;
-  uint32_t estimatedBytes = estimatedChunks * ADPCM_PAYLOAD_SIZE;
-  uint16_t rate = SAMPLE_RATE;
-
-  uint8_t header[9];
-  header[0] = 0x01;
-  header[1] = (estimatedChunks >> 8) & 0xFF;
-  header[2] = estimatedChunks & 0xFF;
-  header[3] = (estimatedBytes >> 24) & 0xFF;
-  header[4] = (estimatedBytes >> 16) & 0xFF;
-  header[5] = (estimatedBytes >> 8) & 0xFF;
-  header[6] = estimatedBytes & 0xFF;
-  header[7] = (rate >> 8) & 0xFF;
-  header[8] = rate & 0xFF;
-
-  for (int r = 0; r < 5; r++) {
-    if (commandCharacteristic.notify(header, sizeof(header))) break;
-    delay(4);
-  }
-
-  // Visual feedback: Red LED active during recording (Active LOW)
-  digitalWrite(LED_GREEN, HIGH);
-  digitalWrite(LED_BLUE, HIGH);
-  digitalWrite(LED_RED, LOW);
-
-  streamingReadIdx = rollingWriteIdx;
-  Serial.print(F("[BLE Command] Manual Recording STARTED for "));
-  Serial.print(manualDurationSec);
-  Serial.println(F("s"));
-}
-
-void stopManualRecording() {
-  if (currentState == STATE_RECORDING_VOICE) {
-    stopRecordingRequested = true;
-    Serial.println(F("[BLE Command] Manual Recording STOP requested by phone"));
-  }
-}
-
-// Command characteristic write callback (phone can send control codes or echo back transcripts)
+// Command characteristic write callback (phone can echo back transcripts for serial monitoring)
 void command_write_callback(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
   (void) conn_hdl;
   (void) chr;
   if (len == 0 || data == NULL) return;
 
-  if (data[0] == 0x05) {
-    // START MANUAL RECORDING: 0x05 | durationSec (optional)
-    uint8_t dur = (len > 1 && data[1] > 0 && data[1] <= 30) ? data[1] : 5;
-    startManualRecording(dur);
-  } else if (data[0] == 0x06) {
-    // STOP MANUAL RECORDING: 0x06
-    stopManualRecording();
-  } else if (data[0] == 0x0A) {
-    debugVadStreamingMode = true;
-    Serial.println(F("[BLE Command] VAD Audio Streaming Mode ENABLED (No Wake-Word needed)"));
-  } else if (data[0] == 0x0B) {
-    debugVadStreamingMode = false;
-    Serial.println(F("[BLE Command] Wake-Word Only Mode ENABLED"));
-  } else {
-    // Phone echoes back transcribed text for serial debugging
-    Serial.print(F("[Phone STT Echo]: "));
-    for (uint16_t i = 0; i < len; i++) {
-      Serial.print((char)data[i]);
-    }
-    Serial.println();
+  // Phone echoes back transcribed text for serial debugging
+  Serial.print(F("[Phone STT Echo]: "));
+  for (uint16_t i = 0; i < len; i++) {
+    Serial.print((char)data[i]);
   }
+  Serial.println();
 }
 
 // ==================== BLE GATT Configuration ====================
@@ -503,116 +428,56 @@ void loop() {
 
     // ================= State Machine =================
     if (currentState == STATE_IDLE) {
-      if (debugVadStreamingMode && Bluefruit.connected() && (millis() >= wakeCooldownUntil)) {
-        // Adaptive speech threshold
-        float speechThreshold = backgroundRms * VAD_MULTIPLIER;
-        if (speechThreshold < MIN_SPEECH_RMS) speechThreshold = MIN_SPEECH_RMS;
+      if (checkWakeWord(lastCalculatedRms)) {
+        currentState = STATE_WAKE_DETECTED;
+        wakeTriggerTimestamp = millis();
 
-        static int vadSpeechHits = 0;
-        if (lastCalculatedRms >= speechThreshold) {
-          vadSpeechHits++;
-          if (vadSpeechHits >= 2) {
-            vadSpeechHits = 0;
-            currentState = STATE_RECORDING_VOICE;
+        // 1. Notify phone of wake trigger (< 15ms over BLE)
+        stateCharacteristic.write8((uint8_t)STATE_WAKE_DETECTED);
+        stateCharacteristic.notify8((uint8_t)STATE_WAKE_DETECTED);
 
-            Serial.print(F("\n>>> [VAD Active] Speech detected (RMS: "));
-            Serial.print((int)lastCalculatedRms);
-            Serial.print(F(" >= Thresh: "));
-            Serial.print((int)speechThreshold);
-            Serial.println(F("). Streaming voice to phone over BLE..."));
+        // Visual feedback: Red LED active during wake & recording (Active LOW)
+        digitalWrite(LED_GREEN, HIGH);
+        digitalWrite(LED_BLUE, HIGH);
+        digitalWrite(LED_RED, LOW);
 
-            // 1. Notify phone of recording state immediately (< 15ms over BLE)
-            stateCharacteristic.write8((uint8_t)STATE_RECORDING_VOICE);
-            stateCharacteristic.notify8((uint8_t)STATE_RECORDING_VOICE);
+        resetAdpcm();
 
-            // 2. Reset ADPCM encoder for clean audio transmission
-            resetAdpcm();
+        if (streamAudioOverBle && Bluefruit.connected()) {
+          uint16_t totalChunks = 0; // Dynamic streaming until speech ends
+          uint32_t totalBytes = 0;
+          uint16_t rate = SAMPLE_RATE;
 
-            // 3. Send Audio Header: 0x01 | totalChunks(2B) | totalBytes(4B) | sampleRate(2B)
-            uint16_t totalChunks = 0; // Dynamic VAD stream length
-            uint32_t totalBytes = 0;
-            uint16_t rate = SAMPLE_RATE;
+          uint8_t header[9];
+          header[0] = 0x01;
+          header[1] = (totalChunks >> 8) & 0xFF;
+          header[2] = totalChunks & 0xFF;
+          header[3] = (totalBytes >> 24) & 0xFF;
+          header[4] = (totalBytes >> 16) & 0xFF;
+          header[5] = (totalBytes >> 8) & 0xFF;
+          header[6] = totalBytes & 0xFF;
+          header[7] = (rate >> 8) & 0xFF;
+          header[8] = rate & 0xFF;
 
-            uint8_t header[9];
-            header[0] = 0x01; // Audio Header packet type
-            header[1] = (totalChunks >> 8) & 0xFF;
-            header[2] = totalChunks & 0xFF;
-            header[3] = (totalBytes >> 24) & 0xFF;
-            header[4] = (totalBytes >> 16) & 0xFF;
-            header[5] = (totalBytes >> 8) & 0xFF;
-            header[6] = totalBytes & 0xFF;
-            header[7] = (rate >> 8) & 0xFF;
-            header[8] = rate & 0xFF;
-
-            for (int r = 0; r < 5; r++) {
-              if (commandCharacteristic.notify(header, sizeof(header))) break;
-              delay(4);
-            }
-
-            // Visual feedback: Red LED active during recording
-            digitalWrite(LED_GREEN, HIGH);
-            digitalWrite(LED_RED, LOW);
-
-            // 200ms pre-roll: rewind 3,200 samples so initial syllable is preserved
-            int preRoll = 3200;
-            streamingReadIdx = (rollingWriteIdx - preRoll + ROLLING_BUFFER_SIZE) % ROLLING_BUFFER_SIZE;
+          for (int r = 0; r < 5; r++) {
+            if (commandCharacteristic.notify(header, sizeof(header))) break;
+            delay(5);
           }
+
+          currentState = STATE_RECORDING_VOICE;
+          globalChunkIndex = 0;
+          stateCharacteristic.write8((uint8_t)STATE_RECORDING_VOICE);
+          stateCharacteristic.notify8((uint8_t)STATE_RECORDING_VOICE);
+
+          streamingReadIdx = rollingWriteIdx;
         } else {
-          vadSpeechHits = 0;
-          // Ambient silence: slowly adapt background baseline
-          backgroundRms = (backgroundRms * 0.99f) + (lastCalculatedRms * 0.01f);
-        }
-      } else if (!debugVadStreamingMode) {
-        // Normal Wake-Word Trigger Check
-        if (checkWakeWord(lastCalculatedRms)) {
-          currentState = STATE_WAKE_DETECTED;
-          wakeTriggerTimestamp = millis();
-
-          stateCharacteristic.write8((uint8_t)STATE_WAKE_DETECTED);
-          stateCharacteristic.notify8((uint8_t)STATE_WAKE_DETECTED);
-
-          digitalWrite(LED_GREEN, LOW);
-          digitalWrite(LED_BLUE, HIGH);
-
-          resetAdpcm();
-
-          if (streamAudioOverBle && Bluefruit.connected()) {
-            uint16_t totalChunks = 156;
-            uint32_t totalBytes = totalChunks * ADPCM_PAYLOAD_SIZE;
-            uint16_t rate = SAMPLE_RATE;
-
-            uint8_t header[9];
-            header[0] = 0x01;
-            header[1] = (totalChunks >> 8) & 0xFF;
-            header[2] = totalChunks & 0xFF;
-            header[3] = (totalBytes >> 24) & 0xFF;
-            header[4] = (totalBytes >> 16) & 0xFF;
-            header[5] = (totalBytes >> 8) & 0xFF;
-            header[6] = totalBytes & 0xFF;
-            header[7] = (rate >> 8) & 0xFF;
-            header[8] = rate & 0xFF;
-
-            for (int r = 0; r < 5; r++) {
-              if (commandCharacteristic.notify(header, sizeof(header))) break;
-              delay(5);
-            }
-
-            currentState = STATE_RECORDING_VOICE;
-            globalChunkIndex = 0;
-            stateCharacteristic.write8((uint8_t)STATE_RECORDING_VOICE);
-            stateCharacteristic.notify8((uint8_t)STATE_RECORDING_VOICE);
-            digitalWrite(LED_GREEN, HIGH);
-            digitalWrite(LED_RED, LOW);
-
-            streamingReadIdx = rollingWriteIdx;
-          } else {
-            delay(800);
-            currentState = STATE_IDLE;
-            wakeCooldownUntil = millis() + 3000;
-            stateCharacteristic.write8((uint8_t)STATE_IDLE);
-            stateCharacteristic.notify8((uint8_t)STATE_IDLE);
-            digitalWrite(LED_GREEN, HIGH);
-          }
+          delay(800);
+          currentState = STATE_IDLE;
+          wakeCooldownUntil = millis() + 3000;
+          stateCharacteristic.write8((uint8_t)STATE_IDLE);
+          stateCharacteristic.notify8((uint8_t)STATE_IDLE);
+          digitalWrite(LED_RED, HIGH);
+          digitalWrite(LED_BLUE, LOW);
         }
       }
     } else if (currentState == STATE_RECORDING_VOICE) {
@@ -675,34 +540,16 @@ void loop() {
 
       // Check for completion of spoken phrase
       bool finishStreaming = false;
-      if (manualRecordingActive) {
-        // App-controlled manual recording: stops on phone stop command (0x06) or duration timer
-        if (stopRecordingRequested || (millis() >= manualRecordingEndTime)) {
-          finishStreaming = true;
-        }
-      } else if (debugVadStreamingMode) {
-        // Finish when user stops speaking for ~350ms (22 frames) after at least 4 frames of speech (~65ms),
-        // or if silence continues for ~500ms (32 frames) with minimal speech (avoids streaming 4.5s of empty silence),
-        // or when max utterance limit (3.5s / 220 chunks) is reached
-        if (speechFrames >= 4 && silenceFrames >= 22) {
-          finishStreaming = true;
-        } else if (speechFrames == 0 && silenceFrames >= 32) {
-          finishStreaming = true;
-        } else if (globalChunkIndex >= 300 || (millis() - recordingStartTime > 3500)) {
-          finishStreaming = true;
-        }
-      } else {
-        // Hands-Free Wake-Word triggered command mode:
-        // Automatically stop when the user finishes speaking (silence >= 40 frames = ~640ms after speech),
-        // or if silence continues for ~1.5s (90 frames) with no speech,
-        // or max duration 5 seconds (312 chunks)
-        if (speechFrames >= 4 && silenceFrames >= 40) {
-          finishStreaming = true;
-        } else if (speechFrames == 0 && silenceFrames >= 90) {
-          finishStreaming = true;
-        } else if (globalChunkIndex >= 312 || (millis() - recordingStartTime > 5000)) {
-          finishStreaming = true;
-        }
+      // Hands-Free Wake-Word triggered command mode:
+      // Automatically stop when the user finishes speaking (silence >= 40 frames = ~640ms after speech),
+      // or if silence continues for ~1.5s (90 frames) with no speech,
+      // or max duration 5 seconds (312 chunks)
+      if (speechFrames >= 4 && silenceFrames >= 40) {
+        finishStreaming = true;
+      } else if (speechFrames == 0 && silenceFrames >= 90) {
+        finishStreaming = true;
+      } else if (globalChunkIndex >= 312 || (millis() - recordingStartTime > 5000)) {
+        finishStreaming = true;
       }
 
       if (finishStreaming) {
@@ -748,9 +595,7 @@ void loop() {
         silenceFrames = 0;
         speechFrames = 0;
         currentState = STATE_IDLE;
-        manualRecordingActive = false;
-        stopRecordingRequested = false;
-        wakeCooldownUntil = millis() + 500; // 500ms cooldown after speech
+        wakeCooldownUntil = millis() + 3500; // 3.5s cooldown after speech to eliminate recursive triggers
 
         stateCharacteristic.write8((uint8_t)STATE_IDLE);
         for (int r = 0; r < 10; r++) {

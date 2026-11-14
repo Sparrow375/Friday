@@ -47,6 +47,11 @@
 - [x] 36. Build synthetic dataset generator (`scripts/generate_synthetic_pendant_dataset.py`) using `edge-tts` & `miniaudio` (generating diverse positive "Friday" and hard negative clips) <!-- id: 35 -->
 - [x] 37. Fix `scripts/train_pendant_wakeword.py` (correct Conv2 height bound `ih >= 16`, train CNN on synthetic dataset, and export optimized `wakeword_model.h`) <!-- id: 36 -->
 - [x] 38. Update Pendant Firmware (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino`): set `debugVadStreamingMode = false`, fix `globalChunkIndex = 0` on wake detection, and tune silence duration <!-- id: 37 -->
-- [/] 39. Compile firmware via `scripts/compile_pendant.py` and provide sketch for user IDE upload to Seeed Studio XIAO nRF52840 Sense <!-- id: 38 -->
-- [ ] 40. Test live wake-word detection and hands-free command streaming with Android app <!-- id: 39 -->
-- [ ] 41. Update `context.md`, `architechture.md` (if modified), commit and push to git <!-- id: 40 -->
+- [x] 39. Compile firmware via `scripts/compile_pendant.py` and provide sketch for user IDE upload to Seeed Studio XIAO nRF52840 Sense <!-- id: 38 -->
+- [x] 40. Purge manual recording commands and VAD streaming mode from Pendant Firmware (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino`), raising wake confidence thresholds to strict 0.85 / moderate 0.72 and setting minimum speech floor to 85.0 RMS <!-- id: 39 -->
+- [x] 41. Clean BLE Manager (`FridayBleWearableManager.kt`): remove manual recording StateFlows, methods, and duplicate Whisper STT pipeline <!-- id: 40 -->
+- [x] 42. Gate assistant overlay in `FridayService.kt`: overlay ONLY pops up on confirmed on-chip wake-word trigger (`onWearableWakeWordTriggered`); rogue or unauthenticated audio streams dropped immediately <!-- id: 41 -->
+- [x] 43. Clean up Android UI in `MainActivity.kt`: remove manual recording chips, buttons, test transcript cards, debug switches, and extra pendant mic icons, replacing with a clean autonomous status badge <!-- id: 42 -->
+- [x] 44. Verify compilation for both Seeed XIAO firmware (`scripts/compile_pendant.py`) and Android app (`./gradlew assembleDebug`) <!-- id: 43 -->
+- [ ] 45. Flash updated firmware `firmware/xiao_friday_pendant/xiao_friday_pendant.ino` onto Seeed Studio XIAO nRF52840 Sense via Arduino IDE <!-- id: 44 -->
+- [ ] 46. Update `context.md`, `architechture.md`, commit and push to git <!-- id: 45 -->

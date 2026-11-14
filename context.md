@@ -582,6 +582,35 @@ The project uses a clean package namespace `com.friday.assistant`:
             - **Verification**:
               - Verified native ARM compilation via `scripts/compile_pendant.py` with `arm-none-eabi-g++` (0 errors, 0 warnings).
               - Verified ELF linking with Arduino core library `core.a` (memory footprint: 158KB Flash, 98KB BSS/RAM, 136KB heap headroom).
+          * **Pendant Manual Recording Removal & Pure Autonomous Wake-Word UI Overhaul (November 2026 - Part 13)**:
+            - **Problem Statement**:
+              - In testing, the pendant subsystem would randomly start recording or streaming audio over BLE without pressing any button, causing the phone's assistant overlay to pop up on room noise and Whisper to hallucinate phrases like "Thank you." on silence.
+              - The manual recording options (duration chips, manual record button, countdown chips, extra mic button in chat bar, and debug display-only toggle) cluttered the interface and caused state collisions.
+              - The user requested complete removal of manual recording and all test clutter, ensuring the assistant overlay **ONLY pops up when the wake word ("Friday") is confirmed** on-chip.
+            - **Pendant Firmware Clean-up (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino`)**:
+              - Eradicated `debugVadStreamingMode` and all manual recording opcodes (`0x05`, `0x06`).
+              - Removed `manualRecordingActive`, `startManualRecording()`, and `stopManualRecording()`.
+              - Elevated the acoustic speech floor: `MIN_SPEECH_RMS = 85.0f` (was 60.0f) and `VAD_MULTIPLIER = 1.45f` to completely suppress ambient room noise, whispers, and air conditioning.
+              - Tightened wake confidence thresholds: `WAKE_CONFIDENCE_STRICT = 0.85f` (instant trigger) and `WAKE_CONFIDENCE_MODERATE = 0.72f` (2-hit debounce) to eliminate false activations.
+              - Extended post-speech cooldown: `wakeCooldownUntil = millis() + 3500;` to prevent TTS echo and room reverb from re-triggering the wake word.
+              - Verified compilation via `python scripts/compile_pendant.py`: Return code 0, 0 errors, 0 warnings.
+            - **BLE Manager Clean-up (`FridayBleWearableManager.kt`)**:
+              - Eradicated all manual recording StateFlows (`_isManualRecording`, `_manualRecordingDurationSec`, `_manualRecordingTimeLeftSec`, `_isTranscribing`, `_lastTranscribeDurationMs`).
+              - Removed `startManualRecording(durationSec)` and `stopManualRecording()`.
+              - Removed redundant Whisper STT run in `finalizeAudioStream()`, establishing `FridayService.kt` as the single authoritative pipeline for Whisper transcription and agent dispatching.
+            - **Assistant Overlay Gating (`FridayService.kt`)**:
+              - Introduced `isPendantWakeActive` and `pendantWakeTimeoutJob` (6.5s timeout).
+              - `overlayManager?.show()` now **ONLY** executes inside `onWearableWakeWordTriggered()` upon receiving confirmed `STATE_WAKE_DETECTED` (0x01) from the pendant.
+              - In `onWearableAudioStreamStarted()`, `onWearableAudioChunkReceived()`, and `onWearableAudioCommandReceived()`, any audio packet arriving without `isPendantWakeActive = true` is immediately dropped with 0 UI disturbance.
+              - Implemented energy-gating on incoming voice commands (`rms < 0.012f || maxPeak < 0.040f`): silence or faint noise dismisses the overlay cleanly without running Whisper or hallucinating.
+              - Stripped out `wearable_debug_transcript_only` bypass; confirmed speech commands are cleanly transcribed and dispatched directly to `executeAgentQuery()` to answer the user hands-free.
+            - **Minimalist Android UI Overhaul (`MainActivity.kt`)**:
+              - In `DashboardScreen`: Replaced 300+ lines of manual recording chips, buttons, streaming counters, and transcription cards with a sleek, minimalist status indicator showing "Autonomous hands-free mode active. Say 'Friday' into your pendant at any time to wake the assistant."
+              - In `AssistantScreen`: Removed manual recording countdown banners, transcribing chips, and the extra pendant mic icon from the chat bar, returning to a clean single-mic input layout.
+            - **Verification**:
+              - Firmware compiled cleanly with 0 errors via `scripts/compile_pendant.py`.
+              - Android app compiled and assembled cleanly (`./gradlew assembleDebug` BUILD SUCCESSFUL in 28s).
+
 
 
 

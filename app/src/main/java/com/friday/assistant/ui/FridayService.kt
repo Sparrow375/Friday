@@ -660,6 +660,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     }
 
     private var lastWearableWakeTriggerMs = 0L
+    private var isPendantWakeActive = false
+    private var pendantWakeTimeoutJob: kotlinx.coroutines.Job? = null
     private var partialWhisperJob: kotlinx.coroutines.Job? = null
     private val streamingAudioBuffer = java.util.ArrayList<FloatArray>()
     private var lastPartialTranscribeChunk = 0
@@ -678,14 +680,28 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             return
         }
         lastWearableWakeTriggerMs = now
+        isPendantWakeActive = true
 
-        com.friday.assistant.core.FridayLogger.i(TAG, "Wearable wake-word detected — waking screen and showing overlay for pendant speech")
+        com.friday.assistant.core.FridayLogger.i(TAG, "Wearable wake-word ('Friday') confirmed by pendant — activating assistant")
+
+        // Timeout safeguard: if no command speech follows within 6.5s, dismiss overlay cleanly
+        pendantWakeTimeoutJob?.cancel()
+        pendantWakeTimeoutJob = serviceScope.launch {
+            kotlinx.coroutines.delay(6500L)
+            if (isPendantWakeActive && pipelineState.value == PipelineState.LISTENING) {
+                com.friday.assistant.core.FridayLogger.i(TAG, "Pendant wake timed out without command speech — dismissing overlay")
+                isPendantWakeActive = false
+                transitionToState(PipelineState.IDLE)
+                overlayManager?.dismiss()
+            }
+        }
+
         serviceScope.launch {
             if (pipelineState.value == PipelineState.SPEAKING) {
                 try { tts?.stop() } catch (e: Exception) { Log.e(TAG, "Error stopping TTS", e) }
             }
             overlayManager?.show()
-            transitionToState(PipelineState.LISTENING, statusMessage = "Listening to Pendant (Chip)...", transcriptText = "Say command into pendant...")
+            transitionToState(PipelineState.LISTENING, statusMessage = "Listening to Pendant...", transcriptText = "Say command into pendant...")
         }
     }
 
@@ -693,108 +709,43 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
         if (!prefs.getBoolean("assistant_enabled", true)) return
 
+        // Drop rogue or unauthenticated audio streams — overlay only opens for confirmed wake words
+        if (!isPendantWakeActive) {
+            com.friday.assistant.core.FridayLogger.w(TAG, "Dropping rogue wearable audio stream — wake word was not activated")
+            return
+        }
+
         streamingAudioBuffer.clear()
         lastPartialTranscribeChunk = 0
         partialWhisperJob?.cancel()
-
-        serviceScope.launch {
-            if (pipelineState.value == PipelineState.SPEAKING) {
-                try { tts?.stop() } catch (e: Exception) { Log.e(TAG, "Error stopping TTS", e) }
-            }
-            overlayManager?.show()
-            transitionToState(
-                PipelineState.LISTENING,
-                statusMessage = "Receiving chip voice over BLE...",
-                transcriptText = "Listening to Seeed XIAO Sense..."
-            )
-        }
     }
 
     private fun onWearableAudioChunkReceived(chunkIdx: Int, chunkSamples: FloatArray) {
-        if (pipelineState.value == PipelineState.LISTENING) {
-            // 1. Calculate actual RMS energy from real PCM samples to drive glowing waveform
-            var sumSq = 0.0f
-            for (s in chunkSamples) {
-                sumSq += s * s
-            }
-            val rms = kotlin.math.sqrt(sumSq / chunkSamples.size)
-            val normalizedAmp = (rms * 6.0f).coerceIn(0.08f, 1.0f)
-            overlayManager?.updateAmplitude(normalizedAmp)
+        if (!isPendantWakeActive || pipelineState.value != PipelineState.LISTENING) return
 
-            streamingAudioBuffer.add(chunkSamples)
-
-            // 2. Real-time partial transcription every ~20 chunks (~320ms)
-            if (chunkIdx - lastPartialTranscribeChunk >= 20 && partialWhisperJob?.isActive != true) {
-                lastPartialTranscribeChunk = chunkIdx
-                val totalSamples = streamingAudioBuffer.sumOf { it.size }
-                val snapshot = FloatArray(totalSamples)
-                var offset = 0
-                for (arr in streamingAudioBuffer) {
-                    System.arraycopy(arr, 0, snapshot, offset, arr.size)
-                    offset += arr.size
-                }
-
-                partialWhisperJob = serviceScope.launch(Dispatchers.Default) {
-                    val whisperEngine = FridayApplication.whisperEngine
-                    if (!whisperEngine.isModelLoaded()) {
-                        val whisperPath = modelManager.getWhisperModelPath()
-                        if (java.io.File(whisperPath).exists()) {
-                            whisperEngine.loadModel(whisperPath)
-                        }
-                    }
-                    if (whisperEngine.isModelLoaded() && snapshot.size >= 4000) {
-                        val rawPartial = whisperEngine.transcribe(snapshot).trim()
-                        val cleanPartial = cleanAndValidateTranscript(rawPartial, isPartial = true)
-                        if (cleanPartial.isNotBlank() && pipelineState.value == PipelineState.LISTENING) {
-                            withContext(Dispatchers.Main) {
-                                overlayManager?.updateState(
-                                    PipelineState.LISTENING,
-                                    "Streaming from chip (${chunkIdx} chunks)...",
-                                    trans = cleanPartial
-                                )
-                            }
-                        }
-                    }
-                }
-            } else if (chunkIdx % 12 == 0) {
-                overlayManager?.updateState(
-                    PipelineState.LISTENING,
-                    "Streaming from chip (${chunkIdx} chunks)..."
-                )
-            }
+        // 1. Calculate actual RMS energy from real PCM samples to drive glowing waveform
+        var sumSq = 0.0f
+        for (s in chunkSamples) {
+            sumSq += s * s
         }
-    }
+        val rms = kotlin.math.sqrt(sumSq / chunkSamples.size)
+        val normalizedAmp = (rms * 6.0f).coerceIn(0.08f, 1.0f)
+        overlayManager?.updateAmplitude(normalizedAmp)
 
-    private fun onWearableAudioCommandReceived(audioSamples: FloatArray) {
-        partialWhisperJob?.cancel()
-        streamingAudioBuffer.clear()
+        streamingAudioBuffer.add(chunkSamples)
 
-        serviceScope.launch {
-            if (audioSamples.isEmpty()) {
-                com.friday.assistant.core.FridayLogger.w(TAG, "Received empty pendant audio buffer")
-                transitionToState(PipelineState.IDLE)
-                return@launch
+        // 2. Real-time partial transcription every ~20 chunks (~320ms)
+        if (chunkIdx - lastPartialTranscribeChunk >= 20 && partialWhisperJob?.isActive != true) {
+            lastPartialTranscribeChunk = chunkIdx
+            val totalSamples = streamingAudioBuffer.sumOf { it.size }
+            val snapshot = FloatArray(totalSamples)
+            var offset = 0
+            for (arr in streamingAudioBuffer) {
+                System.arraycopy(arr, 0, snapshot, offset, arr.size)
+                offset += arr.size
             }
 
-            // Check if wearable manager has already transcribed this audio buffer
-            val existingTranscript = bleWearableManager?.lastTranscribedText?.value.orEmpty().trim()
-            var rawTranscribed = ""
-            val cleanTranscribed = if (existingTranscript.isNotBlank() && existingTranscript != "(No speech detected)") {
-                rawTranscribed = existingTranscript
-                existingTranscript
-            } else {
-                // Calculate RMS energy & peak amplitude to gate out silence / room murmur for autonomous streaming
-                var sumSq = 0.0
-                var maxPeak = 0.0f
-                for (s in audioSamples) {
-                    val abs = kotlin.math.abs(s)
-                    if (abs > maxPeak) maxPeak = abs
-                    sumSq += (s * s)
-                }
-                val rms = kotlin.math.sqrt(sumSq / audioSamples.size).toFloat()
-                com.friday.assistant.core.FridayLogger.i(TAG, "Received pendant audio: ${audioSamples.size} samples (${audioSamples.size / 16000.0f}s), RMS: $rms, MaxPeak: $maxPeak")
-
-                transitionToState(PipelineState.THINKING, statusMessage = "Transcribing chip voice (Local STT)...")
+            partialWhisperJob = serviceScope.launch(Dispatchers.Default) {
                 val whisperEngine = FridayApplication.whisperEngine
                 if (!whisperEngine.isModelLoaded()) {
                     val whisperPath = modelManager.getWhisperModelPath()
@@ -802,57 +753,99 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                         whisperEngine.loadModel(whisperPath)
                     }
                 }
-
-                rawTranscribed = if (whisperEngine.isModelLoaded()) {
-                    whisperEngine.transcribe(audioSamples).trim()
-                } else {
-                    ""
+                if (whisperEngine.isModelLoaded() && snapshot.size >= 4000) {
+                    val rawPartial = whisperEngine.transcribe(snapshot).trim()
+                    val cleanPartial = cleanAndValidateTranscript(rawPartial, isPartial = true)
+                    if (cleanPartial.isNotBlank() && pipelineState.value == PipelineState.LISTENING && isPendantWakeActive) {
+                        withContext(Dispatchers.Main) {
+                            overlayManager?.updateState(
+                                PipelineState.LISTENING,
+                                "Listening to Pendant...",
+                                trans = cleanPartial
+                            )
+                        }
+                    }
                 }
-
-                cleanAndValidateTranscript(rawTranscribed)
             }
+        }
+    }
+
+    private fun onWearableAudioCommandReceived(audioSamples: FloatArray) {
+        partialWhisperJob?.cancel()
+        pendantWakeTimeoutJob?.cancel()
+        streamingAudioBuffer.clear()
+
+        if (!isPendantWakeActive) {
+            com.friday.assistant.core.FridayLogger.w(TAG, "Ignoring wearable audio command — wake word was not active")
+            return
+        }
+        isPendantWakeActive = false
+
+        serviceScope.launch {
+            if (audioSamples.isEmpty()) {
+                com.friday.assistant.core.FridayLogger.w(TAG, "Received empty pendant audio buffer")
+                transitionToState(PipelineState.IDLE)
+                overlayManager?.dismiss()
+                return@launch
+            }
+
+            // Calculate RMS energy & peak amplitude to gate out silence / room murmur
+            var sumSq = 0.0
+            var maxPeak = 0.0f
+            for (s in audioSamples) {
+                val abs = kotlin.math.abs(s)
+                if (abs > maxPeak) maxPeak = abs
+                sumSq += (s * s)
+            }
+            val rms = kotlin.math.sqrt(sumSq / audioSamples.size).toFloat()
+            com.friday.assistant.core.FridayLogger.i(TAG, "Received pendant audio: ${audioSamples.size} samples (${audioSamples.size / 16000.0f}s), RMS: $rms, MaxPeak: $maxPeak")
+
+            if (rms < 0.012f || maxPeak < 0.040f) {
+                com.friday.assistant.core.FridayLogger.i(TAG, "Dropping pendant audio due to low energy/silence (RMS: $rms, Peak: $maxPeak)")
+                transitionToState(PipelineState.IDLE)
+                overlayManager?.dismiss()
+                return@launch
+            }
+
+            transitionToState(PipelineState.THINKING, statusMessage = "Processing your command...")
+            val whisperEngine = FridayApplication.whisperEngine
+            if (!whisperEngine.isModelLoaded()) {
+                val whisperPath = modelManager.getWhisperModelPath()
+                if (java.io.File(whisperPath).exists()) {
+                    whisperEngine.loadModel(whisperPath)
+                }
+            }
+
+            val rawTranscribed = if (whisperEngine.isModelLoaded()) {
+                whisperEngine.transcribe(audioSamples).trim()
+            } else {
+                ""
+            }
+
+            val cleanTranscribed = cleanAndValidateTranscript(rawTranscribed)
 
             if (cleanTranscribed.isNotBlank()) {
                 com.friday.assistant.core.FridayLogger.i(TAG, "★ Chip speech cleanly transcribed: '$cleanTranscribed'")
-                bleWearableManager?.updateLastTranscribed(cleanTranscribed)
 
                 // Echo back to chip over BLE so it prints to the chip's Serial Monitor
                 bleWearableManager?.sendTextToWearable(cleanTranscribed)
 
-                val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
-                val debugOnly = prefs.getBoolean("wearable_debug_transcript_only", true)
-
-                if (debugOnly) {
-                    // Debug Mode: Real-time display on phone screen without executing commands/web search
-                    com.friday.assistant.core.FridayLogger.i(TAG, "Debug Mode: Displaying transcript on phone: '$cleanTranscribed'")
-                    overlayManager?.updateState(
-                        PipelineState.IDLE,
-                        "Chip Voice Transcribed",
-                        trans = cleanTranscribed,
-                        resp = "“$cleanTranscribed”"
-                    )
-                    // Keep visible for 5 seconds so user can read what was recognized
-                    kotlinx.coroutines.delay(5000L)
-                    transitionToState(PipelineState.IDLE)
-                    overlayManager?.dismiss()
-                } else {
-                    overlayManager?.updateState(
-                        PipelineState.THINKING,
-                        "Processing command...",
-                        trans = cleanTranscribed,
-                        resp = cleanTranscribed
-                    )
-                    executeAgentQuery(cleanTranscribed)
-                }
+                overlayManager?.updateState(
+                    PipelineState.THINKING,
+                    "Processing command...",
+                    trans = cleanTranscribed,
+                    resp = cleanTranscribed
+                )
+                executeAgentQuery(cleanTranscribed)
             } else {
                 com.friday.assistant.core.FridayLogger.w(TAG, "Pendant transcription was invalid or hallucinated: '$rawTranscribed'")
                 overlayManager?.updateState(
                     PipelineState.IDLE,
-                    "Could not understand chip voice",
-                    trans = if (rawTranscribed.isNotBlank()) "Raw: $rawTranscribed" else "",
+                    "Could not understand",
+                    trans = "",
                     resp = ""
                 )
-                kotlinx.coroutines.delay(1800)
+                kotlinx.coroutines.delay(1200L)
                 transitionToState(PipelineState.IDLE)
                 overlayManager?.dismiss()
             }
