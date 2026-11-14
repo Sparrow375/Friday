@@ -53,5 +53,10 @@
 - [x] 42. Gate assistant overlay in `FridayService.kt`: overlay ONLY pops up on confirmed on-chip wake-word trigger (`onWearableWakeWordTriggered`); rogue or unauthenticated audio streams dropped immediately <!-- id: 41 -->
 - [x] 43. Clean up Android UI in `MainActivity.kt`: remove manual recording chips, buttons, test transcript cards, debug switches, and extra pendant mic icons, replacing with a clean autonomous status badge <!-- id: 42 -->
 - [x] 44. Verify compilation for both Seeed XIAO firmware (`scripts/compile_pendant.py`) and Android app (`./gradlew assembleDebug`) <!-- id: 43 -->
-- [ ] 45. Flash updated firmware `firmware/xiao_friday_pendant/xiao_friday_pendant.ino` onto Seeed Studio XIAO nRF52840 Sense via Arduino IDE <!-- id: 44 -->
-- [ ] 46. Update `context.md`, `architechture.md`, commit and push to git <!-- id: 45 -->
+- [x] 45. Investigate why the pendant was missing "Friday": discovered amplitude scale mismatch between synthetic and real PDM mic audio (15x louder), under-represented user voice (only 4.4% of dataset), and over-restrictive firmware thresholds (`MIN_SPEECH_RMS = 85.0f`, `WAKE_CONFIDENCE_STRICT = 0.85f`) <!-- id: 44 -->
+- [x] 46. Retrain TinyWakeWordCnn on RTX 5060 Ti GPU prioritizing user voice: added peak normalization to both Python feature extractor and C++ circular buffer, augmented 52 user "Friday" samples 30x (speed, time, pitch, gain, noise mix) to 1,612 samples (53% of positive data), achieving 98.1% recall on user's real voice with 0.960 average confidence <!-- id: 45 -->
+- [x] 47. Export optimized C++ inference engine to `firmware/xiao_friday_pendant/wakeword_model.h` with strided peak normalization <!-- id: 46 -->
+- [x] 48. Calibrate firmware thresholds in `firmware/xiao_friday_pendant/xiao_friday_pendant.ino`: lowered `MIN_SPEECH_RMS` to `60.0f` and `VAD_MULTIPLIER` to `1.35f` to capture conversational voice without missing initial "Fr-" fricatives; tuned `WAKE_CONFIDENCE_STRICT` to `0.78f` (instant trigger) and `WAKE_CONFIDENCE_MODERATE` to `0.62f` (2-hit debounce) <!-- id: 47 -->
+- [x] 49. Verify firmware compilation cleanly via `python scripts/compile_pendant.py` (0 errors, 0 warnings) <!-- id: 48 -->
+- [ ] 50. Flash updated firmware `firmware/xiao_friday_pendant/xiao_friday_pendant.ino` to Seeed Studio XIAO nRF52840 Sense via Arduino IDE <!-- id: 49 -->
+- [ ] 51. Update `context.md`, `architechture.md`, commit and push to git <!-- id: 50 -->

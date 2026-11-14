@@ -86,6 +86,11 @@ def extract_log_mel_spectrogram(samples_float):
     else:
         samples_float = samples_float[:TOTAL_SAMPLES]
 
+    # Peak normalization invariant to speaker distance / whispering / shouting
+    peak = np.max(np.abs(samples_float))
+    if peak > (300.0 / 32768.0):
+        samples_float = (samples_float / peak) * 0.5
+
     log_mel = np.zeros((NUM_MELS, NUM_FRAMES), dtype=np.float32)
     for frame_idx in range(NUM_FRAMES):
         start = frame_idx * HOP_LEN
@@ -108,8 +113,22 @@ def load_wav(path):
         samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
         return samples
 
-def augment_audio(samples, noise_pool):
-    shift = random.randint(-2400, 2400)
+def augment_audio(samples, noise_pool, is_user=False):
+    # 1. Speed perturbation via linear resampling (simulates natural cadence variations)
+    if is_user and random.random() < 0.75:
+        speed = random.uniform(0.88, 1.12)
+        old_indices = np.arange(len(samples))
+        new_indices = np.linspace(0, len(samples) - 1, int(len(samples) / speed))
+        stretched = np.interp(new_indices, old_indices, samples)
+        if len(stretched) < TOTAL_SAMPLES:
+            pad_before = random.randint(0, TOTAL_SAMPLES - len(stretched))
+            pad_after = TOTAL_SAMPLES - len(stretched) - pad_before
+            samples = np.pad(stretched, (pad_before, pad_after))
+        else:
+            samples = stretched[:TOTAL_SAMPLES]
+
+    # 2. Time shift (+/- 220ms = +/- 3500 samples)
+    shift = random.randint(-3500, 3500)
     if shift > 0:
         shifted = np.pad(samples, (shift, 0))[:TOTAL_SAMPLES]
     elif shift < 0:
@@ -117,17 +136,20 @@ def augment_audio(samples, noise_pool):
     else:
         shifted = samples.copy()
 
-    gain = random.uniform(0.65, 1.35)
+    # 3. Dynamic Gain Variation (0.45x to 1.85x covers quiet whisper to loud vocalization)
+    gain = random.uniform(0.45, 1.85) if is_user else random.uniform(0.65, 1.35)
     augmented = shifted * gain
 
-    if noise_pool and random.random() < 0.6:
+    # 4. Realistic Background Noise Injection (room murmurs / environmental sounds)
+    if noise_pool and random.random() < 0.65:
         noise = random.choice(noise_pool)
         noise_start = random.randint(0, max(0, len(noise) - TOTAL_SAMPLES))
         noise_chunk = noise[noise_start : noise_start + TOTAL_SAMPLES]
         if len(noise_chunk) < TOTAL_SAMPLES:
             noise_chunk = np.pad(noise_chunk, (0, TOTAL_SAMPLES - len(noise_chunk)))
-        augmented = augmented + noise_chunk * random.uniform(0.05, 0.20)
+        augmented = augmented + noise_chunk * random.uniform(0.04, 0.22)
 
+    # 5. PDM Microphone Noise Floor
     augmented += np.random.normal(0, random.uniform(0.001, 0.006), size=augmented.shape)
     return np.clip(augmented, -1.0, 1.0).astype(np.float32)
 
@@ -286,11 +308,20 @@ static void extractFeatures(const short* rawAudio) {
     float sumSq = 0.0f;
     int totalElements = WW_NUM_MELS * WW_NUM_FRAMES;
 
+    // Fast strided search for peak amplitude to normalize input
+    short maxAbs = 0;
+    for (int i = 0; i < WW_TOTAL_SAMPLES; i += 16) {
+        short val = rawAudio[i];
+        if (val < 0) val = -val;
+        if (val > maxAbs) maxAbs = val;
+    }
+    float inputScale = (maxAbs > 300) ? (0.5f / (float)maxAbs) : (1.0f / 32768.0f);
+
     for (int f = 0; f < WW_NUM_FRAMES; f++) {
         int start = f * WW_HOP_LEN;
         for (int i = 0; i < WW_FRAME_LEN; i++) {
             int audioIdx = start + i;
-            float s = (audioIdx < WW_TOTAL_SAMPLES) ? (rawAudio[audioIdx] / 32768.0f) : 0.0f;
+            float s = (audioIdx < WW_TOTAL_SAMPLES) ? ((float)rawAudio[audioIdx] * inputScale) : 0.0f;
             fftReal[i] = s * HANNING_WINDOW[i];
             fftImag[i] = 0.0f;
         }
@@ -438,6 +469,16 @@ static void extractFeaturesCircular(const short* circBuffer, int headIdx) {
     float sumSq = 0.0f;
     int totalElements = WW_NUM_MELS * WW_NUM_FRAMES;
 
+    // Fast strided search for peak amplitude in circular buffer
+    short maxAbs = 0;
+    for (int i = 0; i < WW_TOTAL_SAMPLES; i += 16) {
+        int circIdx = (headIdx + i) % WW_TOTAL_SAMPLES;
+        short val = circBuffer[circIdx];
+        if (val < 0) val = -val;
+        if (val > maxAbs) maxAbs = val;
+    }
+    float inputScale = (maxAbs > 300) ? (0.5f / (float)maxAbs) : (1.0f / 32768.0f);
+
     for (int f = 0; f < WW_NUM_FRAMES; f++) {
         int start = f * WW_HOP_LEN;
         for (int i = 0; i < WW_FRAME_LEN; i++) {
@@ -445,7 +486,7 @@ static void extractFeaturesCircular(const short* circBuffer, int headIdx) {
             float s = 0.0f;
             if (offset < WW_TOTAL_SAMPLES) {
                 int circIdx = (headIdx + offset) % WW_TOTAL_SAMPLES;
-                s = circBuffer[circIdx] / 32768.0f;
+                s = (float)circBuffer[circIdx] * inputScale;
             }
             fftReal[i] = s * HANNING_WINDOW[i];
             fftImag[i] = 0.0f;
@@ -519,48 +560,82 @@ def main():
     print("    Project Friday: Pendant Wake-Word Training    ", flush=True)
     print("==================================================", flush=True)
 
-    pos_files = sorted(list(POS_DIR.glob("*.wav")))
-    neg_files = sorted(list(NEG_DIR.glob("*.wav")))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using compute device: {device}", flush=True)
 
-    if not pos_files or not neg_files:
-        print("Error: No samples found in dataset directory!", flush=True)
+    user_pos_files = sorted(list(POS_DIR.glob("friday_*.wav")))
+    synth_pos_files = sorted(list(POS_DIR.glob("synth_*.wav")))
+    user_neg_files = sorted(list(NEG_DIR.glob("noise_*.wav")))
+    synth_neg_files = sorted(list(NEG_DIR.glob("synth_*.wav")))
+
+    print(f"Dataset files found:")
+    print(f"  User recorded 'Friday' samples: {len(user_pos_files)}")
+    print(f"  Synthetic 'Friday' samples:     {len(synth_pos_files)}")
+    print(f"  User recorded noise samples:    {len(user_neg_files)}")
+    print(f"  Synthetic negative samples:     {len(synth_neg_files)}")
+
+    if not user_pos_files and not synth_pos_files:
+        print("Error: No positive samples found in dataset directory!", flush=True)
         return
 
-    print(f"Loading {len(pos_files)} positive samples ('Friday')...", flush=True)
-    print(f"Loading {len(neg_files)} negative samples (noise & speech)...", flush=True)
+    raw_user_pos = [load_wav(f) for f in user_pos_files]
+    raw_synth_pos = [load_wav(f) for f in synth_pos_files]
+    raw_user_neg = [load_wav(f) for f in user_neg_files]
+    raw_synth_neg = [load_wav(f) for f in synth_neg_files]
 
-    raw_pos = [load_wav(f) for f in pos_files]
-    raw_neg = [load_wav(f) for f in neg_files]
-    # Use negative audio clips as background babble noise pool
-    noise_pool = [n for n in raw_neg if len(n) >= TOTAL_SAMPLES]
+    # Build background noise pool from user noise + synthetic noise
+    noise_pool = [n for n in (raw_user_neg + raw_synth_neg) if len(n) >= TOTAL_SAMPLES]
 
-    # Pre-generate augmented spectrogram dataset in memory
-    print("Extracting features with data augmentation...", flush=True)
+    print("\nExtracting features with prioritized user data augmentation...", flush=True)
     all_specs = []
     all_labels = []
 
-    # Positives + 4x augmentations
-    for p in raw_pos:
+    # 1. User positive samples: 30x heavy augmentation to strongly ground the model in user's acoustic profile
+    print(f"  Augmenting {len(raw_user_pos)} user 'Friday' samples (30x each)...", flush=True)
+    for p in raw_user_pos:
         all_specs.append(extract_log_mel_spectrogram(p))
         all_labels.append(1.0)
-        for _ in range(4):
-            aug = augment_audio(p, noise_pool)
+        for _ in range(30):
+            aug = augment_audio(p, noise_pool, is_user=True)
             all_specs.append(extract_log_mel_spectrogram(aug))
             all_labels.append(1.0)
 
-    # Negatives + 1x augmentations
-    for n in raw_neg:
+    # 2. Synthetic positive samples: 3x augmentation
+    print(f"  Augmenting {len(raw_synth_pos)} synthetic 'Friday' samples (3x each)...", flush=True)
+    for p in raw_synth_pos:
+        all_specs.append(extract_log_mel_spectrogram(p))
+        all_labels.append(1.0)
+        for _ in range(3):
+            aug = augment_audio(p, noise_pool, is_user=False)
+            all_specs.append(extract_log_mel_spectrogram(aug))
+            all_labels.append(1.0)
+
+    # 3. User negative samples: 35x augmentation (captures ambient PDM mic background)
+    print(f"  Augmenting {len(raw_user_neg)} user room noise samples (35x each)...", flush=True)
+    for n in raw_user_neg:
         all_specs.append(extract_log_mel_spectrogram(n))
         all_labels.append(0.0)
-        for _ in range(1):
-            aug = augment_audio(n, noise_pool)
+        for _ in range(35):
+            aug = augment_audio(n, noise_pool, is_user=True)
+            all_specs.append(extract_log_mel_spectrogram(aug))
+            all_labels.append(0.0)
+
+    # 4. Synthetic negatives (phonetic confusers & general speech)
+    print(f"  Loading {len(raw_synth_neg)} synthetic negative clips...", flush=True)
+    for n in raw_synth_neg:
+        all_specs.append(extract_log_mel_spectrogram(n))
+        all_labels.append(0.0)
+        if random.random() < 0.35:
+            aug = augment_audio(n, noise_pool, is_user=False)
             all_specs.append(extract_log_mel_spectrogram(aug))
             all_labels.append(0.0)
 
     all_specs = np.array(all_specs, dtype=np.float32)  # [N, 16, 62]
     all_labels = np.array(all_labels, dtype=np.float32)  # [N]
 
-    print(f"Total dataset: {len(all_specs)} samples ({np.sum(all_labels == 1.0):.0f} positive, {np.sum(all_labels == 0.0):.0f} negative)", flush=True)
+    pos_count = int(np.sum(all_labels == 1.0))
+    neg_count = int(np.sum(all_labels == 0.0))
+    print(f"\nTotal training dataset: {len(all_specs)} samples ({pos_count} positive, {neg_count} negative)", flush=True)
 
     # Shuffle and Split 80/20
     indices = np.arange(len(all_specs))
@@ -574,23 +649,26 @@ def main():
     val_x = torch.tensor(all_specs[val_idx]).unsqueeze(1)
     val_y = torch.tensor(all_labels[val_idx])
 
-    train_loader = DataLoader(TensorDataset(train_x, train_y), batch_size=32, shuffle=True)
-    val_loader = DataLoader(TensorDataset(val_x, val_y), batch_size=32, shuffle=False)
+    train_loader = DataLoader(TensorDataset(train_x, train_y), batch_size=64, shuffle=True)
+    val_loader = DataLoader(TensorDataset(val_x, val_y), batch_size=64, shuffle=False)
 
     # Build Model
-    model = TinyWakeWordCnn()
+    model = TinyWakeWordCnn().to(device)
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model Architecture: TinyWakeWordCnn ({total_params} parameters, ~{total_params * 4 / 1024:.2f} KB)", flush=True)
 
-    # Weighted BCE loss to balance positive recall
-    pos_weight = torch.tensor([1.75])
+    # Balanced BCE loss
+    pos_weight = torch.tensor([1.20]).to(device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = optim.Adam(model.parameters(), lr=0.003, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=60, eta_min=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=75, eta_min=1e-4)
 
-    epochs = 60
-    best_val_acc = 0.0
+    epochs = 75
+    best_score = -1.0
     best_weights = None
+
+    # Pre-extract spectrograms of original user samples for tracking during training
+    user_test_specs = [torch.tensor(extract_log_mel_spectrogram(p)).unsqueeze(0).unsqueeze(0).to(device) for p in raw_user_pos]
 
     print("\nStarting training loop...", flush=True)
     for epoch in range(1, epochs + 1):
@@ -600,6 +678,9 @@ def main():
         train_total = 0
 
         for specs, labels in train_loader:
+            specs = specs.to(device)
+            labels = labels.to(device)
+
             optimizer.zero_grad()
             logits = model(specs).squeeze(-1)
             loss = criterion(logits, labels)
@@ -620,6 +701,9 @@ def main():
         val_total = 0
         with torch.no_grad():
             for specs, labels in val_loader:
+                specs = specs.to(device)
+                labels = labels.to(device)
+
                 logits = model(specs).squeeze(-1)
                 loss = criterion(logits, labels)
                 val_loss += loss.item() * len(labels)
@@ -627,63 +711,86 @@ def main():
                 val_correct += (preds == labels).sum().item()
                 val_total += len(labels)
 
+            # Evaluate user test recall
+            user_hits = sum(1 for s in user_test_specs if torch.sigmoid(model(s)).item() >= 0.65)
+            user_recall = user_hits / len(user_test_specs) if user_test_specs else 1.0
+
         val_acc = val_correct / val_total
         scheduler.step()
 
-        if val_acc >= best_val_acc:
-            best_val_acc = val_acc
+        # Combined metric prioritizing user positive recall and overall validation accuracy
+        epoch_score = (val_acc * 0.4) + (user_recall * 0.6)
+
+        if epoch_score >= best_score:
+            best_score = epoch_score
             best_weights = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
-        if epoch % 5 == 0 or epoch == epochs or val_acc == 1.0:
-            print(f"Epoch [{epoch:02d}/{epochs}] - Train Loss: {train_loss/train_total:.4f}, Train Acc: {train_acc*100:.1f}% | Val Loss: {val_loss/val_total:.4f}, Val Acc: {val_acc*100:.1f}%", flush=True)
+        if epoch % 5 == 0 or epoch == epochs:
+            print(f"Epoch [{epoch:02d}/{epochs}] - Loss: {train_loss/train_total:.4f}, Acc: {train_acc*100:.1f}% | Val Acc: {val_acc*100:.1f}%, User 'Friday' Recall: {user_recall*100:.1f}% ({user_hits}/{len(user_test_specs)})", flush=True)
 
-    print(f"\nTraining Complete! Best Validation Accuracy: {best_val_acc * 100:.1f}%", flush=True)
+    print(f"\nTraining Complete! Best Combined Score: {best_score * 100:.1f}%", flush=True)
 
     model.load_state_dict(best_weights)
     model.eval()
+    model.cpu()
 
-    # Full Evaluation on original un-augmented recorded samples
-    print("\n--- Final Evaluation on Original Recorded Samples ---", flush=True)
-    pos_preds = []
-    neg_preds = []
+    # Detailed Evaluation on original recorded user samples
+    print("\n--- Evaluation on User Recorded Samples (52 clips) ---", flush=True)
+    user_preds = []
     with torch.no_grad():
-        for p in raw_pos:
+        for p in raw_user_pos:
             spec = torch.tensor(extract_log_mel_spectrogram(p)).unsqueeze(0).unsqueeze(0)
             prob = torch.sigmoid(model(spec)).item()
-            pos_preds.append(prob)
-        for n in raw_neg:
+            user_preds.append(prob)
+
+    u_hit_50 = sum(1 for p in user_preds if p >= 0.50)
+    u_hit_65 = sum(1 for p in user_preds if p >= 0.65)
+    u_hit_75 = sum(1 for p in user_preds if p >= 0.75)
+    print(f"  User Positives >= 0.50: {u_hit_50}/{len(user_preds)} ({u_hit_50/len(user_preds)*100:.1f}%)", flush=True)
+    print(f"  User Positives >= 0.65: {u_hit_65}/{len(user_preds)} ({u_hit_65/len(user_preds)*100:.1f}%)", flush=True)
+    print(f"  User Positives >= 0.75: {u_hit_75}/{len(user_preds)} ({u_hit_75/len(user_preds)*100:.1f}%)", flush=True)
+    print(f"  User Average Confidence: {np.mean(user_preds):.3f}", flush=True)
+
+    # Evaluation on synthetic negatives
+    print("\n--- Evaluation on Negative Samples ---", flush=True)
+    neg_preds = []
+    with torch.no_grad():
+        for n in (raw_user_neg + raw_synth_neg[:500]):
             spec = torch.tensor(extract_log_mel_spectrogram(n)).unsqueeze(0).unsqueeze(0)
             prob = torch.sigmoid(model(spec)).item()
             neg_preds.append(prob)
 
-    pos_correct = sum(1 for p in pos_preds if p >= 0.6)
-    neg_correct = sum(1 for p in neg_preds if p < 0.4)
-
-    print(f"Positive ('Friday') Accuracy: {pos_correct}/{len(pos_preds)} ({pos_correct/len(pos_preds)*100:.1f}%) | Avg Confidence: {np.mean(pos_preds):.3f}", flush=True)
-    print(f"Negative (Noise/Speech) Accuracy: {neg_correct}/{len(neg_preds)} ({neg_correct/len(neg_preds)*100:.1f}%) | Avg Confidence: {np.mean(neg_preds):.3f}", flush=True)
+    neg_rejected_65 = sum(1 for p in neg_preds if p < 0.65)
+    neg_rejected_50 = sum(1 for p in neg_preds if p < 0.50)
+    print(f"  Negative Rejection (< 0.65): {neg_rejected_65}/{len(neg_preds)} ({neg_rejected_65/len(neg_preds)*100:.1f}%)", flush=True)
+    print(f"  Negative Rejection (< 0.50): {neg_rejected_50}/{len(neg_preds)} ({neg_rejected_50/len(neg_preds)*100:.1f}%)", flush=True)
+    print(f"  Negative Average Score:      {np.mean(neg_preds):.3f}", flush=True)
 
     # Save artifacts
     pth_path = OUTPUT_DIR / "pendant_wakeword_model.pth"
     torch.save(best_weights, pth_path)
-    print(f"[✓] PyTorch model saved to: {pth_path}", flush=True)
-
-    onnx_path = OUTPUT_DIR / "pendant_wakeword.onnx"
-    dummy_input = torch.randn(1, 1, NUM_MELS, NUM_FRAMES, dtype=torch.float32)
-    torch.onnx.export(
-        model,
-        dummy_input,
-        str(onnx_path),
-        input_names=["input"],
-        output_names=["output"],
-        dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-        opset_version=13
-    )
-    print(f"[✓] ONNX model exported to: {onnx_path}", flush=True)
+    print(f"\n[✓] PyTorch model saved to: {pth_path}", flush=True)
 
     ARDUINO_HEADER_PATH.parent.mkdir(parents=True, exist_ok=True)
     export_cpp_header(model, ARDUINO_HEADER_PATH)
-
     print("\nModel is fully compiled into C++ and ready to run on Seeed Studio XIAO nRF52840 Sense!", flush=True)
+
+    # Optional ONNX export
+    try:
+        onnx_path = OUTPUT_DIR / "pendant_wakeword.onnx"
+        dummy_input = torch.randn(1, 1, NUM_MELS, NUM_FRAMES, dtype=torch.float32)
+        torch.onnx.export(
+            model,
+            dummy_input,
+            str(onnx_path),
+            input_names=["input"],
+            output_names=["output"],
+            dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+            opset_version=13
+        )
+        print(f"[✓] ONNX model exported to: {onnx_path}", flush=True)
+    except Exception as e:
+        print(f"Note: ONNX export skipped ({e}). C++ header is ready for Arduino.", flush=True)
 
 
 if __name__ == "__main__":

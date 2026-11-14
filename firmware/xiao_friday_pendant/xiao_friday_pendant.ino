@@ -49,11 +49,11 @@ enum PendantState {
 PendantState currentState = STATE_IDLE;
 
 // VAD & Wake-word calibrated parameters
-float backgroundRms = 50.0f;
-const float VAD_MULTIPLIER = 1.45f;
-const float MIN_SPEECH_RMS = 85.0f;           // Calibrated floor to reject room murmurs & background babble
-const float WAKE_CONFIDENCE_STRICT = 0.85f;   // Instant single-hit trigger
-const float WAKE_CONFIDENCE_MODERATE = 0.72f; // Requires 2 consecutive hits (~160ms)
+float backgroundRms = 40.0f;
+const float VAD_MULTIPLIER = 1.35f;
+const float MIN_SPEECH_RMS = 60.0f;           // Calibrated floor: rejects room murmurs while reliably catching conversational speech
+const float WAKE_CONFIDENCE_STRICT = 0.78f;   // Instant single-hit trigger (user speech averages 0.960!)
+const float WAKE_CONFIDENCE_MODERATE = 0.62f; // Requires 2 consecutive hits (~160ms) for softer utterances
 unsigned long wakeTriggerTimestamp = 0;
 unsigned long wakeCooldownUntil = 0;          // Cooldown to prevent recursive re-triggering
 static int consecutiveWakeHits = 0;

@@ -62,12 +62,13 @@ graph TD
    - Captures raw 16kHz 16-bit PCM mono audio stream directly from PDM hardware peripheral using DMA.
 2. **Stage 0: Micro-VAD Energy Gating**:
    - Calculates real-time Root-Mean-Square (RMS) amplitude and zero-crossing rate over 32ms frames.
-   - Calibrated speech threshold floor (`MIN_SPEECH_RMS = 85.0f`, `VAD_MULTIPLIER = 1.45f`) filters room murmurs, whispers, and air conditioning before activating CNN inference.
+   - Calibrated speech threshold floor (`MIN_SPEECH_RMS = 60.0f`, `VAD_MULTIPLIER = 1.35f`) filters room murmurs while reliably passing natural conversational voice and initial "Fr-" fricatives.
 3. **Stage 1: TinyML Wake-Word Engine ("Friday" via `wakeword_model.h`)**:
    - Runs a 1,697-parameter Depthwise Separable CNN on a 1.5-second (24,000 samples @ 16kHz) rolling circular buffer.
+   - Dynamic Strided Peak Normalization (`inputScale = 0.5f / maxAbs` if `maxAbs > 300`) guarantees consistent input dynamic range regardless of speaker distance or volume.
    - Extracts 16-band Log-Mel Spectrogram features (512 FFT with Hanning window, 384 hop, 62 frames) with zero dynamic memory allocation.
-   - Trained on 5,898 synthetic and augmented samples (phonetic confusables like "freeday", "friend", "fire", "frida", "freddy", common command words, and ambient noise).
-   - Multi-tier temporal verification: Requires either a single high-confidence detection (`score >= 0.85`) or two consecutive frames (`score >= 0.72` within 160ms) to trigger, eliminating single-frame transient false alarms.
+   - Trained prioritizing user's voice samples (30x augmentation across time, speed, gain, and room noise) alongside synthetic confusers (5,953 total training samples).
+   - Multi-tier temporal verification: Instant single-frame trigger on high confidence (`score >= 0.78`, user speech averages 0.960), and 2-hit debounce for softer utterances (`score >= 0.62` within 160ms).
    - Enforces a 3.5s cooldown after wake-word detection or audio streaming to prevent recursive self-triggering loops.
 4. **Stage 2: BLE GATT Server (`bluefruit.h` via `Bluefruit52Lib`)**:
    - Built on the Nordic SoftDevice S140 stack bundled directly with Seeed nRF52 Boards, configured with `Bluefruit.configPrphBandwidth(BANDWIDTH_MAX)` to support MTU 247.

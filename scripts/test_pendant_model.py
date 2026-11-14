@@ -64,6 +64,10 @@ def extract_features(samples_float):
     else:
         samples_float = samples_float[:TOTAL_SAMPLES]
 
+    peak = np.max(np.abs(samples_float))
+    if peak > (300.0 / 32768.0):
+        samples_float = (samples_float / peak) * 0.5
+
     log_mel = np.zeros((NUM_MELS, NUM_FRAMES), dtype=np.float32)
     for frame_idx in range(NUM_FRAMES):
         start = frame_idx * HOP_LEN
