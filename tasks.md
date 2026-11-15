@@ -97,3 +97,8 @@
 - [x] 86. Upgrade architecture to `PhoneticWakeWordNet`: 32 Mel filterbank channels (2x formant resolution), Depthwise-Separable convolutions with folded BatchNorm, 8-step temporal resolution, and a 2-layer non-linear MLP classifier (`Linear -> ReLU -> Linear`) for non-linear phoneme gating <!-- id: 85 -->
 - [x] 87. Retrain on RTX 5060 Ti GPU, benchmark on JFK continuous speech (target 0 false alarms) and user "Friday" (target > 98% recall), export zero-dependency C++ engine to `wakeword_model.h`, and compile firmware cleanly <!-- id: 86 -->
 - [x] 88. Update `architechture.md`, `context.md`, commit and push to git <!-- id: 87 -->
+- [x] 89. Ingest 110s TV & cough ambiance recording (`silence_continuous_20261115_135706.wav`), harvesting dense sliding windows into negative training set <!-- id: 88 -->
+- [x] 90. Update `train_pendant_wakeword.py` with multi-stream validation (testing against JFK speech, 84s silence, and 110s TV/cough stream) and retrain PhoneticWakeWordNet on RTX 5060 Ti GPU <!-- id: 89 -->
+- [x] 91. Update `test_pendant_model.py` and benchmark model to verify 0 false alarms across TV speech, coughing, and room transients with 100% user "Friday" recall <!-- id: 90 -->
+- [x] 92. Export zero-dependency C++ inference engine to `firmware/xiao_friday_pendant/wakeword_model.h` and verify clean Arduino firmware compilation via `scripts/compile_pendant.py` <!-- id: 91 -->
+- [x] 93. Update `context.md`, `architechture.md`, commit and push to git <!-- id: 92 -->

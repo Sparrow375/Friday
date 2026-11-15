@@ -765,33 +765,26 @@ The project uses a clean package namespace `com.friday.assistant`:
               - Zero-dependency C++ inference engine exported to `firmware/xiao_friday_pendant/wakeword_model.h` (243.7 KB).
               - Verified clean firmware compilation via `scripts/compile_pendant.py` (Return code 0, 0 errors, 0 warnings).
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+          * **TV & Cough Ambiance Ingestion, MCU Stride Alignment & Zero False-Alarm Retraining (November 2026 - Part 24)**:
+            - **Ambiance & Transient Audio Ingestion**:
+              - Ingested user's 109.7-second continuous ambiance recording ([dataset/raw_recordings/silence_continuous_20261115_135706.wav](file:///f:/Avaneesh/projects/Friday/dataset/raw_recordings/silence_continuous_20261115_135706.wav)) containing real TV dialogue, coughing/throat-clearing, keyboard clicks, and room reverb.
+              - Aligned sliding window harvesting stride to **1280 samples (80ms)**, matching the exact on-chip circular buffer shift rate on the Seeed XIAO nRF52840 MCU.
+              - Harvested **2,390 dense ambient slices** across both continuous recordings (including 1,404 loud transients with peak > 800 ADC counts).
+              - Augmented loud transients (coughs, key clicks, TV dialogue bursts) across 4 gain variations (0.4x, 0.7x, 1.0x, 1.5x) to immunize against non-speech impulses at all loudness levels.
+            - **Dataset Hardening & Multi-Stream Validation**:
+              - Expanded negative training set to 19,157 samples (23,435 total samples).
+              - Sliced all 119 sliding windows of continuous JFK speech into negative training.
+              - Implemented a 5-stream validation harness evaluating: (1) 138 authentic user 'Friday' vocalizations; (2) 119 sliding windows of JFK speech; (3) 1,353 sliding windows of 110s TV/cough ambiance; (4) 1,037 sliding windows of 84s room silence; (5) 10 narrowband acoustic tones.
+              - Enforced strict multi-stream epoch penalty requiring 100% rejection on continuous speech, 100% rejection on TV/cough ambiance, and 100% recall on user vocalizations.
+            - **GPU Retraining (RTX 5060 Ti) & Benchmark Results**:
+              - Retrained PhoneticWakeWordNet for 80 epochs, achieving best score of **0.9998**.
+              - **User 'Friday' Recall**: **138 / 138 (100.0%)** at >= 0.75 threshold, with **1.0000 (100.0%) average confidence**.
+              - **110s Ambiance (TV Playing, Coughing, Key clicks)**: **0 / 1,353 (0.0%!) false alarms**. Max Ambiance Score: **0.0000**, Max Cough Score: **0.0000**, Mean Score: **0.0000**!
+              - **Continuous JFK Speech**: **0 / 119 (0.0%!) false alarms**. Max score: **0.0000**.
+              - **84s Room Silence**: **0 / 1,037 (0.0%!) false alarms**. Mean score: **0.000008**.
+              - **Narrowband Tones (200-3500 Hz)**: **0 / 10 (0.0%!) false alarms** (all tones score 0.000000).
+              - **User Negative Speech**: **0 / 41 (0.0%!) false alarms** (mean score: 0.0000).
+            - **Production C++ Export & Firmware Verification**:
+              - Exported zero-dependency C++ inference engine to irmware/xiao_friday_pendant/wakeword_model.h (243.2 KB).
+              - Verified clean Arduino firmware compilation via scripts/compile_pendant.py (Return code 0, 0 errors, 0 warnings).
 

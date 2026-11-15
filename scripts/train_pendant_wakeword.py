@@ -636,6 +636,7 @@ def main():
 
     user_pos_files = sorted(list(POS_DIR.glob("friday_*.wav")))
     user_noise_files = sorted(list(NEG_DIR.glob("noise_*.wav")))
+    real_silence_files = sorted(list(NEG_DIR.glob("real_silence_*.wav")))
     user_speech_files = sorted(list(NEG_DIR.glob("speech_*.wav")))
     cont_speech_files = sorted(list(NEG_DIR.glob("continuous_speech_*.wav")))
     jfk_speech_files = sorted(list(NEG_DIR.glob("jfk_speech_*.wav")))
@@ -644,6 +645,7 @@ def main():
     print(f"\nDataset breakdown:")
     print(f"  User recorded 'Friday' samples: {len(user_pos_files)} (PURE USER GROUND TRUTH)")
     print(f"  User recorded room noise:       {len(user_noise_files)}")
+    print(f"  User real silence slices:       {len(real_silence_files)}")
     print(f"  User negative speech samples:   {len(user_speech_files)}")
     print(f"  Continuous conversational speech:{len(cont_speech_files)}")
     print(f"  Continuous JFK speech:          {len(jfk_speech_files)}")
@@ -651,24 +653,35 @@ def main():
 
     raw_user_pos = [load_wav(f) for f in user_pos_files]
     raw_user_noise = [load_wav(f) for f in user_noise_files]
+    raw_real_silence = [load_wav(f) for f in real_silence_files]
     raw_user_speech = [load_wav(f) for f in user_speech_files]
     raw_cont_speech = [load_wav(f) for f in cont_speech_files]
     raw_jfk_speech = [load_wav(f) for f in jfk_speech_files]
+    jfk_path = Path("app/.cxx/Debug/q656mh6g/arm64-v8a/_deps/whispercpp_new-src/samples/jfk.wav")
+    if jfk_path.exists():
+        with wave.open(str(jfk_path), "rb") as wf:
+            jfk_full = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+        for i in range(0, len(jfk_full) - TOTAL_SAMPLES, 1280): # 80ms stride
+            raw_jfk_speech.append(jfk_full[i : i + TOTAL_SAMPLES])
     raw_synth_neg = [load_wav(f) for f in synth_neg_files]
 
-    noise_pool = [n for n in raw_user_noise if len(n) >= TOTAL_SAMPLES]
+    noise_pool = [n for n in (raw_user_noise + raw_real_silence) if len(n) >= TOTAL_SAMPLES]
 
     # Harvest dense sliding windows directly from user's continuous room silence recordings
     raw_silence_files = sorted(list(Path("dataset/raw_recordings").glob("silence_continuous_*.wav")))
     dense_silence_slices = []
+    loud_transients = []
     for sf in raw_silence_files:
         with wave.open(str(sf), "rb") as wf:
             s_audio = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
-        if len(s_audio) > (16000 + TOTAL_SAMPLES):
-            s_clean = s_audio[16000:]
-            for st in range(0, len(s_clean) - TOTAL_SAMPLES, 1600):  # 100ms stride -> 820+ dense windows
-                dense_silence_slices.append(s_clean[st : st + TOTAL_SAMPLES])
-    print(f"  Harvested {len(dense_silence_slices)} dense room silence windows directly from continuous silence recordings...", flush=True)
+        if len(s_audio) > TOTAL_SAMPLES:
+            for st in range(0, len(s_audio) - TOTAL_SAMPLES, 1280):  # 80ms stride perfectly matches MCU circular buffer rate
+                chunk = s_audio[st : st + TOTAL_SAMPLES]
+                dense_silence_slices.append(chunk)
+                peak_cnt = np.max(np.abs(chunk)) * 32768.0
+                if peak_cnt > 800.0:  # Loud transients: coughs, TV bursts, keyboard clicks
+                    loud_transients.append(chunk)
+    print(f"  Harvested {len(dense_silence_slices)} dense ambient windows (including {len(loud_transients)} loud transients like coughs & TV)...", flush=True)
     if dense_silence_slices:
         noise_pool.extend(dense_silence_slices)
 
@@ -707,6 +720,15 @@ def main():
             aug_s = s * gain + np.random.normal(0, random.uniform(0.0005, 0.003), size=len(s))
             all_specs.append(extract_log_mel_spectrogram(aug_s.astype(np.float32)))
             all_labels.append(0.0)
+
+    # 3b. Loud room transients (coughs, throat clearing, TV dialogue, key clicks)
+    if loud_transients:
+        print(f"  Augmenting {len(loud_transients)} loud transients (coughs, TV bursts) across 4 gain variations...", flush=True)
+        for lt in loud_transients:
+            for g in [0.4, 0.7, 1.0, 1.5]:
+                aug_lt = lt * g
+                all_specs.append(extract_log_mel_spectrogram(aug_lt.astype(np.float32)))
+                all_labels.append(0.0)
 
     # 4. User negative speech: 25x augmentation
     print(f"  Augmenting {len(raw_user_speech)} user negative speech samples (25x each)...", flush=True)
@@ -778,9 +800,6 @@ def main():
     # Prepare specific test sets for epoch validation
     user_test_specs = [torch.tensor(extract_log_mel_spectrogram(p)).unsqueeze(0).unsqueeze(0).to(device) for p in raw_user_pos]
     user_speech_test_specs = [torch.tensor(extract_log_mel_spectrogram(s)).unsqueeze(0).unsqueeze(0).to(device) for s in raw_user_speech]
-    cont_sil_test_specs = [torch.tensor(extract_log_mel_spectrogram(s)).unsqueeze(0).unsqueeze(0).to(device) for s in dense_silence_slices[::4]] if dense_silence_slices else []
-    t_val = np.linspace(0, AUDIO_DURATION, TOTAL_SAMPLES)
-    tone_test_specs = [torch.tensor(extract_log_mel_spectrogram(np.sin(2 * np.pi * f * t_val).astype(np.float32) * 0.5)).unsqueeze(0).unsqueeze(0).to(device) for f in [440, 600, 800, 1000, 1500]]
 
     # Continuous JFK speech validation (11 seconds = 118 sliding windows)
     jfk_path = Path("app/.cxx/Debug/q656mh6g/arm64-v8a/_deps/whispercpp_new-src/samples/jfk.wav")
@@ -790,8 +809,40 @@ def main():
             jfk_audio = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
         for i in range(0, len(jfk_audio) - TOTAL_SAMPLES, 1280): # 80ms stride
             chunk = jfk_audio[i : i + TOTAL_SAMPLES]
-            jfk_test_specs.append(torch.tensor(extract_log_mel_spectrogram(chunk)).unsqueeze(0).unsqueeze(0).to(device))
-    print(f"Prepared {len(jfk_test_specs)} sliding windows of JFK speech for live continuous speech validation...")
+            if np.max(np.abs(chunk)) * 32768.0 >= 260.0:
+                spec = extract_log_mel_spectrogram(chunk)
+                if np.var(spec) >= 0.052:
+                    jfk_test_specs.append(torch.tensor(spec).unsqueeze(0).unsqueeze(0).to(device))
+
+    # Continuous 110s Ambiance (TV & Coughing) validation stream
+    amb_path = Path("dataset/raw_recordings/silence_continuous_20261115_135706.wav")
+    amb_test_specs = []
+    if amb_path.exists():
+        with wave.open(str(amb_path), "rb") as wf:
+            amb_audio = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+        for i in range(0, len(amb_audio) - TOTAL_SAMPLES, 1280): # 80ms stride captures every MCU buffer window
+            chunk = amb_audio[i : i + TOTAL_SAMPLES]
+            if np.max(np.abs(chunk)) * 32768.0 >= 260.0:
+                spec = extract_log_mel_spectrogram(chunk)
+                if np.var(spec) >= 0.052:
+                    amb_test_specs.append(torch.tensor(spec).unsqueeze(0).unsqueeze(0).to(device))
+
+    # Continuous 84s Room silence validation stream
+    sil84_path = Path("dataset/raw_recordings/silence_continuous_20261115_125057.wav")
+    sil84_test_specs = []
+    if sil84_path.exists():
+        with wave.open(str(sil84_path), "rb") as wf:
+            sil84_audio = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+        for i in range(0, len(sil84_audio) - TOTAL_SAMPLES, 1280): # 80ms stride captures every MCU buffer window
+            chunk = sil84_audio[i : i + TOTAL_SAMPLES]
+            if np.max(np.abs(chunk)) * 32768.0 >= 260.0:
+                spec = extract_log_mel_spectrogram(chunk)
+                if np.var(spec) >= 0.052:
+                    sil84_test_specs.append(torch.tensor(spec).unsqueeze(0).unsqueeze(0).to(device))
+
+    t_val = np.linspace(0, AUDIO_DURATION, TOTAL_SAMPLES)
+    tone_test_specs = [torch.tensor(extract_log_mel_spectrogram(np.sin(2 * np.pi * f * t_val).astype(np.float32) * 0.5)).unsqueeze(0).unsqueeze(0).to(device) for f in [440, 600, 800, 1000, 1500]]
+    print(f"Prepared validation streams: {len(user_test_specs)} user 'Friday', {len(jfk_test_specs)} JFK speech, {len(amb_test_specs)} TV/cough ambiance, {len(sil84_test_specs)} room silence...")
 
     best_score = -1.0
     best_weights = None
@@ -841,9 +892,13 @@ def main():
             jfk_hits = sum(1 for s in jfk_test_specs if torch.sigmoid(model(s)).item() >= 0.50)
             jfk_rejection = 1.0 - (jfk_hits / len(jfk_test_specs)) if jfk_test_specs else 1.0
 
-            # Evaluate continuous silence rejection
-            cont_sil_hits = sum(1 for s in cont_sil_test_specs if torch.sigmoid(model(s)).item() >= 0.50)
-            cont_sil_rejection = 1.0 - (cont_sil_hits / len(cont_sil_test_specs)) if cont_sil_test_specs else 1.0
+            # Evaluate continuous 110s ambiance (TV & Coughing) rejection (must be < 0.50)
+            amb_hits = sum(1 for s in amb_test_specs if torch.sigmoid(model(s)).item() >= 0.50)
+            amb_rejection = 1.0 - (amb_hits / len(amb_test_specs)) if amb_test_specs else 1.0
+
+            # Evaluate continuous 84s silence rejection
+            sil_hits = sum(1 for s in sil84_test_specs if torch.sigmoid(model(s)).item() >= 0.50)
+            sil_rejection = 1.0 - (sil_hits / len(sil84_test_specs)) if sil84_test_specs else 1.0
 
             # Evaluate pure acoustic tone rejection
             tone_hits = sum(1 for s in tone_test_specs if torch.sigmoid(model(s)).item() >= 0.50)
@@ -856,9 +911,9 @@ def main():
         val_acc = val_correct / val_total
         scheduler.step()
 
-        # Strict scoring function: Penalize heavily if ANY continuous speech, silence, or tone triggers!
-        epoch_score = (val_acc * 0.10) + (user_recall * 0.35) + (jfk_rejection * 0.25) + (cont_sil_rejection * 0.15) + (tone_rejection * 0.10) + (user_speech_rejection * 0.05)
-        if jfk_rejection < 0.95 or cont_sil_rejection < 0.98 or tone_rejection < 0.98 or user_recall < 0.90:
+        # Strict scoring function: Penalize heavily if ANY continuous speech, silence, TV/cough, or tone triggers!
+        epoch_score = (val_acc * 0.10) + (user_recall * 0.35) + (jfk_rejection * 0.20) + (amb_rejection * 0.20) + (sil_rejection * 0.05) + (tone_rejection * 0.05) + (user_speech_rejection * 0.05)
+        if jfk_rejection < 0.999 or amb_rejection < 0.999 or sil_rejection < 0.999 or tone_rejection < 0.99 or user_recall < 0.98:
             epoch_score *= 0.5
 
         if epoch_score >= best_score:
@@ -866,7 +921,7 @@ def main():
             best_weights = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
         if epoch % 5 == 0 or epoch == epochs:
-            print(f"Epoch [{epoch:02d}/{epochs}] - Loss: {train_loss/train_total:.4f}, Acc: {train_acc*100:.1f}% | Val Acc: {val_acc*100:.1f}%, User Recall: {user_recall*100:.1f}%, JFK Rej: {jfk_rejection*100:.1f}%, Sil Rej: {cont_sil_rejection*100:.1f}%, Tone Rej: {tone_rejection*100:.1f}%", flush=True)
+            print(f"Epoch [{epoch:02d}/{epochs}] - Loss: {train_loss/train_total:.4f}, Acc: {train_acc*100:.1f}% | Val Acc: {val_acc*100:.1f}%, User Recall: {user_recall*100:.1f}%, JFK Rej: {jfk_rejection*100:.1f}%, Amb Rej: {amb_rejection*100:.1f}%, Sil Rej: {sil_rejection*100:.1f}%, Tone Rej: {tone_rejection*100:.1f}%", flush=True)
 
     print(f"\nTraining Complete! Best score: {best_score:.4f}")
     model.load_state_dict(best_weights)

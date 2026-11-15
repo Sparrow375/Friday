@@ -185,6 +185,29 @@ def main():
                     s = 0.0 if feat is None else torch.sigmoid(model(torch.tensor(feat).unsqueeze(0).unsqueeze(0))).item()
                 sil_scores.append(s)
 
+    # 3b. Continuous 110s Ambiance (TV playing, coughing, keyboard clicks = 1,353 sliding windows)
+    amb_path = Path("dataset/raw_recordings/silence_continuous_20261115_135706.wav")
+    amb_scores = []
+    cough_scores = []
+    if amb_path.exists():
+        with wave.open(str(amb_path), "rb") as wf:
+            amb_audio = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+        step = 1280
+        with torch.no_grad():
+            for i in range(0, len(amb_audio) - 24000, step):
+                chunk = amb_audio[i : i + 24000]
+                peak = np.max(np.abs(chunk)) * 32768.0
+                time_sec = i / 16000.0
+                if peak < 260.0:
+                    s = 0.0
+                else:
+                    feat = extract_features(chunk)
+                    s = 0.0 if feat is None else torch.sigmoid(model(torch.tensor(feat).unsqueeze(0).unsqueeze(0))).item()
+                amb_scores.append(s)
+                # Cough section occurs around 9.5s to 11.0s
+                if 9.5 <= time_sec <= 11.0:
+                    cough_scores.append(s)
+
     # 4. Pure Tones
     t = np.linspace(0, 1.5, 24000)
     tone_scores = []
@@ -219,6 +242,13 @@ def main():
     if sil_scores:
         sil_alarms = sum(1 for s in sil_scores if s >= 0.75)
         print(f"84s Room Silence False Alarms:        {sil_alarms} / {len(sil_scores)} (Mean score: {np.mean(sil_scores):.6f})")
+
+    if amb_scores:
+        amb_alarms = sum(1 for s in amb_scores if s >= 0.75)
+        amb_alarms_50 = sum(1 for s in amb_scores if s >= 0.50)
+        max_cough = np.max(cough_scores) if cough_scores else 0.0
+        print(f"110s Ambiance (TV/Cough) False Alarms:{amb_alarms} / {len(amb_scores)} (>= 0.75), {amb_alarms_50} / {len(amb_scores)} (>= 0.50)")
+        print(f"  Max Ambiance Score: {np.max(amb_scores):.4f} | Max Cough Score: {max_cough:.4f} | Mean: {np.mean(amb_scores):.4f}")
 
     tone_alarms = sum(1 for _, s in tone_scores if s >= 0.50)
     print(f"Narrowband Tone False Alarms:         {tone_alarms} / {len(tone_scores)}")
