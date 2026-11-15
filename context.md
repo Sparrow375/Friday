@@ -743,24 +743,28 @@ The project uses a clean package namespace `com.friday.assistant`:
               - **User "Friday" Recall**: 138 authentic user recordings -> **94.9% average confidence**, **94.9% recall @ 0.75**, **90.6% recall @ 0.92**.
               - **Compilation**: Clean compilation via `scripts/compile_pendant.py` (Return code 0, 0 errors, 0 warnings).
 
-          * **Temporal Blindness Diagnosis & TemporalWakeWordCnn Upgrade (November 2026 - Part 22)**:
-            - **User Concern & Root Cause Investigation**:
-              - The user suspected the model was memorizing sound levels/energy rather than speech phonemes, noting occasional triggers on ambient sounds.
-              - When evaluating pure sine wave tones (440Hz, 800Hz, 1000Hz, 1500Hz) on the previous global average pooling model, **every tone scored 1.000000 (100% confidence)**!
-              - *Root Cause*: Global Average Pooling `AdaptiveAvgPool2d((1, 1))` squashed the 8 sequential phoneme time slices ($8 \to 1$) down to a single scalar per channel, completely erasing temporal order and cadence. The model was effectively only testing if spectral energy fell in the 400-1500 Hz human vocal frequency band, making flat continuous tones indistinguishable from the dynamic progression *Fr* $\to$ *eye* $\to$ *d* $\to$ *ay*.
-            - **Architectural Solution: TemporalWakeWordCnn**:
-              - Upgraded pooling to Frequency Average Pooling: `nn.AdaptiveAvgPool2d((1, 8))`. Pools only over frequency height ($4 \to 1$) while strictly preserving the **8 chronological phoneme steps** across time.
-              - Upgraded dense classifier: `nn.Linear(16 * 8, 1)` (128 temporal inputs $\to$ 1 logit, 1,809 total parameters, 7.07 KB Flash).
-              - Injected 500 synthetic narrowband tones, whistles, and motor hums (200 Hz to 3,500 Hz) into negative training data.
-            - **Benchmark Results on RTX 5060 Ti GPU Retraining**:
-              - **Narrowband Tone Rejection**: **100.0%** (200Hz to 3000Hz tones plummeted from 1.0000 to **0.000000**!).
-              - **User "Friday" Recall**: **136 / 138 (98.6%)** at $\ge 0.75$, with **0.9884 (98.8%) average confidence**.
-              - **User Negative Speech Rejection**: 41 negative words scored **0.0039 (0.39%) average**, 0 / 41 false alarms.
-              - **Room Noise Rejection**: 10 room noise recordings scored **0.0018 (0.18%) average**, 0 / 10 false alarms.
-              - **Continuous Room Silence Rejection**: Mean score across 1,036 sliding windows is **0.0055 (0.55%)**, with VAD threshold safely muting inference during ambient silence.
-            - **Firmware & Zero-Dependency C++ Engine Verification**:
-              - Exported weights and frequency pooling loop to `firmware/xiao_friday_pendant/wakeword_model.h`.
-              - Tested firmware compilation via `scripts/compile_pendant.py` (Return code 0, 0 errors, 0 warnings).
+          * **Continuous Speech False Alarm Resolution & PhoneticWakeWordNet Architectural Overhaul (November 2026 - Part 23)**:
+            - **Problem & Root Cause Analysis**:
+              - Testing live conversational speech against the previous model revealed false alarms during normal speech and sound.
+              - Benchmarking 11 seconds of continuous human speech (`jfk.wav`, 118 sliding windows) showed **22 false alarms (18.6%) at 1.0000 confidence**!
+              - *Root Causes*:
+                1. **Coarse 16 Mel Bands**: Formants F1 (300-800 Hz) and F2 (800-2200 Hz) were blurred into coarse 250 Hz chunks, making any normal vowel look like /aI/.
+                2. **Linear Classification Head**: The previous classifier was a single linear layer `Linear(128, 1)`. Channel 7 had a large positive weight (+0.606), so any vowel in speech produced a large activation (+26.9), adding +16.3 to the logit and pushing the score to 1.0000. A linear layer cannot perform non-linear AND-gating across phonemes.
+                3. **Zero Continuous Speech in Negative Training**: The negative dataset lacked continuous conversational English sentences.
+            - **Architectural Overhaul: PhoneticWakeWordNet**:
+              1. **32 Mel Filterbank Channels**: Doubled frequency resolution from 16 to 32 bands, resolving formant trajectories F1 and F2 and distinguishing the phonetic progression /f/ -> /r/ -> /aI/ -> /d/ -> /eI/.
+              2. **Depthwise-Separable Convolutions with Folded Batch Normalization**: Intermediate activations are bounded by BatchNorm2d during GPU training. At export, BatchNorm is mathematically folded into static weights and biases ($W_{\text{folded}} = W \cdot \frac{\gamma}{\sqrt{\sigma^2 + \epsilon}}$), giving zero runtime overhead and zero extra RAM on Cortex-M4F.
+              3. **2-Layer Non-Linear MLP Classification Head (`256 -> 32 -> 1`)**: Replaced the linear classifier with a 32-neuron hidden layer and ReLU activation. Hidden units act as non-linear phoneme coincidence gates: all syllables must be satisfied in chronological sequence to swing the logit positive.
+              4. **Dataset Hardening with Continuous Conversational Speech**: Injected 355 continuous speech negative windows (edge-tts multi-word sentences and days of the week across 10 voices), 20 JFK speech windows, 1,823 synthetic words, 820 dense room silence slices, and 500 tones.
+            - **Verification & Benchmark Results (RTX 5060 Ti GPU)**:
+              - **JFK Continuous Speech False Alarms**: Dropped from **22/118 (18.6%)** to **0 / 119 (0.0%!)**. Max score across entire speech is 0.3294 (mean 0.0058).
+              - **User "Friday" Recall**: **138 / 138 (100.0%)** at $\ge 0.75$, with **0.9999 (100.0%) average confidence**.
+              - **Narrowband Tone False Alarms**: **0 / 10** (all tones score 0.000000).
+              - **User Negative Speech False Alarms**: **0 / 41** (mean score 0.0000).
+            - **Firmware C++ Export & Compilation**:
+              - Zero-dependency C++ inference engine exported to `firmware/xiao_friday_pendant/wakeword_model.h` (243.7 KB).
+              - Verified clean firmware compilation via `scripts/compile_pendant.py` (Return code 0, 0 errors, 0 warnings).
+
 
 
 

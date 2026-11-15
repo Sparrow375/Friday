@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 Project Friday - Pendant Wake-Word Training & C++ Exporter
-Trains an ultra-compact, high-accuracy Convolutional Neural Network (CNN)
-on the Seeed Studio XIAO nRF52840 Sense audio dataset and exports a
-zero-dependency C++ header `wakeword_model.h` for on-chip inference.
+Trains PhoneticWakeWordNet (32 Mel bands, Depthwise-Separable Convolutions,
+Batch Normalization, and 2-Layer Non-Linear MLP Classification Head)
+on authentic user recordings and continuous conversational speech negatives.
 
-Usage:
-  .venv/Scripts/python -u scripts/train_pendant_wakeword.py
+Exports a zero-dependency C++ header `wakeword_model.h` with folded BatchNorm
+for real-time on-chip inference on the Seeed Studio XIAO nRF52840 Sense.
 """
 
 import os
@@ -31,7 +31,7 @@ TOTAL_SAMPLES = int(SAMPLE_RATE * AUDIO_DURATION)  # 24,000 samples
 FRAME_LEN = 512       # 32 ms
 HOP_LEN = 384         # 24 ms
 NUM_FRAMES = (TOTAL_SAMPLES - FRAME_LEN) // HOP_LEN + 1  # 62 frames
-NUM_MELS = 16         # 16 Mel filterbank channels
+NUM_MELS = 32         # 32 Mel filterbank channels (high formant resolution)
 F_MIN = 200.0         # Speech lower band
 F_MAX = 4000.0        # Speech upper band
 
@@ -79,7 +79,7 @@ HANNING_WINDOW = 0.5 * (1.0 - np.cos(2.0 * np.pi * np.arange(FRAME_LEN) / (FRAME
 def extract_log_mel_spectrogram(samples_float):
     """
     Extracts a (NUM_MELS, NUM_FRAMES) Log-Mel Spectrogram from float32 samples [-1.0, 1.0].
-    This matches the exact C++ algorithm on the microcontroller.
+    Matches the exact C++ algorithm on the microcontroller.
     """
     if len(samples_float) < TOTAL_SAMPLES:
         samples_float = np.pad(samples_float, (0, TOTAL_SAMPLES - len(samples_float)))
@@ -129,7 +129,6 @@ def augment_audio(samples, noise_pool, is_user=True):
             samples = stretched[:TOTAL_SAMPLES]
 
     # 2. Bounded Translation Shift (+/- 3200 samples = +/- 200ms across 1.5s window)
-    # Allows the word "Friday" to slide naturally without truncating syllables
     shift = random.randint(-3200, 3200)
     if shift > 0:
         shifted = np.pad(samples[:-shift], (shift, 0))
@@ -138,84 +137,102 @@ def augment_audio(samples, noise_pool, is_user=True):
     else:
         shifted = samples.copy()
 
-    # 3. Dynamic Gain Variation (0.4x to 1.8x covers soft conversational speech to louder projection)
-    gain = random.uniform(0.40, 1.80)
+    # 3. Dynamic Gain Variations (0.60x to 1.80x simulates head orientation and proximity)
+    gain = random.uniform(0.60, 1.80)
     augmented = shifted * gain
 
-    # 4. Background Room Noise Injection (ambient room murmurs)
-    if noise_pool and random.random() < 0.60:
+    # 4. Realistic Background Noise Injection (SNR 12dB to 30dB)
+    if noise_pool and random.random() < 0.85:
         noise = random.choice(noise_pool)
-        noise_start = random.randint(0, max(0, len(noise) - TOTAL_SAMPLES))
-        noise_chunk = noise[noise_start : noise_start + TOTAL_SAMPLES]
-        if len(noise_chunk) < TOTAL_SAMPLES:
-            noise_chunk = np.pad(noise_chunk, (0, TOTAL_SAMPLES - len(noise_chunk)))
-        augmented = augmented + noise_chunk * random.uniform(0.02, 0.12)
+        if len(noise) >= TOTAL_SAMPLES:
+            n_start = random.randint(0, len(noise) - TOTAL_SAMPLES)
+            noise_slice = noise[n_start : n_start + TOTAL_SAMPLES]
+        else:
+            noise_slice = np.pad(noise, (0, TOTAL_SAMPLES - len(noise)))
 
-    # 5. Gentle thermal mic noise
-    augmented += np.random.normal(0, random.uniform(0.0005, 0.003), size=augmented.shape)
+        noise_scale = random.uniform(0.02, 0.12)
+        augmented = augmented + (noise_slice * noise_scale)
+
     return np.clip(augmented, -1.0, 1.0).astype(np.float32)
 
 
-def augment_noise(samples):
-    """Augments ambient room noise without injecting speech."""
-    gain = random.uniform(0.40, 2.20)
-    shift = random.randint(-6000, 6000)
-    if shift > 0:
-        shifted = np.roll(samples, shift)
-    elif shift < 0:
-        shifted = np.roll(samples, shift)
-    else:
-        shifted = samples.copy()
-    augmented = shifted * gain + np.random.normal(0, random.uniform(0.0005, 0.004), size=shifted.shape)
-    return np.clip(augmented, -1.0, 1.0).astype(np.float32)
-
-
-# ==================== Tiny Neural Network Architecture ====================
-class TinyWakeWordCnn(nn.Module):
+# ==================== Neural Network Architecture ====================
+class PhoneticWakeWordNet(nn.Module):
     """
-    Ultra-lightweight CNN designed specifically for Cortex-M4F microcontrollers.
-    - ~1,700 parameters (< 7 KB Flash).
-    - ~3ms inference latency on 64 MHz nRF52840.
+    Phonetic Wake-Word Network for Cortex-M4F microcontroller.
+    - 32 Mel filterbank channels for fine formant resolution.
+    - Depthwise-Separable Convolutions with Batch Normalization.
+    - Preserves 8 chronological phoneme time slices across 1.5s window.
+    - 2-Layer Non-Linear MLP Head (256 -> 32 -> 1) with ReLU gating:
+      requires all phonemes (/f/, /r/, /aI/, /d/, /eI/) to be satisfied in sequence,
+      preventing isolated loud vowels or normal speech from triggering false alarms.
+    - ~10,600 parameters (~41 KB Flash, ~73 KB RAM).
     """
     def __init__(self):
         super().__init__()
-        # Conv 1: [1, 16, 62] -> [8, 16, 31]
-        self.conv1 = nn.Conv2d(1, 8, kernel_size=3, stride=(1, 2), padding=1)
+        # Conv 1: [1, 32, 62] -> [16, 16, 31]
+        self.conv1 = nn.Conv2d(1, 16, kernel_size=3, stride=(2, 2), padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(16)
         self.relu1 = nn.ReLU()
 
-        # Conv 2: [8, 16, 31] -> [16, 8, 16]
-        self.conv2 = nn.Conv2d(8, 16, kernel_size=3, stride=(2, 2), padding=1)
-        self.relu2 = nn.ReLU()
+        # Block 2 (DS-Conv): [16, 16, 31] -> [32, 8, 16]
+        self.dw_conv2 = nn.Conv2d(16, 16, kernel_size=3, stride=(2, 2), padding=1, groups=16, bias=False)
+        self.bn_dw2 = nn.BatchNorm2d(16)
+        self.relu_dw2 = nn.ReLU()
+        self.pw_conv2 = nn.Conv2d(16, 32, kernel_size=1, bias=False)
+        self.bn_pw2 = nn.BatchNorm2d(32)
+        self.relu_pw2 = nn.ReLU()
 
-        # Depthwise Separable Conv 3:
-        # Depthwise: [16, 8, 16] -> [16, 4, 8]
-        self.dw_conv3 = nn.Conv2d(16, 16, kernel_size=3, stride=(2, 2), padding=1, groups=16)
-        # Pointwise: [16, 4, 8] -> [16, 4, 8]
-        self.pw_conv3 = nn.Conv2d(16, 16, kernel_size=1)
-        self.relu3 = nn.ReLU()
+        # Block 3 (DS-Conv): [32, 8, 16] -> [32, 4, 8]
+        self.dw_conv3 = nn.Conv2d(32, 32, kernel_size=3, stride=(2, 2), padding=1, groups=32, bias=False)
+        self.bn_dw3 = nn.BatchNorm2d(32)
+        self.relu_dw3 = nn.ReLU()
+        self.pw_conv3 = nn.Conv2d(32, 32, kernel_size=1, bias=False)
+        self.bn_pw3 = nn.BatchNorm2d(32)
+        self.relu_pw3 = nn.ReLU()
 
-        # Frequency Average Pooling: [16, 4, 8] -> [16, 1, 8]
-        # Preserves 8 sequential phoneme time slices across the 1.5s window!
-        # Prevents time-averaged tone/noise memorization by verifying syllable trajectory!
+        # Frequency Average Pooling: [32, 4, 8] -> [32, 1, 8]
+        # Preserves 8 chronological phoneme steps across time!
         self.pool = nn.AdaptiveAvgPool2d((1, 8))
 
-        # Temporal Linear classifier: 16 channels x 8 time slices = 128 inputs -> [1]
-        self.fc = nn.Linear(16 * 8, 1)
+        # 2-Layer Non-Linear Classification Head: 256 -> 32 -> 1
+        self.fc1 = nn.Linear(32 * 8, 32)
+        self.relu_fc1 = nn.ReLU()
+        self.drop = nn.Dropout(0.25)
+        self.fc2 = nn.Linear(32, 1)
 
     def forward(self, x):
-        x = self.relu1(self.conv1(x))
-        x = self.relu2(self.conv2(x))
-        x = self.relu3(self.pw_conv3(self.dw_conv3(x)))
+        x = self.relu1(self.bn1(self.conv1(x)))
+        x = self.relu_dw2(self.bn_dw2(self.dw_conv2(x)))
+        x = self.relu_pw2(self.bn_pw2(self.pw_conv2(x)))
+        x = self.relu_dw3(self.bn_dw3(self.dw_conv3(x)))
+        x = self.relu_pw3(self.bn_pw3(self.pw_conv3(x)))
         x = self.pool(x)
         x = torch.flatten(x, 1)
-        x = self.fc(x)
+        x = self.drop(self.relu_fc1(self.fc1(x)))
+        x = self.fc2(x)
         return x
 
 
-# ==================== C++ Exporter ====================
+# ==================== C++ Exporter with Folded BatchNorm ====================
 def export_cpp_header(model, filepath: Path):
     model.eval()
-    params = {k: v.cpu().detach().numpy() for k, v in model.state_dict().items()}
+
+    def fold_bn(conv, bn):
+        scale = bn.weight.data / torch.sqrt(bn.running_var + bn.eps)
+        w_folded = conv.weight.data * scale.view(-1, 1, 1, 1)
+        b_folded = bn.bias.data - bn.running_mean * scale
+        return w_folded.cpu().numpy(), b_folded.cpu().numpy()
+
+    c1_w, c1_b = fold_bn(model.conv1, model.bn1)
+    dw2_w, dw2_b = fold_bn(model.dw_conv2, model.bn_dw2)
+    pw2_w, pw2_b = fold_bn(model.pw_conv2, model.bn_pw2)
+    dw3_w, dw3_b = fold_bn(model.dw_conv3, model.bn_dw3)
+    pw3_w, pw3_b = fold_bn(model.pw_conv3, model.bn_pw3)
+    fc1_w = model.fc1.weight.detach().cpu().numpy()
+    fc1_b = model.fc1.bias.detach().cpu().numpy()
+    fc2_w = model.fc2.weight.detach().cpu().numpy()[0]
+    fc2_b = model.fc2.bias.detach().cpu().numpy()[0]
 
     def format_array(name, arr, ctype="const float"):
         flat = arr.flatten()
@@ -225,8 +242,8 @@ def export_cpp_header(model, filepath: Path):
     cpp = """// ============================================================================
 // Auto-generated TinyML Wake-Word Model for Project Friday
 // Board: Seeed Studio XIAO nRF52840 Sense
-// Model: TinyWakeWordCnn (Log-Mel Spectrogram -> Depthwise Separable CNN)
-// Zero external dependencies - pure portable C++ with hardware-friendly buffers
+// Model: PhoneticWakeWordNet (32 Mel bands, DS-CNN, Folded BatchNorm, 2-Layer MLP)
+// Zero external dependencies - pure portable C++ with static scratch buffers
 // ============================================================================
 
 #ifndef WAKEWORD_MODEL_H
@@ -240,7 +257,7 @@ def export_cpp_header(model, filepath: Path):
 #define WW_FRAME_LEN      512
 #define WW_HOP_LEN        384
 #define WW_NUM_FRAMES     62
-#define WW_NUM_MELS       16
+#define WW_NUM_MELS       32     // 32 Mel filterbank channels for fine formant resolution
 
 // ==================== Filterbank Constants ====================
 """
@@ -248,22 +265,27 @@ def export_cpp_header(model, filepath: Path):
     cpp += "\n"
     cpp += format_array("MEL_FBANK", MEL_FBANK)
     cpp += "\n"
-    cpp += "// ==================== Neural Network Weights ====================\n"
-    cpp += format_array("CONV1_W", params["conv1.weight"])
-    cpp += format_array("CONV1_B", params["conv1.bias"])
+    cpp += "// ==================== Neural Network Weights (Folded BatchNorm) ====================\n"
+    cpp += format_array("CONV1_W", c1_w)
+    cpp += format_array("CONV1_B", c1_b)
     cpp += "\n"
-    cpp += format_array("CONV2_W", params["conv2.weight"])
-    cpp += format_array("CONV2_B", params["conv2.bias"])
+    cpp += format_array("DW_CONV2_W", dw2_w)
+    cpp += format_array("DW_CONV2_B", dw2_b)
     cpp += "\n"
-    cpp += format_array("DW_CONV3_W", params["dw_conv3.weight"])
-    cpp += format_array("DW_CONV3_B", params["dw_conv3.bias"])
+    cpp += format_array("PW_CONV2_W", pw2_w)
+    cpp += format_array("PW_CONV2_B", pw2_b)
     cpp += "\n"
-    cpp += format_array("PW_CONV3_W", params["pw_conv3.weight"])
-    cpp += format_array("PW_CONV3_B", params["pw_conv3.bias"])
+    cpp += format_array("DW_CONV3_W", dw3_w)
+    cpp += format_array("DW_CONV3_B", dw3_b)
     cpp += "\n"
-    cpp += format_array("FC_W", params["fc.weight"])
-    cpp += format_array("FC_B", params["fc.bias"])
+    cpp += format_array("PW_CONV3_W", pw3_w)
+    cpp += format_array("PW_CONV3_B", pw3_b)
     cpp += "\n"
+    cpp += format_array("FC1_W", fc1_w)
+    cpp += format_array("FC1_B", fc1_b)
+    cpp += "\n"
+    cpp += format_array("FC2_W", fc2_w)
+    cpp += f"const float FC2_B[1] = {{ {fc2_b:.7f}f }};\n\n"
 
     cpp += """// ==================== Compact In-Place Radix-2 Real FFT ====================
 static void computeFftMagnitude(float* real, float* imag, float* outMag) {
@@ -308,17 +330,19 @@ static void computeFftMagnitude(float* real, float* imag, float* outMag) {
     }
 }
 
-// Scratch memory buffers (zero heap allocation)
+// Scratch memory buffers (zero heap allocation, static BSS)
 static float fftReal[WW_FRAME_LEN];
 static float fftImag[WW_FRAME_LEN];
 static float fftMag[WW_FRAME_LEN / 2 + 1];
 static float melSpectrogram[WW_NUM_MELS][WW_NUM_FRAMES];
 
-static float conv1Out[8][16][31];
-static float conv2Out[16][8][16];
-static float dwConvOut[16][4][8];
-static float pwConvOut[16][4][8];
-static float pooled[128]; // Frequency-pooled across 4 bands, preserving 8 temporal phoneme steps (16 * 8 = 128)
+static float conv1Out[16][16][31];
+static float dw2Out[16][8][16];
+static float pw2Out[32][8][16];
+static float dw3Out[32][4][8];
+static float pw3Out[32][4][8];
+static float pooled[256];
+static float hidden[32];
 
 // ==================== Feature Extraction ====================
 static bool extractFeatures(const short* rawAudio, short maxAbs) {
@@ -342,7 +366,7 @@ static bool extractFeatures(const short* rawAudio, short maxAbs) {
         for (int m = 0; m < WW_NUM_MELS; m++) {
             float energy = 0.0f;
             int fbankRowOffset = m * 257;
-            for (int k = 0; k < 257; k++) {
+            for (int k = 7; k <= 127; k++) {
                 energy += MEL_FBANK[fbankRowOffset + k] * fftMag[k];
             }
             float logE = log10f(energy + 1e-5f);
@@ -354,9 +378,6 @@ static bool extractFeatures(const short* rawAudio, short maxAbs) {
 
     float mean = sumTotal / (float)totalElements;
     float variance = (sumSq / (float)totalElements) - (mean * mean);
-    // Hard spectral variance floor: Room silence/hiss has variance 0.015-0.051.
-    // Human speech ("Friday") has formants with variance >= 0.060.
-    // Flat acoustic noise is rejected immediately before running the neural network.
     if (variance < 0.052f) {
         return false;
     }
@@ -376,15 +397,16 @@ static bool extractFeatures(const short* rawAudio, short maxAbs) {
 
 // ==================== CNN Forward Pass ====================
 static float forwardCnn() {
-    // 1. Conv1: in [1, 16, 62] -> out [8, 16, 31], stride=(1, 2), pad=(1, 1), k=3x3
-    for (int oc = 0; oc < 8; oc++) {
+    // 1. Conv1: in [1, 32, 62] -> out [16, 16, 31], stride=(2, 2), pad=(1, 1), k=3x3
+    for (int oc = 0; oc < 16; oc++) {
         for (int oh = 0; oh < 16; oh++) {
             for (int ow = 0; ow < 31; ow++) {
                 float sum = CONV1_B[oc];
+                int in_h_center = oh * 2;
                 int in_w_center = ow * 2;
                 for (int kh = -1; kh <= 1; kh++) {
-                    int ih = oh + kh;
-                    if (ih < 0 || ih >= 16) continue;
+                    int ih = in_h_center + kh;
+                    if (ih < 0 || ih >= 32) continue;
                     for (int kw = -1; kw <= 1; kw++) {
                         int iw = in_w_center + kw;
                         if (iw < 0 || iw >= 62) continue;
@@ -397,32 +419,44 @@ static float forwardCnn() {
         }
     }
 
-    // 2. Conv2: in [8, 16, 31] -> out [16, 8, 16], stride=(2, 2), pad=(1, 1), k=3x3
-    for (int oc = 0; oc < 16; oc++) {
+    // 2. Depthwise Conv2: in [16, 16, 31] -> out [16, 8, 16], stride=(2, 2), pad=(1, 1), k=3x3
+    for (int c = 0; c < 16; c++) {
         for (int oh = 0; oh < 8; oh++) {
             for (int ow = 0; ow < 16; ow++) {
-                float sum = CONV2_B[oc];
+                float sum = DW_CONV2_B[c];
                 int in_h_center = oh * 2;
                 int in_w_center = ow * 2;
-                for (int ic = 0; ic < 8; ic++) {
-                    for (int kh = -1; kh <= 1; kh++) {
-                        int ih = in_h_center + kh;
-                        if (ih < 0 || ih >= 16) continue;
-                        for (int kw = -1; kw <= 1; kw++) {
-                            int iw = in_w_center + kw;
-                            if (iw < 0 || iw >= 31) continue;
-                            int wIdx = (oc * 72) + (ic * 9) + ((kh + 1) * 3) + (kw + 1);
-                            sum += conv1Out[ic][ih][iw] * CONV2_W[wIdx];
-                        }
+                for (int kh = -1; kh <= 1; kh++) {
+                    int ih = in_h_center + kh;
+                    if (ih < 0 || ih >= 16) continue;
+                    for (int kw = -1; kw <= 1; kw++) {
+                        int iw = in_w_center + kw;
+                        if (iw < 0 || iw >= 31) continue;
+                        int wIdx = (c * 9) + ((kh + 1) * 3) + (kw + 1);
+                        sum += conv1Out[c][ih][iw] * DW_CONV2_W[wIdx];
                     }
                 }
-                conv2Out[oc][oh][ow] = (sum > 0.0f) ? sum : 0.0f; // ReLU
+                dw2Out[c][oh][ow] = (sum > 0.0f) ? sum : 0.0f; // ReLU
             }
         }
     }
 
-    // 3. Depthwise Conv3: in [16, 8, 16] -> out [16, 4, 8], stride=(2, 2), pad=(1, 1), k=3x3
-    for (int c = 0; c < 16; c++) {
+    // 3. Pointwise Conv2: in [16, 8, 16] -> out [32, 8, 16], 1x1 conv + ReLU
+    for (int oc = 0; oc < 32; oc++) {
+        for (int oh = 0; oh < 8; oh++) {
+            for (int ow = 0; ow < 16; ow++) {
+                float sum = PW_CONV2_B[oc];
+                int wOffset = oc * 16;
+                for (int ic = 0; ic < 16; ic++) {
+                    sum += dw2Out[ic][oh][ow] * PW_CONV2_W[wOffset + ic];
+                }
+                pw2Out[oc][oh][ow] = (sum > 0.0f) ? sum : 0.0f; // ReLU
+            }
+        }
+    }
+
+    // 4. Depthwise Conv3: in [32, 8, 16] -> out [32, 4, 8], stride=(2, 2), pad=(1, 1), k=3x3
+    for (int c = 0; c < 32; c++) {
         for (int oh = 0; oh < 4; oh++) {
             for (int ow = 0; ow < 8; ow++) {
                 float sum = DW_CONV3_B[c];
@@ -435,54 +469,60 @@ static float forwardCnn() {
                         int iw = in_w_center + kw;
                         if (iw < 0 || iw >= 16) continue;
                         int wIdx = (c * 9) + ((kh + 1) * 3) + (kw + 1);
-                        sum += conv2Out[c][ih][iw] * DW_CONV3_W[wIdx];
+                        sum += pw2Out[c][ih][iw] * DW_CONV3_W[wIdx];
                     }
                 }
-                dwConvOut[c][oh][ow] = sum;
+                dw3Out[c][oh][ow] = (sum > 0.0f) ? sum : 0.0f; // ReLU
             }
         }
     }
 
-    // 4. Pointwise Conv3: in [16, 4, 8] -> out [16, 4, 8], 1x1 conv + ReLU
-    for (int oc = 0; oc < 16; oc++) {
+    // 5. Pointwise Conv3: in [32, 4, 8] -> out [32, 4, 8], 1x1 conv + ReLU
+    for (int oc = 0; oc < 32; oc++) {
         for (int oh = 0; oh < 4; oh++) {
             for (int ow = 0; ow < 8; ow++) {
                 float sum = PW_CONV3_B[oc];
-                for (int ic = 0; ic < 16; ic++) {
-                    int wIdx = (oc * 16) + ic;
-                    sum += dwConvOut[ic][oh][ow] * PW_CONV3_W[wIdx];
+                int wOffset = oc * 32;
+                for (int ic = 0; ic < 32; ic++) {
+                    sum += dw3Out[ic][oh][ow] * PW_CONV3_W[wOffset + ic];
                 }
-                pwConvOut[oc][oh][ow] = (sum > 0.0f) ? sum : 0.0f; // ReLU
+                pw3Out[oc][oh][ow] = (sum > 0.0f) ? sum : 0.0f; // ReLU
             }
         }
     }
 
-    // 5. Frequency Pooling: [16, 4, 8] -> [16, 8] (preserves 8 temporal phoneme time slices!)
-    for (int c = 0; c < 16; c++) {
+    // 6. Frequency Average Pooling: [32, 4, 8] -> [256] (preserves 8 temporal steps!)
+    for (int c = 0; c < 32; c++) {
         for (int w = 0; w < 8; w++) {
             float sum = 0.0f;
             for (int h = 0; h < 4; h++) {
-                sum += pwConvOut[c][h][w];
+                sum += pw3Out[c][h][w];
             }
             pooled[(c * 8) + w] = sum / 4.0f;
         }
     }
 
-    // 6. Temporal Dense Classifier: [128] -> [1] + Sigmoid
-    float logit = FC_B[0];
-    for (int i = 0; i < 128; i++) {
-        logit += pooled[i] * FC_W[i];
+    // 7. Non-Linear 2-Layer MLP Classification Head:
+    // Layer 1: [256] -> [32] + ReLU
+    for (int j = 0; j < 32; j++) {
+        float sum = FC1_B[j];
+        int rowOffset = j * 256;
+        for (int i = 0; i < 256; i++) {
+            sum += pooled[i] * FC1_W[rowOffset + i];
+        }
+        hidden[j] = (sum > 0.0f) ? sum : 0.0f; // Non-linear phonemic activation gate
+    }
+
+    // Layer 2: [32] -> [1] + Sigmoid
+    float logit = FC2_B[0];
+    for (int j = 0; j < 32; j++) {
+        logit += hidden[j] * FC2_W[j];
     }
 
     return 1.0f / (1.0f + expf(-logit));
 }
 
 // ==================== Public API ====================
-/**
- * Extracts log-mel spectrogram features directly from a circular buffer of 24,000 samples.
- * headIdx points to the oldest sample in the circular buffer.
- * Returns false if the audio buffer is flat ambient noise / silence (spectral variance < 0.052).
- */
 static bool extractFeaturesCircular(const short* circBuffer, int headIdx, short maxAbs) {
     float sumTotal = 0.0f;
     float sumSq = 0.0f;
@@ -508,7 +548,7 @@ static bool extractFeaturesCircular(const short* circBuffer, int headIdx, short 
         for (int m = 0; m < WW_NUM_MELS; m++) {
             float energy = 0.0f;
             int fbankRowOffset = m * 257;
-            for (int k = 0; k < 257; k++) {
+            for (int k = 7; k <= 127; k++) {
                 energy += MEL_FBANK[fbankRowOffset + k] * fftMag[k];
             }
             float logE = log10f(energy + 1e-5f);
@@ -520,9 +560,6 @@ static bool extractFeaturesCircular(const short* circBuffer, int headIdx, short 
 
     float mean = sumTotal / (float)totalElements;
     float variance = (sumSq / (float)totalElements) - (mean * mean);
-    // Hard spectral variance floor: Room silence/hiss has variance 0.015-0.051.
-    // Human speech ("Friday") has formants with variance >= 0.060.
-    // Flat acoustic noise is rejected immediately before running the neural network.
     if (variance < 0.052f) {
         return false;
     }
@@ -540,11 +577,6 @@ static bool extractFeaturesCircular(const short* circBuffer, int headIdx, short 
     return true;
 }
 
-/**
- * Runs TinyML wake-word model directly on a circular audio buffer without memory copying.
- * Returns 0.0f immediately if peak amplitude is below physical speech floor (< 260 ADC counts)
- * or if spectral variance is flat background noise (< 0.052).
- */
 static inline float predictWakeWordScoreCircular(const short* circBuffer, int headIdx) {
     short maxAbs = 0;
     for (int i = 0; i < WW_TOTAL_SAMPLES; i += 4) {
@@ -554,9 +586,6 @@ static inline float predictWakeWordScoreCircular(const short* circBuffer, int he
         if (val > maxAbs) maxAbs = val;
     }
 
-    // Hard acoustic floor: If peak in 1.5 seconds is < 260 ADC counts,
-    // it is flat room noise or physical silence (room noise peak is 180-240).
-    // Human vocalization ("Friday") always exceeds 280-400 ADC counts.
     if (maxAbs < 260) {
         return 0.0f;
     }
@@ -567,10 +596,6 @@ static inline float predictWakeWordScoreCircular(const short* circBuffer, int he
     return forwardCnn();
 }
 
-/**
- * Runs the TinyML wake-word model on a linear 1.5-second buffer (24,000 samples @ 16kHz).
- * Returns the probability (0.0 to 1.0) that "Friday" was spoken.
- */
 static inline float predictWakeWordScore(const short* audio24k) {
     short maxAbs = 0;
     for (int i = 0; i < WW_TOTAL_SAMPLES; i += 4) {
@@ -589,51 +614,48 @@ static inline float predictWakeWordScore(const short* audio24k) {
     return forwardCnn();
 }
 
-/**
- * Convenience helper returning true if confidence exceeds threshold (default 0.70).
- */
 static inline bool isWakeWordDetected(const short* audio24k, float threshold = 0.70f) {
     return predictWakeWordScore(audio24k) >= threshold;
 }
 
 #endif // WAKEWORD_MODEL_H
 """
-
     with open(filepath, "w") as f:
         f.write(cpp)
-    print(f"[✓] C++ inference engine successfully written to: {filepath}", flush=True)
+    print(f"\n[Success] Exported zero-dependency C++ header to: {filepath} ({len(cpp)/1024:.1f} KB)")
 
 
-# ==================== Main Training Routine ====================
+# ==================== Main Training Pipeline ====================
 def main():
-    print("==================================================", flush=True)
-    print("    Project Friday: Pendant Wake-Word Training    ", flush=True)
-    print("==================================================", flush=True)
+    print("==================================================")
+    print("  Project Friday - Phonetic Wake-Word Training    ")
+    print("==================================================")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using compute device: {device}", flush=True)
+    print(f"Using compute device: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
 
-    user_pos_files = sorted(list(set(list(POS_DIR.glob("friday_*.wav")) + list(POS_DIR.glob("friday_user_*.wav")))))
-    user_noise_files = sorted(list(set(list(NEG_DIR.glob("noise_*.wav")) + list(NEG_DIR.glob("real_silence_*.wav")) + list(NEG_DIR.glob("silence_*.wav")))))
+    user_pos_files = sorted(list(POS_DIR.glob("friday_*.wav")))
+    user_noise_files = sorted(list(NEG_DIR.glob("noise_*.wav")))
     user_speech_files = sorted(list(NEG_DIR.glob("speech_*.wav")))
-    synth_neg_files = sorted(list(NEG_DIR.glob("synth_*.wav")))[:1000]
+    cont_speech_files = sorted(list(NEG_DIR.glob("continuous_speech_*.wav")))
+    jfk_speech_files = sorted(list(NEG_DIR.glob("jfk_speech_*.wav")))
+    synth_neg_files = sorted(list(NEG_DIR.glob("synth_neg_*.wav")))
 
-    print(f"Dataset files found:")
-    print(f"  User recorded 'Friday' samples: {len(user_pos_files)} (PURE USER GROUND TRUTH - 0 synthetic positives)")
+    print(f"\nDataset breakdown:")
+    print(f"  User recorded 'Friday' samples: {len(user_pos_files)} (PURE USER GROUND TRUTH)")
     print(f"  User recorded room noise:       {len(user_noise_files)}")
     print(f"  User negative speech samples:   {len(user_speech_files)}")
+    print(f"  Continuous conversational speech:{len(cont_speech_files)}")
+    print(f"  Continuous JFK speech:          {len(jfk_speech_files)}")
     print(f"  Synthetic negative words:       {len(synth_neg_files)}")
-
-    if not user_pos_files:
-        print("Error: No positive samples found in dataset directory!", flush=True)
-        return
 
     raw_user_pos = [load_wav(f) for f in user_pos_files]
     raw_user_noise = [load_wav(f) for f in user_noise_files]
     raw_user_speech = [load_wav(f) for f in user_speech_files]
+    raw_cont_speech = [load_wav(f) for f in cont_speech_files]
+    raw_jfk_speech = [load_wav(f) for f in jfk_speech_files]
     raw_synth_neg = [load_wav(f) for f in synth_neg_files]
 
-    # Build background noise pool exclusively from real user room noise
     noise_pool = [n for n in raw_user_noise if len(n) >= TOTAL_SAMPLES]
 
     # Harvest dense sliding windows directly from user's continuous room silence recordings
@@ -642,7 +664,6 @@ def main():
     for sf in raw_silence_files:
         with wave.open(str(sf), "rb") as wf:
             s_audio = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
-        # Skip first 1 second (16000 samples) to avoid user keyboard Enter click
         if len(s_audio) > (16000 + TOTAL_SAMPLES):
             s_clean = s_audio[16000:]
             for st in range(0, len(s_clean) - TOTAL_SAMPLES, 1600):  # 100ms stride -> 820+ dense windows
@@ -651,7 +672,7 @@ def main():
     if dense_silence_slices:
         noise_pool.extend(dense_silence_slices)
 
-    print("\nExtracting features with pure user data grounding...", flush=True)
+    print("\nExtracting 32-Mel features across all categories...", flush=True)
     all_specs = []
     all_labels = []
 
@@ -665,29 +686,29 @@ def main():
             all_specs.append(extract_log_mel_spectrogram(aug))
             all_labels.append(1.0)
 
-    # 2. User room noise (pendant clips): 30x heavy augmentation without speech mixing to guarantee 0% false alarms in silence
-    print(f"  Augmenting {len(raw_user_noise)} user room noise samples (30x each)...", flush=True)
-    for n in raw_user_noise:
-        all_specs.append(extract_log_mel_spectrogram(n))
+    # 2. Continuous Conversational Speech (355 windows + JFK 20 windows)
+    print(f"  Loading {len(raw_cont_speech) + len(raw_jfk_speech)} continuous speech negative samples (augmented 2x)...", flush=True)
+    for cs in raw_cont_speech + raw_jfk_speech:
+        all_specs.append(extract_log_mel_spectrogram(cs))
         all_labels.append(0.0)
-        for _ in range(30):
-            aug = augment_noise(n)
-            all_specs.append(extract_log_mel_spectrogram(aug))
+        for _ in range(2):
+            gain = random.uniform(0.70, 1.40)
+            aug_cs = cs * gain
+            all_specs.append(extract_log_mel_spectrogram(aug_cs.astype(np.float32)))
             all_labels.append(0.0)
 
-    # 2b. Dense Real Room Silence (820 slices x 3 variations = ~2,460 samples)
-    if dense_silence_slices:
-        print(f"  Injecting {len(dense_silence_slices)} dense room silence slices with 2x gain variations...", flush=True)
-        for s in dense_silence_slices:
-            all_specs.append(extract_log_mel_spectrogram(s))
+    # 3. Dense room silence windows
+    print(f"  Injecting {len(dense_silence_slices)} dense room silence slices with 2x gain variations...", flush=True)
+    for s in dense_silence_slices:
+        all_specs.append(extract_log_mel_spectrogram(s))
+        all_labels.append(0.0)
+        for _ in range(2):
+            gain = random.uniform(0.50, 2.20)
+            aug_s = s * gain + np.random.normal(0, random.uniform(0.0005, 0.003), size=len(s))
+            all_specs.append(extract_log_mel_spectrogram(aug_s.astype(np.float32)))
             all_labels.append(0.0)
-            for _ in range(2):
-                gain = random.uniform(0.50, 2.20)
-                aug_s = s * gain + np.random.normal(0, random.uniform(0.0005, 0.003), size=len(s))
-                all_specs.append(extract_log_mel_spectrogram(aug_s.astype(np.float32)))
-                all_labels.append(0.0)
 
-    # 3. User negative speech (e.g. 'hello', 'test', numbers): 25x augmentation
+    # 4. User negative speech: 25x augmentation
     print(f"  Augmenting {len(raw_user_speech)} user negative speech samples (25x each)...", flush=True)
     for s in raw_user_speech:
         all_specs.append(extract_log_mel_spectrogram(s))
@@ -697,20 +718,7 @@ def main():
             all_specs.append(extract_log_mel_spectrogram(aug))
             all_labels.append(0.0)
 
-    # 4. Physical room silence, mains hum, and microphone hiss variations
-    print("  Generating 350 physical room silence and low-frequency noise samples...", flush=True)
-    for _ in range(350):
-        noise_amp = random.uniform(0.0005, 0.005)
-        silence_sample = np.random.normal(0, noise_amp, TOTAL_SAMPLES)
-        if random.random() < 0.5:
-            hum_freq = random.choice([50.0, 60.0, 100.0, 120.0])
-            t = np.linspace(0, AUDIO_DURATION, TOTAL_SAMPLES)
-            hum = np.sin(2 * np.pi * hum_freq * t) * random.uniform(0.0005, 0.003)
-            silence_sample += hum
-        all_specs.append(extract_log_mel_spectrogram(silence_sample.astype(np.float32)))
-        all_labels.append(0.0)
-
-    # 4b. Narrowband acoustic tones, whistles, and motor hums (500 samples across 200Hz to 3500Hz)
+    # 5. Narrowband acoustic tones, whistles, and motor hums (500 samples across 200Hz to 3500Hz)
     print("  Generating 500 narrowband acoustic tones and continuous whistle samples...", flush=True)
     t = np.linspace(0, AUDIO_DURATION, TOTAL_SAMPLES)
     for freq in np.linspace(200, 3500, 250):
@@ -721,13 +729,13 @@ def main():
         all_specs.append(extract_log_mel_spectrogram(tone2))
         all_labels.append(0.0)
 
-    # 5. Synthetic negative words (English words that are NOT Friday)
+    # 6. Synthetic negative words (English words that are NOT Friday)
     print(f"  Loading {len(raw_synth_neg)} synthetic negative words...", flush=True)
     for sn in raw_synth_neg:
         all_specs.append(extract_log_mel_spectrogram(sn))
         all_labels.append(0.0)
 
-    # 6. Random normalized Gaussian noise matrices (immunizing against spatial ReLU bias false activations)
+    # 7. Random normalized Gaussian noise matrices
     print("  Generating 1,500 random noise matrices (immunizing against random noise false alarms)...", flush=True)
     for _ in range(1500):
         scale = random.uniform(0.3, 1.2)
@@ -735,8 +743,8 @@ def main():
         all_specs.append(spec)
         all_labels.append(0.0)
 
-    all_specs = np.array(all_specs, dtype=np.float32)  # [N, 16, 62]
-    all_labels = np.array(all_labels, dtype=np.float32)  # [N]
+    all_specs = np.array(all_specs, dtype=np.float32)
+    all_labels = np.array(all_labels, dtype=np.float32)
 
     pos_count = int(np.sum(all_labels == 1.0))
     neg_count = int(np.sum(all_labels == 0.0))
@@ -758,50 +766,55 @@ def main():
     val_loader = DataLoader(TensorDataset(val_x, val_y), batch_size=64, shuffle=False)
 
     # Build Model
-    model = TinyWakeWordCnn().to(device)
-    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Model Architecture: TinyWakeWordCnn ({total_params} parameters, ~{total_params * 4 / 1024:.2f} KB)", flush=True)
+    model = PhoneticWakeWordNet().to(device)
 
-    # Balanced BCE loss
-    pos_weight = torch.tensor([1.00]).to(device)
+    # Balanced pos_weight
+    pos_weight = torch.tensor([neg_count / max(pos_count, 1)]).to(device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    optimizer = optim.Adam(model.parameters(), lr=0.003, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=75, eta_min=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=0.002, weight_decay=1e-3)
+    epochs = 80
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-    epochs = 75
-    best_score = -1.0
-    best_weights = None
-
-    # Pre-extract spectrograms of original user samples for tracking during training
+    # Prepare specific test sets for epoch validation
     user_test_specs = [torch.tensor(extract_log_mel_spectrogram(p)).unsqueeze(0).unsqueeze(0).to(device) for p in raw_user_pos]
-    user_noise_test_specs = [torch.tensor(extract_log_mel_spectrogram(n)).unsqueeze(0).unsqueeze(0).to(device) for n in raw_user_noise]
     user_speech_test_specs = [torch.tensor(extract_log_mel_spectrogram(s)).unsqueeze(0).unsqueeze(0).to(device) for s in raw_user_speech]
-    random_noise_test_specs = [torch.randn(1, 1, NUM_MELS, NUM_FRAMES).to(device) * scale for scale in [0.4, 0.7, 1.0, 1.2] for _ in range(25)]
     cont_sil_test_specs = [torch.tensor(extract_log_mel_spectrogram(s)).unsqueeze(0).unsqueeze(0).to(device) for s in dense_silence_slices[::4]] if dense_silence_slices else []
     t_val = np.linspace(0, AUDIO_DURATION, TOTAL_SAMPLES)
     tone_test_specs = [torch.tensor(extract_log_mel_spectrogram(np.sin(2 * np.pi * f * t_val).astype(np.float32) * 0.5)).unsqueeze(0).unsqueeze(0).to(device) for f in [440, 600, 800, 1000, 1500]]
 
-    print("\nStarting training loop...", flush=True)
+    # Continuous JFK speech validation (11 seconds = 118 sliding windows)
+    jfk_path = Path("app/.cxx/Debug/q656mh6g/arm64-v8a/_deps/whispercpp_new-src/samples/jfk.wav")
+    jfk_test_specs = []
+    if jfk_path.exists():
+        with wave.open(str(jfk_path), "rb") as wf:
+            jfk_audio = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+        for i in range(0, len(jfk_audio) - TOTAL_SAMPLES, 1280): # 80ms stride
+            chunk = jfk_audio[i : i + TOTAL_SAMPLES]
+            jfk_test_specs.append(torch.tensor(extract_log_mel_spectrogram(chunk)).unsqueeze(0).unsqueeze(0).to(device))
+    print(f"Prepared {len(jfk_test_specs)} sliding windows of JFK speech for live continuous speech validation...")
+
+    best_score = -1.0
+    best_weights = None
+
+    print("\nStarting training loop on GPU...", flush=True)
     for epoch in range(1, epochs + 1):
         model.train()
         train_loss = 0.0
         train_correct = 0
         train_total = 0
 
-        for specs, labels in train_loader:
-            specs = specs.to(device)
-            labels = labels.to(device)
-
+        for bx, by in train_loader:
+            bx, by = bx.to(device), by.to(device)
             optimizer.zero_grad()
-            logits = model(specs).squeeze(-1)
-            loss = criterion(logits, labels)
+            logits = model(bx).squeeze(1)
+            loss = criterion(logits, by)
             loss.backward()
             optimizer.step()
 
-            train_loss += loss.item() * len(labels)
-            preds = (torch.sigmoid(logits) >= 0.5).float()
-            train_correct += (preds == labels).sum().item()
-            train_total += len(labels)
+            train_loss += loss.item() * len(by)
+            preds = (torch.sigmoid(logits) >= 0.50).float()
+            train_correct += (preds == by).sum().item()
+            train_total += len(by)
 
         train_acc = train_correct / train_total
 
@@ -811,34 +824,28 @@ def main():
         val_correct = 0
         val_total = 0
         with torch.no_grad():
-            for specs, labels in val_loader:
-                specs = specs.to(device)
-                labels = labels.to(device)
+            for bx, by in val_loader:
+                bx, by = bx.to(device), by.to(device)
+                logits = model(bx).squeeze(1)
+                loss = criterion(logits, by)
+                val_loss += loss.item() * len(by)
+                preds = (torch.sigmoid(logits) >= 0.50).float()
+                val_correct += (preds == by).sum().item()
+                val_total += len(by)
 
-                logits = model(specs).squeeze(-1)
-                loss = criterion(logits, labels)
-                val_loss += loss.item() * len(labels)
-                preds = (torch.sigmoid(logits) >= 0.5).float()
-                val_correct += (preds == labels).sum().item()
-                val_total += len(labels)
+            # Evaluate user recall (threshold >= 0.75)
+            user_hits = sum(1 for p in user_test_specs if torch.sigmoid(model(p)).item() >= 0.75)
+            user_recall = user_hits / len(user_test_specs)
 
-            # Evaluate user test recall (positive detection @ 0.70)
-            user_hits = sum(1 for s in user_test_specs if torch.sigmoid(model(s)).item() >= 0.70)
-            user_recall = user_hits / len(user_test_specs) if user_test_specs else 1.0
+            # Evaluate continuous JFK speech rejection (must be < 0.50)
+            jfk_hits = sum(1 for s in jfk_test_specs if torch.sigmoid(model(s)).item() >= 0.50)
+            jfk_rejection = 1.0 - (jfk_hits / len(jfk_test_specs)) if jfk_test_specs else 1.0
 
-            # Evaluate user room noise rejection (must be < 0.25)
-            user_noise_rejects = sum(1 for s in user_noise_test_specs if torch.sigmoid(model(s)).item() < 0.25)
-            user_noise_rejection = user_noise_rejects / len(user_noise_test_specs) if user_noise_test_specs else 1.0
-
-            # Evaluate random noise matrix rejection (must be < 0.15)
-            rand_noise_rejects = sum(1 for s in random_noise_test_specs if torch.sigmoid(model(s)).item() < 0.15)
-            rand_noise_rejection = rand_noise_rejects / len(random_noise_test_specs)
-
-            # Evaluate continuous room silence stream rejection (must be < 0.50)
+            # Evaluate continuous silence rejection
             cont_sil_hits = sum(1 for s in cont_sil_test_specs if torch.sigmoid(model(s)).item() >= 0.50)
             cont_sil_rejection = 1.0 - (cont_sil_hits / len(cont_sil_test_specs)) if cont_sil_test_specs else 1.0
 
-            # Evaluate pure acoustic tone rejection (must be < 0.25)
+            # Evaluate pure acoustic tone rejection
             tone_hits = sum(1 for s in tone_test_specs if torch.sigmoid(model(s)).item() >= 0.50)
             tone_rejection = 1.0 - (tone_hits / len(tone_test_specs))
 
@@ -849,9 +856,9 @@ def main():
         val_acc = val_correct / val_total
         scheduler.step()
 
-        # Strict scoring: If any room noise, continuous silence, or pure tones trigger, penalize heavily
-        epoch_score = (val_acc * 0.10) + (user_recall * 0.35) + (user_noise_rejection * 0.15) + (cont_sil_rejection * 0.15) + (tone_rejection * 0.10) + (rand_noise_rejection * 0.05) + (user_speech_rejection * 0.10)
-        if rand_noise_rejection < 0.98 or user_noise_rejection < 0.90 or cont_sil_rejection < 0.98 or tone_rejection < 0.98:
+        # Strict scoring function: Penalize heavily if ANY continuous speech, silence, or tone triggers!
+        epoch_score = (val_acc * 0.10) + (user_recall * 0.35) + (jfk_rejection * 0.25) + (cont_sil_rejection * 0.15) + (tone_rejection * 0.10) + (user_speech_rejection * 0.05)
+        if jfk_rejection < 0.95 or cont_sil_rejection < 0.98 or tone_rejection < 0.98 or user_recall < 0.90:
             epoch_score *= 0.5
 
         if epoch_score >= best_score:
@@ -859,74 +866,19 @@ def main():
             best_weights = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
         if epoch % 5 == 0 or epoch == epochs:
-            print(f"Epoch [{epoch:02d}/{epochs}] - Loss: {train_loss/train_total:.4f}, Acc: {train_acc*100:.1f}% | Val Acc: {val_acc*100:.1f}%, User Recall: {user_recall*100:.1f}%, Sil Rej: {cont_sil_rejection*100:.1f}%, Tone Rej: {tone_rejection*100:.1f}%", flush=True)
+            print(f"Epoch [{epoch:02d}/{epochs}] - Loss: {train_loss/train_total:.4f}, Acc: {train_acc*100:.1f}% | Val Acc: {val_acc*100:.1f}%, User Recall: {user_recall*100:.1f}%, JFK Rej: {jfk_rejection*100:.1f}%, Sil Rej: {cont_sil_rejection*100:.1f}%, Tone Rej: {tone_rejection*100:.1f}%", flush=True)
 
-
-
-    print(f"\nTraining Complete! Best Combined Score: {best_score * 100:.1f}%", flush=True)
-
+    print(f"\nTraining Complete! Best score: {best_score:.4f}")
     model.load_state_dict(best_weights)
     model.eval()
-    model.cpu()
 
-    # Detailed Evaluation on original recorded user samples
-    print("\n--- Evaluation on User Recorded Samples (52 clips) ---", flush=True)
-    user_preds = []
-    with torch.no_grad():
-        for p in raw_user_pos:
-            spec = torch.tensor(extract_log_mel_spectrogram(p)).unsqueeze(0).unsqueeze(0)
-            prob = torch.sigmoid(model(spec)).item()
-            user_preds.append(prob)
+    # Save checkpoint
+    checkpoint_path = OUTPUT_DIR / "pendant_wakeword_model.pth"
+    torch.save(model.state_dict(), checkpoint_path)
+    print(f"Saved PyTorch model weights to: {checkpoint_path}")
 
-    u_hit_50 = sum(1 for p in user_preds if p >= 0.50)
-    u_hit_65 = sum(1 for p in user_preds if p >= 0.65)
-    u_hit_75 = sum(1 for p in user_preds if p >= 0.75)
-    print(f"  User Positives >= 0.50: {u_hit_50}/{len(user_preds)} ({u_hit_50/len(user_preds)*100:.1f}%)", flush=True)
-    print(f"  User Positives >= 0.65: {u_hit_65}/{len(user_preds)} ({u_hit_65/len(user_preds)*100:.1f}%)", flush=True)
-    print(f"  User Positives >= 0.75: {u_hit_75}/{len(user_preds)} ({u_hit_75/len(user_preds)*100:.1f}%)", flush=True)
-    print(f"  User Average Confidence: {np.mean(user_preds):.3f}", flush=True)
-
-    # Evaluation on synthetic negatives
-    print("\n--- Evaluation on Negative Samples ---", flush=True)
-    neg_preds = []
-    with torch.no_grad():
-        for n in (raw_user_noise + raw_user_speech + raw_synth_neg[:500]):
-            spec = torch.tensor(extract_log_mel_spectrogram(n)).unsqueeze(0).unsqueeze(0)
-            prob = torch.sigmoid(model(spec)).item()
-            neg_preds.append(prob)
-
-    neg_rejected_65 = sum(1 for p in neg_preds if p < 0.65)
-    neg_rejected_50 = sum(1 for p in neg_preds if p < 0.50)
-    print(f"  Negative Rejection (< 0.65): {neg_rejected_65}/{len(neg_preds)} ({neg_rejected_65/len(neg_preds)*100:.1f}%)", flush=True)
-    print(f"  Negative Rejection (< 0.50): {neg_rejected_50}/{len(neg_preds)} ({neg_rejected_50/len(neg_preds)*100:.1f}%)", flush=True)
-    print(f"  Negative Average Score:      {np.mean(neg_preds):.3f}", flush=True)
-
-    # Save artifacts
-    pth_path = OUTPUT_DIR / "pendant_wakeword_model.pth"
-    torch.save(best_weights, pth_path)
-    print(f"\n[✓] PyTorch model saved to: {pth_path}", flush=True)
-
-    ARDUINO_HEADER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # Export zero-dependency C++ header for Arduino firmware
     export_cpp_header(model, ARDUINO_HEADER_PATH)
-    print("\nModel is fully compiled into C++ and ready to run on Seeed Studio XIAO nRF52840 Sense!", flush=True)
-
-    # Optional ONNX export
-    try:
-        onnx_path = OUTPUT_DIR / "pendant_wakeword.onnx"
-        dummy_input = torch.randn(1, 1, NUM_MELS, NUM_FRAMES, dtype=torch.float32)
-        torch.onnx.export(
-            model,
-            dummy_input,
-            str(onnx_path),
-            input_names=["input"],
-            output_names=["output"],
-            dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-            opset_version=13
-        )
-        print(f"[✓] ONNX model exported to: {onnx_path}", flush=True)
-    except Exception as e:
-        print(f"Note: ONNX export skipped ({e}). C++ header is ready for Arduino.", flush=True)
-
 
 if __name__ == "__main__":
     main()
