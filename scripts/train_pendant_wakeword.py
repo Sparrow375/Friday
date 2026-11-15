@@ -194,11 +194,13 @@ class TinyWakeWordCnn(nn.Module):
         self.pw_conv3 = nn.Conv2d(16, 16, kernel_size=1)
         self.relu3 = nn.ReLU()
 
-        # Global Average Pooling: [16, 4, 8] -> [16]
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        # Frequency Average Pooling: [16, 4, 8] -> [16, 1, 8]
+        # Preserves 8 sequential phoneme time slices across the 1.5s window!
+        # Prevents time-averaged tone/noise memorization by verifying syllable trajectory!
+        self.pool = nn.AdaptiveAvgPool2d((1, 8))
 
-        # Linear classifier: [16] -> [1]
-        self.fc = nn.Linear(16, 1)
+        # Temporal Linear classifier: 16 channels x 8 time slices = 128 inputs -> [1]
+        self.fc = nn.Linear(16 * 8, 1)
 
     def forward(self, x):
         x = self.relu1(self.conv1(x))
@@ -316,7 +318,7 @@ static float conv1Out[8][16][31];
 static float conv2Out[16][8][16];
 static float dwConvOut[16][4][8];
 static float pwConvOut[16][4][8];
-static float pooled[16];
+static float pooled[128]; // Frequency-pooled across 4 bands, preserving 8 temporal phoneme steps (16 * 8 = 128)
 
 // ==================== Feature Extraction ====================
 static bool extractFeatures(const short* rawAudio, short maxAbs) {
@@ -455,21 +457,21 @@ static float forwardCnn() {
         }
     }
 
-    // 5. Global Average Pooling: [16, 4, 8] -> [16]
+    // 5. Frequency Pooling: [16, 4, 8] -> [16, 8] (preserves 8 temporal phoneme time slices!)
     for (int c = 0; c < 16; c++) {
-        float sum = 0.0f;
-        for (int h = 0; h < 4; h++) {
-            for (int w = 0; w < 8; w++) {
+        for (int w = 0; w < 8; w++) {
+            float sum = 0.0f;
+            for (int h = 0; h < 4; h++) {
                 sum += pwConvOut[c][h][w];
             }
+            pooled[(c * 8) + w] = sum / 4.0f;
         }
-        pooled[c] = sum / 32.0f;
     }
 
-    // 6. Dense Linear Classifier: [16] -> [1] + Sigmoid
+    // 6. Temporal Dense Classifier: [128] -> [1] + Sigmoid
     float logit = FC_B[0];
-    for (int c = 0; c < 16; c++) {
-        logit += pooled[c] * FC_W[c];
+    for (int i = 0; i < 128; i++) {
+        logit += pooled[i] * FC_W[i];
     }
 
     return 1.0f / (1.0f + expf(-logit));
@@ -708,6 +710,17 @@ def main():
         all_specs.append(extract_log_mel_spectrogram(silence_sample.astype(np.float32)))
         all_labels.append(0.0)
 
+    # 4b. Narrowband acoustic tones, whistles, and motor hums (500 samples across 200Hz to 3500Hz)
+    print("  Generating 500 narrowband acoustic tones and continuous whistle samples...", flush=True)
+    t = np.linspace(0, AUDIO_DURATION, TOTAL_SAMPLES)
+    for freq in np.linspace(200, 3500, 250):
+        tone = np.sin(2 * np.pi * freq * t).astype(np.float32) * random.uniform(0.1, 0.8)
+        all_specs.append(extract_log_mel_spectrogram(tone))
+        all_labels.append(0.0)
+        tone2 = (np.sin(2 * np.pi * freq * t) + 0.5 * np.sin(2 * np.pi * (freq * 2) * t)).astype(np.float32) * random.uniform(0.1, 0.6)
+        all_specs.append(extract_log_mel_spectrogram(tone2))
+        all_labels.append(0.0)
+
     # 5. Synthetic negative words (English words that are NOT Friday)
     print(f"  Loading {len(raw_synth_neg)} synthetic negative words...", flush=True)
     for sn in raw_synth_neg:
@@ -765,6 +778,8 @@ def main():
     user_speech_test_specs = [torch.tensor(extract_log_mel_spectrogram(s)).unsqueeze(0).unsqueeze(0).to(device) for s in raw_user_speech]
     random_noise_test_specs = [torch.randn(1, 1, NUM_MELS, NUM_FRAMES).to(device) * scale for scale in [0.4, 0.7, 1.0, 1.2] for _ in range(25)]
     cont_sil_test_specs = [torch.tensor(extract_log_mel_spectrogram(s)).unsqueeze(0).unsqueeze(0).to(device) for s in dense_silence_slices[::4]] if dense_silence_slices else []
+    t_val = np.linspace(0, AUDIO_DURATION, TOTAL_SAMPLES)
+    tone_test_specs = [torch.tensor(extract_log_mel_spectrogram(np.sin(2 * np.pi * f * t_val).astype(np.float32) * 0.5)).unsqueeze(0).unsqueeze(0).to(device) for f in [440, 600, 800, 1000, 1500]]
 
     print("\nStarting training loop...", flush=True)
     for epoch in range(1, epochs + 1):
@@ -823,6 +838,10 @@ def main():
             cont_sil_hits = sum(1 for s in cont_sil_test_specs if torch.sigmoid(model(s)).item() >= 0.50)
             cont_sil_rejection = 1.0 - (cont_sil_hits / len(cont_sil_test_specs)) if cont_sil_test_specs else 1.0
 
+            # Evaluate pure acoustic tone rejection (must be < 0.25)
+            tone_hits = sum(1 for s in tone_test_specs if torch.sigmoid(model(s)).item() >= 0.50)
+            tone_rejection = 1.0 - (tone_hits / len(tone_test_specs))
+
             # Evaluate user speech rejection (negative words < 0.50)
             user_speech_rejects = sum(1 for s in user_speech_test_specs if torch.sigmoid(model(s)).item() < 0.50)
             user_speech_rejection = user_speech_rejects / len(user_speech_test_specs) if user_speech_test_specs else 1.0
@@ -830,9 +849,9 @@ def main():
         val_acc = val_correct / val_total
         scheduler.step()
 
-        # Strict scoring: If any room noise or random noise triggers, penalize heavily
-        epoch_score = (val_acc * 0.10) + (user_recall * 0.40) + (user_noise_rejection * 0.20) + (cont_sil_rejection * 0.15) + (rand_noise_rejection * 0.05) + (user_speech_rejection * 0.10)
-        if rand_noise_rejection < 0.98 or user_noise_rejection < 0.90 or cont_sil_rejection < 0.98:
+        # Strict scoring: If any room noise, continuous silence, or pure tones trigger, penalize heavily
+        epoch_score = (val_acc * 0.10) + (user_recall * 0.35) + (user_noise_rejection * 0.15) + (cont_sil_rejection * 0.15) + (tone_rejection * 0.10) + (rand_noise_rejection * 0.05) + (user_speech_rejection * 0.10)
+        if rand_noise_rejection < 0.98 or user_noise_rejection < 0.90 or cont_sil_rejection < 0.98 or tone_rejection < 0.98:
             epoch_score *= 0.5
 
         if epoch_score >= best_score:
@@ -840,7 +859,7 @@ def main():
             best_weights = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
         if epoch % 5 == 0 or epoch == epochs:
-            print(f"Epoch [{epoch:02d}/{epochs}] - Loss: {train_loss/train_total:.4f}, Acc: {train_acc*100:.1f}% | Val Acc: {val_acc*100:.1f}%, User Recall: {user_recall*100:.1f}%, Sil Rej: {cont_sil_rejection*100:.1f}%, Speech Rej: {user_speech_rejection*100:.1f}%", flush=True)
+            print(f"Epoch [{epoch:02d}/{epochs}] - Loss: {train_loss/train_total:.4f}, Acc: {train_acc*100:.1f}% | Val Acc: {val_acc*100:.1f}%, User Recall: {user_recall*100:.1f}%, Sil Rej: {cont_sil_rejection*100:.1f}%, Tone Rej: {tone_rejection*100:.1f}%", flush=True)
 
 
 

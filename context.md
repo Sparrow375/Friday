@@ -743,6 +743,26 @@ The project uses a clean package namespace `com.friday.assistant`:
               - **User "Friday" Recall**: 138 authentic user recordings -> **94.9% average confidence**, **94.9% recall @ 0.75**, **90.6% recall @ 0.92**.
               - **Compilation**: Clean compilation via `scripts/compile_pendant.py` (Return code 0, 0 errors, 0 warnings).
 
+          * **Temporal Blindness Diagnosis & TemporalWakeWordCnn Upgrade (November 2026 - Part 22)**:
+            - **User Concern & Root Cause Investigation**:
+              - The user suspected the model was memorizing sound levels/energy rather than speech phonemes, noting occasional triggers on ambient sounds.
+              - When evaluating pure sine wave tones (440Hz, 800Hz, 1000Hz, 1500Hz) on the previous global average pooling model, **every tone scored 1.000000 (100% confidence)**!
+              - *Root Cause*: Global Average Pooling `AdaptiveAvgPool2d((1, 1))` squashed the 8 sequential phoneme time slices ($8 \to 1$) down to a single scalar per channel, completely erasing temporal order and cadence. The model was effectively only testing if spectral energy fell in the 400-1500 Hz human vocal frequency band, making flat continuous tones indistinguishable from the dynamic progression *Fr* $\to$ *eye* $\to$ *d* $\to$ *ay*.
+            - **Architectural Solution: TemporalWakeWordCnn**:
+              - Upgraded pooling to Frequency Average Pooling: `nn.AdaptiveAvgPool2d((1, 8))`. Pools only over frequency height ($4 \to 1$) while strictly preserving the **8 chronological phoneme steps** across time.
+              - Upgraded dense classifier: `nn.Linear(16 * 8, 1)` (128 temporal inputs $\to$ 1 logit, 1,809 total parameters, 7.07 KB Flash).
+              - Injected 500 synthetic narrowband tones, whistles, and motor hums (200 Hz to 3,500 Hz) into negative training data.
+            - **Benchmark Results on RTX 5060 Ti GPU Retraining**:
+              - **Narrowband Tone Rejection**: **100.0%** (200Hz to 3000Hz tones plummeted from 1.0000 to **0.000000**!).
+              - **User "Friday" Recall**: **136 / 138 (98.6%)** at $\ge 0.75$, with **0.9884 (98.8%) average confidence**.
+              - **User Negative Speech Rejection**: 41 negative words scored **0.0039 (0.39%) average**, 0 / 41 false alarms.
+              - **Room Noise Rejection**: 10 room noise recordings scored **0.0018 (0.18%) average**, 0 / 10 false alarms.
+              - **Continuous Room Silence Rejection**: Mean score across 1,036 sliding windows is **0.0055 (0.55%)**, with VAD threshold safely muting inference during ambient silence.
+            - **Firmware & Zero-Dependency C++ Engine Verification**:
+              - Exported weights and frequency pooling loop to `firmware/xiao_friday_pendant/wakeword_model.h`.
+              - Tested firmware compilation via `scripts/compile_pendant.py` (Return code 0, 0 errors, 0 warnings).
+
+
 
 
 

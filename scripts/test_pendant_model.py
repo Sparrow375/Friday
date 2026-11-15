@@ -78,6 +78,8 @@ def extract_features(samples_float):
 
     mean = np.mean(log_mel)
     var = np.var(log_mel)
+    if var < 0.052:
+        return None  # Pre-filter: Stationary noise / silence
     std = np.sqrt(max(var, 0.09))  # Hard std floor at 0.30 prevents room silence/hiss from blowing up into false formants
     normalized = (log_mel - mean) / (2.5 * std)
     return np.clip(normalized, -2.0, 2.0).astype(np.float32)
@@ -100,8 +102,9 @@ class TinyWakeWordCnn(nn.Module):
         self.dw_conv3 = nn.Conv2d(16, 16, kernel_size=3, stride=(2, 2), padding=1, groups=16)
         self.pw_conv3 = nn.Conv2d(16, 16, kernel_size=1)
         self.relu3 = nn.ReLU()
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(16, 1)
+        # Frequency Average Pooling preserving 8 temporal phoneme time slices
+        self.pool = nn.AdaptiveAvgPool2d((1, 8))
+        self.fc = nn.Linear(16 * 8, 1)
 
     def forward(self, x):
         x = self.relu1(self.conv1(x))
@@ -141,8 +144,12 @@ def main():
             if peak < 260.0:
                 score = 0.0
             else:
-                spec = torch.tensor(extract_features(audio)).unsqueeze(0).unsqueeze(0)
-                score = torch.sigmoid(model(spec)).item()
+                feat = extract_features(audio)
+                if feat is None:
+                    score = 0.0
+                else:
+                    spec = torch.tensor(feat).unsqueeze(0).unsqueeze(0)
+                    score = torch.sigmoid(model(spec)).item()
             pos_scores.append((p.name, score))
 
         for n in neg_files:
@@ -151,8 +158,12 @@ def main():
             if peak < 260.0:
                 score = 0.0
             else:
-                spec = torch.tensor(extract_features(audio)).unsqueeze(0).unsqueeze(0)
-                score = torch.sigmoid(model(spec)).item()
+                feat = extract_features(audio)
+                if feat is None:
+                    score = 0.0
+                else:
+                    spec = torch.tensor(feat).unsqueeze(0).unsqueeze(0)
+                    score = torch.sigmoid(model(spec)).item()
             neg_scores.append((n.name, score))
 
     # Threshold evaluation

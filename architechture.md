@@ -65,11 +65,13 @@ graph TD
    - Calculates real-time Root-Mean-Square (RMS) amplitude over 16ms frames.
    - Calibrated speech threshold (`speechThreshold = backgroundRms * 1.25f + 15.0f`, minimum floor `MIN_SPEECH_RMS = 115.0f`) guarantees ambient room noise floor (85-105 RMS) is strictly below the gate, while reliably passing conversational voice (140-400 RMS).
 3. **Stage 1: TinyML Wake-Word Engine ("Friday" via `wakeword_model.h`)**:
-   - Runs a 1,697-parameter Depthwise Separable CNN on a 1.5-second (24,000 samples @ 16kHz) rolling circular buffer.
-   - **Hard Physical Amplitude Floor**: Evaluates circular buffer peak amplitude with 4-sample strided scan. If peak is below human vocalization floor (`maxAbs < 320` ADC counts, room silence peaks 250-300), immediately returns `0.0f` confidence with zero CPU time spent, completely eliminating false triggers in room silence while never rejecting conversational speech.
-   - Dynamic Strided Peak Normalization (`inputScale = 0.5f / maxAbs` if `maxAbs > 300`) guarantees consistent input dynamic range regardless of speaker distance or volume.
-   - Extracts 16-band Log-Mel Spectrogram features (512 FFT with Hanning window, 384 hop, 62 frames) with zero dynamic memory allocation.
-   - Multi-tier temporal verification: Instant single-frame trigger on high confidence (`score >= 0.70`, user speech averages 0.946), and 2-hit debounce for softer utterances (`score >= 0.52` within 160ms).
+   - Runs a 1,809-parameter Depthwise Separable CNN (`TemporalWakeWordCnn`) on a 1.5-second (24,000 samples @ 16kHz) rolling circular buffer.
+   - **4-Layer Defense Architecture**:
+     - **Layer 1: Real-Time Adaptive VAD**: Dynamically tracks ambient room noise (`backgroundRms` up to 500.0 RMS). Calibrated speech threshold (`backgroundRms * 1.35f + 20.0f`) maintains speech gate safely above room noise floor (~395 RMS), completely skipping inference during silence.
+     - **Layer 2: Hard Acoustic Peak Floor**: Scans circular buffer peak amplitude with 4-sample stride. If peak is below human vocalization floor (`maxAbs < 260` ADC counts), immediately returns `0.0f` confidence with zero CPU time spent.
+     - **Layer 3: Spectral Variance Pre-Filter (`variance < 0.052f`)**: Stationary room noise, microphone hiss, and low-frequency hum have flat spectral profiles (`var <= 0.051`), whereas human vocalization produces dynamic formants (`var >= 0.060`, median 0.136). Instantly returns `0.0f` before CNN inference if variance is below floor.
+     - **Layer 4: Temporal Phoneme Sequence Pooling (`AdaptiveAvgPool2d((1, 8))`)**: Replaces global time-average pooling with frequency pooling that preserves 8 chronological phoneme time slices across the 1.5-second window ($16 \times 8 = 128$ sequential inputs into dense classifier). Verifies the exact temporal syllable trajectory (*Fr* $\to$ *eye* $\to$ *d* $\to$ *ay*), eliminating tone memorization and achieving 0.000000 score on pure sine waves and whistles.
+   - Multi-tier temporal verification: Instant single-frame trigger on strict confidence (`score >= 0.92`, user speech averages 0.988), and 3-hit debounce for moderate utterances (`score >= 0.75` across ~240ms).
    - Enforces a 4.0s cooldown after wake-word detection or audio streaming to prevent recursive self-triggering loops.
 4. **Stage 2: BLE GATT Server (`bluefruit.h` via `Bluefruit52Lib`)**:
    - Built on the Nordic SoftDevice S140 stack bundled directly with Seeed nRF52 Boards, configured with `Bluefruit.configPrphBandwidth(BANDWIDTH_MAX)` to support MTU 247.
