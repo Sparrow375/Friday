@@ -186,16 +186,33 @@ def process_continuous_recording(file_path, output_pos_dir=POS_DIR, output_neg_d
 
     stem = Path(file_path).stem
 
-    if silence_only:
-        print("\nProcessing mode: SILENCE ONLY (Harvesting pure background noise clips)")
+    def harvest_silence_windows(samples_arr):
+        step_samples = WINDOW_SAMPLES // 2  # 50% overlap (0.75s hop across 1.5s windows)
         saved_silence = 0
-        for start_s in range(0, len(samples) - WINDOW_SAMPLES + 1, WINDOW_SAMPLES):
-            clip = samples[start_s : start_s + WINDOW_SAMPLES]
+        if len(samples_arr) < WINDOW_SAMPLES:
+            repeats = int(np.ceil(WINDOW_SAMPLES / len(samples_arr)))
+            clip = np.tile(samples_arr, repeats)[:WINDOW_SAMPLES]
             out_name = f"real_silence_{stem}_{saved_silence+1:04d}.wav"
             save_wav(output_neg_dir / out_name, clip)
             saved_silence += 1
+            pk = float(np.max(np.abs(clip)) * 32768.0)
+            rms = float(np.sqrt(np.mean(clip**2)) * 32768.0)
+            print(f"  [Silence {saved_silence:02d}] {out_name} | Peak={pk:.0f} | RMS={rms:.1f}")
+        else:
+            for start_s in range(0, len(samples_arr) - WINDOW_SAMPLES + 1, step_samples):
+                clip = samples_arr[start_s : start_s + WINDOW_SAMPLES]
+                out_name = f"real_silence_{stem}_{saved_silence+1:04d}.wav"
+                save_wav(output_neg_dir / out_name, clip)
+                saved_silence += 1
+                pk = float(np.max(np.abs(clip)) * 32768.0)
+                rms = float(np.sqrt(np.mean(clip**2)) * 32768.0)
+                print(f"  [Silence {saved_silence:02d}] {out_name} | Peak={pk:.0f} | RMS={rms:.1f}")
+        print(f"\nSuccessfully harvested {saved_silence} ambient room silence clips into: {output_neg_dir}")
+        return saved_silence
 
-        print(f"Successfully harvested {saved_silence} ambient silence clips to: {output_neg_dir}")
+    if silence_only:
+        print("\nProcessing mode: SILENCE ONLY (Harvesting pure ambient room noise clips with 50% overlap)")
+        harvest_silence_windows(samples)
         return
 
     # Detect speech utterances
@@ -203,8 +220,9 @@ def process_continuous_recording(file_path, output_pos_dir=POS_DIR, output_neg_d
     print(f"\nDetected {len(utterances)} 'Friday' vocalization utterances!")
 
     if len(utterances) == 0:
-        print("[Notice] No speech utterances matching 'Friday' energy envelope were detected.")
-        print("If this was intended to be pure silence, run with --silence-only.")
+        print("\n[Auto-Silence Detected] No speech utterances matching 'Friday' energy envelope were detected.")
+        print("Automatically harvesting this entire recording as ambient room silence negative clips...")
+        harvest_silence_windows(samples)
         return
 
     # 1. Extract Positive Utterances (Centered 1.5-second windows)

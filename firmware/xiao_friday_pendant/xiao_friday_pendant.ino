@@ -50,10 +50,10 @@ PendantState currentState = STATE_IDLE;
 
 // VAD & Wake-word calibrated parameters
 float backgroundRms = 85.0f;
-const float VAD_MULTIPLIER = 1.20f;
-const float MIN_SPEECH_RMS = 105.0f;          // Room silence is ~75-95 RMS; conversational speech is 130-400 RMS
-const float WAKE_CONFIDENCE_STRICT = 0.68f;   // Instant single-hit trigger (user speech averages 0.940-0.980)
-const float WAKE_CONFIDENCE_MODERATE = 0.50f; // Requires 2 consecutive hits (~160ms) for softer utterances
+const float VAD_MULTIPLIER = 1.30f;
+const float MIN_SPEECH_RMS = 135.0f;          // Room silence is ~75-110 RMS; conversational speech is 180-450 RMS
+const float WAKE_CONFIDENCE_STRICT = 0.85f;   // Instant single-hit trigger (user speech averages 0.930-0.990)
+const float WAKE_CONFIDENCE_MODERATE = 0.70f; // Requires 3 consecutive hits (~240ms) for softer utterances
 unsigned long wakeTriggerTimestamp = 0;
 unsigned long wakeCooldownUntil = 0;          // Cooldown to prevent recursive re-triggering
 static int consecutiveWakeHits = 0;
@@ -198,12 +198,12 @@ bool checkWakeWord(float currentRms) {
   if (totalSamplesCollected < ROLLING_BUFFER_SIZE) {
     // Dynamic noise floor calibration during startup buffer fill (after settling)
     backgroundRms = (backgroundRms * 0.92f) + (currentRms * 0.08f);
-    if (backgroundRms > 200.0f) backgroundRms = 200.0f;
+    if (backgroundRms > 350.0f) backgroundRms = 350.0f;
     return false;
   }
 
-  // Adaptive speech threshold: 1.20x background noise + 12 RMS offset
-  float speechThreshold = backgroundRms * VAD_MULTIPLIER + 12.0f;
+  // Adaptive speech threshold: 1.30x background noise + 15 RMS offset
+  float speechThreshold = backgroundRms * VAD_MULTIPLIER + 15.0f;
   if (speechThreshold < MIN_SPEECH_RMS) speechThreshold = MIN_SPEECH_RMS;
 
   // Hysteresis Voice Activity Detection:
@@ -217,7 +217,7 @@ bool checkWakeWord(float currentRms) {
     } else {
       // Ambient silence: slowly adapt background noise baseline
       backgroundRms = (backgroundRms * 0.99f) + (currentRms * 0.01f);
-      if (backgroundRms > 200.0f) backgroundRms = 200.0f;
+      if (backgroundRms > 350.0f) backgroundRms = 350.0f;
       if (backgroundRms < 40.0f) backgroundRms = 40.0f;
       consecutiveWakeHits = 0;
     }
@@ -246,7 +246,7 @@ bool checkWakeWord(float currentRms) {
       isTrigger = true;
     } else if (confidence >= WAKE_CONFIDENCE_MODERATE) {
       consecutiveWakeHits++;
-      if (consecutiveWakeHits >= 2) {
+      if (consecutiveWakeHits >= 3) {
         isTrigger = true;
       }
     } else {

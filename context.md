@@ -695,6 +695,15 @@ The project uses a clean package namespace `com.friday.assistant`:
               - Exported weights cleanly to `firmware/xiao_friday_pendant/wakeword_model.h`.
               - Verified firmware compilation cleanly via `python scripts/compile_pendant.py` (0 errors).
               - Android debug APK assembled cleanly at `app/build/outputs/apk/debug/app-debug.apk` with manual record UI removed and assistant overlay strictly gated to on-chip wake-word triggers.
+          * **High-Density Silence Harvesting Pipeline & Firmware VAD Guardrail Hardening (November 2026 - Part 19)**:
+            - **High-Density Silence Harvesting Pipeline (`scripts/slice_wakeword_recording.py`)**:
+              - Upgraded `slice_wakeword_recording.py` to use a 50% overlapping sliding window (0.75s hop across 1.5s windows) when harvesting silence, extracting double the negative sample count from every second of recorded silence.
+              - Added auto-silence fallback: if a continuous recording contains 0 vocal peaks matching speech, the script automatically harvests it as ambient room silence negative clips without crashing or requiring manual flags.
+            - **Firmware VAD & Debounce Threshold Hardening (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino`)**:
+              - Raised `MIN_SPEECH_RMS` from 105.0 to 135.0 and `VAD_MULTIPLIER` to 1.30x with +15 RMS offset to guarantee room ambient noise never locks VAD into permanent active state.
+              - Allowed `backgroundRms` to adapt up to 350.0 RMS (previously capped at 200.0) so loud rooms with computer fans or AC can calibrate baseline upwards.
+              - Raised `WAKE_CONFIDENCE_STRICT` to 0.85f (matching user's genuine speech average of 0.934) and `WAKE_CONFIDENCE_MODERATE` to 0.70f with 3-hit debounce (~240ms) to ensure isolated noise spikes never trigger false wake alarms.
+            - **Status**: Firmware verified with 0 compilation errors. Ready for user to record a continuous silence session.
 
 
 
