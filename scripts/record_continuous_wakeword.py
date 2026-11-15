@@ -140,7 +140,12 @@ def record_continuous_session(device=None, silence_only=False):
     print(f"Total Duration: {total_dur:.2f} seconds ({len(full_audio)} samples)\n")
 
     # Automatically invoke slice_wakeword_recording.py
-    from scripts.slice_wakeword_recording import process_continuous_recording
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from scripts.slice_wakeword_recording import process_continuous_recording
+    except ImportError:
+        from slice_wakeword_recording import process_continuous_recording
     process_continuous_recording(str(output_wav), silence_only=silence_only)
 
     return output_wav

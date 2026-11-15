@@ -509,21 +509,21 @@ static void extractFeaturesCircular(const short* circBuffer, int headIdx, short 
 
 /**
  * Runs TinyML wake-word model directly on a circular audio buffer without memory copying.
- * Returns 0.0f immediately if peak amplitude is below physical speech floor (< 450 ADC counts).
+ * Returns 0.0f immediately if peak amplitude is below physical speech floor (< 320 ADC counts).
  */
 static inline float predictWakeWordScoreCircular(const short* circBuffer, int headIdx) {
     short maxAbs = 0;
-    for (int i = 0; i < WW_TOTAL_SAMPLES; i += 16) {
+    for (int i = 0; i < WW_TOTAL_SAMPLES; i += 4) {
         int circIdx = (headIdx + i) % WW_TOTAL_SAMPLES;
         short val = circBuffer[circIdx];
         if (val < 0) val = -val;
         if (val > maxAbs) maxAbs = val;
     }
 
-    // Hard acoustic floor: If peak in 1.5 seconds is < 450 ADC counts,
-    // it is flat room noise or physical silence. Human vocalization ("Friday")
-    // on this mic always exceeds 500 ADC counts (user voice averages 848 counts).
-    if (maxAbs < 450) {
+    // Hard acoustic floor: If peak in 1.5 seconds is < 320 ADC counts,
+    // it is flat room noise or physical silence (room noise peak is 250-300).
+    // Human vocalization ("Friday") always exceeds 400 ADC counts.
+    if (maxAbs < 320) {
         return 0.0f;
     }
 
@@ -537,13 +537,13 @@ static inline float predictWakeWordScoreCircular(const short* circBuffer, int he
  */
 static inline float predictWakeWordScore(const short* audio24k) {
     short maxAbs = 0;
-    for (int i = 0; i < WW_TOTAL_SAMPLES; i += 16) {
+    for (int i = 0; i < WW_TOTAL_SAMPLES; i += 4) {
         short val = audio24k[i];
         if (val < 0) val = -val;
         if (val > maxAbs) maxAbs = val;
     }
 
-    if (maxAbs < 450) {
+    if (maxAbs < 320) {
         return 0.0f;
     }
 

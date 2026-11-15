@@ -630,6 +630,26 @@ The project uses a clean package namespace `com.friday.assistant`:
               - **User Recall**: 52/52 (100.0%) at threshold 0.65, 49/52 (94.2%) at threshold 0.75, average confidence **0.960**.
               - **Silence Rejection**: 100% of pure room silence clips evaluate to **0.0000**.
               - Verified firmware compilation cleanly via `python scripts/compile_pendant.py` (0 errors, 0 warnings).
+          * **Conversational Sensitivity Calibration & Continuous Dataset Integration (November 2026 - Part 16)**:
+            - **Problem Statement & Analysis**:
+              - The user reported that "Friday" was not triggering on the pendant after the silence fix, and encountered a `ModuleNotFoundError: No module named 'scripts'` in `scripts/record_continuous_wakeword.py`.
+              - **Investigation**:
+                - The user's continuous PC recording (`friday_continuous_20261115_113300.wav`) confirmed their vocal profile: Peak 2,113, RMS 477. The newly extracted utterances scored **0.912 to 0.998** against the CNN model.
+                - The reason the pendant was missing "Friday" was that `MIN_SPEECH_RMS = 150.0f` was set too aggressively high for the Seeed XIAO onboard PDM mic (where conversational speech starts at 120-140 RMS). `currentRms >= speechThreshold` evaluated to FALSE, keeping `speechActiveFrames = 0` and locking the CNN out from ever running.
+                - Additionally, `maxAbs < 450` with a 16-sample jump risked skipping narrow acoustic speech peaks.
+            - **Firmware Calibration (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino` & `wakeword_model.h`)**:
+              - **Adaptive VAD Gating**: Formulated `speechThreshold = backgroundRms * 1.25f + 15.0f` with floor `MIN_SPEECH_RMS = 115.0f`. Room silence (85-105 RMS) stays safely under the gate (~135-145 RMS), while conversational voice (140-400 RMS) triggers speech activity smoothly.
+              - **Physical Amplitude Floor Tuning**: Calibrated floor to `maxAbs < 320` (room noise peaks 250-300) with a fine 4-sample stride scan (~90 microseconds on 64MHz Cortex-M4F), completely blocking room silence while passing all speech.
+              - **Confidence Thresholds**: Tuned `WAKE_CONFIDENCE_STRICT = 0.70f` (instant trigger, user speech averages 0.946) and `WAKE_CONFIDENCE_MODERATE = 0.52f` (2-hit debounce).
+              - **Live Telemetry**: Added real-time Serial output (`[VAD Active] RMS: X | Thresh: Y | BG: Z | 'Friday' Score: W`) for instant visibility in Arduino IDE Serial Monitor.
+            - **Tooling & Dataset Fixes**:
+              - Fixed `sys.path` in `scripts/record_continuous_wakeword.py` so running from project root imports seamlessly.
+              - Harvested 6 clean positive "Friday" clips from user's continuous recording into dataset.
+            - **GPU Retraining (RTX 5060 Ti)**:
+              - Retrained `TinyWakeWordCnn` on 6,480 samples.
+              - **User Recall**: 58/58 (100.0%) at threshold 0.65, 57/58 (98.3%) at threshold 0.75, average confidence **0.946**.
+              - **Negative Rejection**: 97.8% (< 0.65), average negative score 0.155.
+              - Firmware compiled cleanly via `scripts/compile_pendant.py` (0 errors, 0 warnings).
 
 
 

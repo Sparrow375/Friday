@@ -49,11 +49,11 @@ enum PendantState {
 PendantState currentState = STATE_IDLE;
 
 // VAD & Wake-word calibrated parameters
-float backgroundRms = 100.0f;
-const float VAD_MULTIPLIER = 1.45f;
-const float MIN_SPEECH_RMS = 150.0f;          // Calibrated floor: rejects room noise floor (85-130 RMS) while catching conversational speech (200-450 RMS)
-const float WAKE_CONFIDENCE_STRICT = 0.80f;   // Instant single-hit trigger (user speech averages 0.960!)
-const float WAKE_CONFIDENCE_MODERATE = 0.65f; // Requires 2 consecutive hits (~160ms) for softer utterances
+float backgroundRms = 90.0f;
+const float VAD_MULTIPLIER = 1.25f;
+const float MIN_SPEECH_RMS = 115.0f;          // Room silence is ~85-105 RMS; conversational speech is 140-400 RMS
+const float WAKE_CONFIDENCE_STRICT = 0.70f;   // Instant single-hit trigger (user speech averages 0.960!)
+const float WAKE_CONFIDENCE_MODERATE = 0.52f; // Requires 2 consecutive hits (~160ms) for softer utterances
 unsigned long wakeTriggerTimestamp = 0;
 unsigned long wakeCooldownUntil = 0;          // Cooldown to prevent recursive re-triggering
 static int consecutiveWakeHits = 0;
@@ -188,14 +188,14 @@ bool checkWakeWord(float currentRms) {
     return false;
   }
 
-  // Adaptive speech threshold
-  float speechThreshold = backgroundRms * VAD_MULTIPLIER;
+  // Adaptive speech threshold: 1.25x background noise + 15 RMS offset
+  float speechThreshold = backgroundRms * VAD_MULTIPLIER + 15.0f;
   if (speechThreshold < MIN_SPEECH_RMS) speechThreshold = MIN_SPEECH_RMS;
 
   // Hysteresis Voice Activity Detection:
-  // Once voice starts, maintain speech window for at least 14 frames (~220ms) across syllables
+  // Once voice starts, maintain speech window for at least 16 frames (~250ms) across syllables
   if (currentRms >= speechThreshold) {
-    speechActiveFrames = 14;
+    speechActiveFrames = 16;
   } else {
     if (speechActiveFrames > 0) {
       speechActiveFrames--;
@@ -215,10 +215,12 @@ bool checkWakeWord(float currentRms) {
     float confidence = predictWakeWordScoreCircular(rollingBuffer, head);
 
     // Live feedback in Serial Monitor
-    Serial.print(F("[Speech Active] RMS: "));
+    Serial.print(F("[VAD Active] RMS: "));
     Serial.print((int)currentRms);
     Serial.print(F(" | Thresh: "));
     Serial.print((int)speechThreshold);
+    Serial.print(F(" | BG: "));
+    Serial.print((int)backgroundRms);
     Serial.print(F(" | 'Friday' Score: "));
     Serial.println(confidence, 3);
 
@@ -495,7 +497,7 @@ void loop() {
         speechFrames = 0;
       }
 
-      float speechThreshold = backgroundRms * VAD_MULTIPLIER;
+      float speechThreshold = backgroundRms * VAD_MULTIPLIER + 15.0f;
       if (speechThreshold < MIN_SPEECH_RMS) speechThreshold = MIN_SPEECH_RMS;
 
       if (lastCalculatedRms >= speechThreshold) {

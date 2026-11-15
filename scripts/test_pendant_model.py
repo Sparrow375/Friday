@@ -137,7 +137,7 @@ def main():
         for p in pos_files:
             audio = load_wav(p)
             peak = float(np.max(np.abs(audio)) * 32768.0)
-            if peak < 450.0:
+            if peak < 320.0:
                 score = 0.0
             else:
                 spec = torch.tensor(extract_features(audio)).unsqueeze(0).unsqueeze(0)
@@ -147,7 +147,7 @@ def main():
         for n in neg_files:
             audio = load_wav(n)
             peak = float(np.max(np.abs(audio)) * 32768.0)
-            if peak < 450.0:
+            if peak < 320.0:
                 score = 0.0
             else:
                 spec = torch.tensor(extract_features(audio)).unsqueeze(0).unsqueeze(0)

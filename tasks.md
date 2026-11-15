@@ -68,3 +68,8 @@
 - [x] 57. Retrain wake-word model on RTX 5060 Ti GPU with real silence samples & user recordings, exporting verified weights to `wakeword_model.h` <!-- id: 56 -->
 - [x] 58. Benchmark model with `test_pendant_model.py` and verify firmware compilation with `scripts/compile_pendant.py` <!-- id: 57 -->
 - [x] 59. Update `context.md`, `architechture.md`, commit and push to git <!-- id: 58 -->
+- [x] 60. Fix `ModuleNotFoundError: No module named 'scripts'` in `scripts/record_continuous_wakeword.py` <!-- id: 59 -->
+- [x] 61. Calibrate VAD speech threshold in `firmware/xiao_friday_pendant/xiao_friday_pendant.ino` (`MIN_SPEECH_RMS = 115.0f`, `speechThreshold = backgroundRms * 1.25f + 15.0f`) and add real-time Serial feedback to ensure conversational speech is never blocked <!-- id: 60 -->
+- [x] 62. Tune physical amplitude floor in `firmware/xiao_friday_pendant/wakeword_model.h` (`maxAbs < 320`) with 4-sample stride scan to capture natural speech peaks while rejecting room silence <!-- id: 61 -->
+- [x] 63. Incorporate user's fresh continuous recordings from `friday_continuous_20261115_113300.wav`, retrain model on GPU (100% user recall at 0.946 confidence, 97.8% negative rejection), and export weights to `wakeword_model.h` <!-- id: 62 -->
+- [x] 64. Update `context.md`, `architechture.md`, commit and push to git <!-- id: 63 -->
