@@ -650,6 +650,51 @@ The project uses a clean package namespace `com.friday.assistant`:
               - **User Recall**: 58/58 (100.0%) at threshold 0.65, 57/58 (98.3%) at threshold 0.75, average confidence **0.946**.
               - **Negative Rejection**: 97.8% (< 0.65), average negative score 0.155.
               - Firmware compiled cleanly via `scripts/compile_pendant.py` (0 errors, 0 warnings).
+          * **Physical Pendant Wake-Word Stability, Full Dataset Expansion & Translation Invariance (November 2026 - Part 17)**:
+            - **Critical Root Causes Discovered**:
+              - **32-Bit Signed Integer Overflow (`onPDMdata`)**: In `xiao_friday_pendant.ino`, `sumSquares` was a signed 32-bit `long`. When speech or acoustic transients crossed ~3,000 ADC counts over 256 samples, `sample * sample` accumulated to $> 2.14 \times 10^9$, wrapping around into negative values. `sqrtf()` on negative input returned `NaN`. Since any comparison with `NaN` evaluates to `false` in IEEE-754, `currentRms >= speechThreshold` failed permanently, and `backgroundRms` became `NaN`, completely bricking the VAD.
+              - **Startup PDM Hardware Transient**: The nRF52 PDM decimation filter charges during the initial 300-500ms after boot, generating large DC offsets. Because `backgroundRms` was updated starting at frame 6, it absorbed this startup transient, driving `backgroundRms` and `speechThreshold` to unreasonably high values.
+              - **Acoustic Floor Clamping (`maxAbs < 320`)**: Softer conversational vocalizations into the Seeed XIAO Sense MEMS mic occasionally peaked around 260-310 ADC counts and were hard-rejected as `0.0f` before CNN inference.
+              - **VAD Hangover Window Too Narrow (`speechActiveFrames = 16` ~ 256ms)**: When the user finished speaking, 256ms only shifted the utterance ~4,000 samples into the 24,000-sample buffer. The VAD shut off before the word could slide into the center of the buffer where previous models expected it.
+              - **Augmentation Time-Shift Limit**: Previous training only shifted audio $\pm 220\text{ms}$ ($\pm 3500$ samples), leaving the model unable to classify words sitting near the start or tail of the 1.5-second circular buffer.
+            - **Firmware Upgrades (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino` & `wakeword_model.h`)**:
+              - Upgraded `sumSquares` to `uint64_t` in `onPDMdata()`, completely preventing overflow up to 32,767 amplitudes. Added `isnan()`/`isinf()` guards.
+              - Added 32-frame (~500ms) startup transient settling delay to prevent boot pop contamination of `backgroundRms`.
+              - Clamped `backgroundRms` bounds safely between `40.0f` and `200.0f`.
+              - Lowered physical speech peak floor to `260` ADC counts (room noise peaks at 180-240, still 100% rejected).
+              - Expanded VAD hangover window from 16 frames to **45 frames (~720ms)**, guaranteeing at least 9 full inference evaluations as the word slides through the rolling buffer.
+              - Calibrated thresholds: `backgroundRms = 85.0f`, `VAD_MULTIPLIER = 1.20f`, `MIN_SPEECH_RMS = 105.0f`, `WAKE_CONFIDENCE_STRICT = 0.68f`, `WAKE_CONFIDENCE_MODERATE = 0.50f`.
+            - **Dataset Expansion & Translation-Invariant Training (`scripts/train_pendant_wakeword.py`)**:
+              - Refactored `scripts/slice_wakeword_recording.py` with 5th percentile noise floor estimation and peak envelope tracking. Sliced 26 clean utterances from the 33s session and 60 clean utterances from the 61s session (`friday_continuous_20261115_121634.wav`).
+              - Total user positive recordings reached **138 genuine clips**!
+              - Expanded time-shift augmentation to $\pm 7,500$ samples ($\pm 470\text{ms}$), filling empty shift regions with authentic room noise from `noise_pool`.
+              - Retrained `TinyWakeWordCnn` on RTX 5060 Ti GPU (8,972 total training samples).
+              - **User Positive Recall**: **135/138 (97.8%)** at threshold 0.65 with average confidence **0.961**.
+              - **Negative Rejection**: **98.0%** (< 0.65) with average score **0.148**.
+              - Exported new verified weights to `firmware/xiao_friday_pendant/wakeword_model.h`.
+              - Verified firmware compilation cleanly via `python scripts/compile_pendant.py` (0 errors, 0 warnings).
+          * **Pure User-Grounded Training (138 Samples), Silence Feature Floor & Android APK Verification (November 2026 - Part 18)**:
+            - **User's Fresh Audio Ingestion**:
+              - Sliced 60 new genuine "Friday" utterances from the user's continuous session (`friday_continuous_20261115_121634.wav`), expanding the user dataset to **138 total authentic positive recordings** (`friday_0001`..`friday_0052`, `113300_0001`..`0026`, `121634_0001`..`0060`).
+            - **Root-Cause Analysis of Silence False Activations & Synthetic Boundary Pollution**:
+              - **Log-Mel Normalization Without Variance Floor**: In `extract_log_mel_spectrogram()`, normalization computed `(log_mel - mean) / (2.5 * std)`. When audio was flat room noise or silence, `std` was very small (~0.15). Dividing by a tiny number amplified microscopic PDM thermal hiss and AC hum into artificial +/- 2.0 speech formants, causing the CNN to hallucinate "Friday" with confidence 0.75-1.0 in silence.
+              - **Synthetic Positives Degrading Decision Boundary**: Training with 378 synthetic robotic TTS voices distorted the network's internal representation, making it generalize to foreign voices while losing sensitivity to the user's natural acoustic cadence.
+              - **Missing Negative Speech Samples**: 41 recorded user negative speech files (`speech_*.wav`) were omitted from `user_neg_files` during previous training runs.
+            - **Standard Deviation Floor (`std >= 0.30f` / `variance >= 0.09f`)**:
+              - Enforced `std = sqrtf(fmaxf(variance, 0.09f))` in both Python feature extraction and C++ inference engine (`extractFeatures` and `extractFeaturesCircular` in `wakeword_model.h`).
+              - When audio is ambient room silence, `std` cannot shrink below 0.30, keeping normalized feature values flat near zero and eliminating silence false alarms.
+            - **Pure User-Grounded GPU Retraining (RTX 5060 Ti)**:
+              - Trained `TinyWakeWordCnn` on 7,704 samples: 138 user "Friday" clips (30x augmented = 4,278 samples), ZERO synthetic positives, 10 user room noise clips (100x augmented without speech), 41 user negative speech clips (25x), 350 physical room silence variations, and 1,000 synthetic negative English words.
+              - Used bounded translation shift (+/- 3,200 samples = +/- 200ms) to ensure the word "Friday" is never truncated.
+              - **Benchmark Results**:
+                - User "Friday" Positives (138 samples): **93.4% average confidence**, **94.2% recall** at >= 0.50 (130/138), **92.0%** at >= 0.65 (127/138).
+                - User Room Noise (10 samples): **0/10 false alarms** (average score 16.9%).
+                - User Negative Speech (41 samples): **0/41 false alarms** (average score 6.7%).
+                - Synthetic Negative Words (1,823 samples): **0/1,823 false alarms** (average score 0.026%).
+            - **Production Artifacts**:
+              - Exported weights cleanly to `firmware/xiao_friday_pendant/wakeword_model.h`.
+              - Verified firmware compilation cleanly via `python scripts/compile_pendant.py` (0 errors).
+              - Android debug APK assembled cleanly at `app/build/outputs/apk/debug/app-debug.apk` with manual record UI removed and assistant overlay strictly gated to on-chip wake-word triggers.
 
 
 

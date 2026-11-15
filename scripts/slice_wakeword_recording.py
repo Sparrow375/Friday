@@ -122,18 +122,18 @@ def detect_speech_utterances(samples, min_interval_sec=0.75):
     rms_counts = rms_env * 32768.0
     peak_counts = peak_env * 32768.0
 
-    # Noise floor estimation (15th percentile)
-    bg_rms = float(np.percentile(rms_counts, 15))
-    min_peak_height = max(bg_rms * 1.5, 120.0)
-    min_prominence = max(bg_rms * 0.5, 40.0)
+    # Noise floor estimation using 5th percentile (robust even in dense speech recordings)
+    bg_rms = float(np.percentile(rms_counts, 5))
+    min_peak_height = max(bg_rms * 1.5, 350.0)
+    min_prominence = max(bg_rms * 0.25, 50.0)
     min_distance_frames = int(min_interval_sec * SAMPLE_RATE / HOP_SAMPLES)
 
     print(f"[Acoustic Baseline] Ambient Noise Floor: RMS={bg_rms:.1f} ADC counts")
     print(f"[Acoustic Baseline] Search Thresholds: Height={min_peak_height:.1f}, Prominence={min_prominence:.1f}")
 
-    # Find prominent energy peaks
+    # Find vocal amplitude peaks in peak envelope
     candidate_peaks, _ = find_peaks(
-        rms_counts,
+        peak_counts,
         height=min_peak_height,
         distance=min_distance_frames,
         prominence=min_prominence
@@ -144,15 +144,18 @@ def detect_speech_utterances(samples, min_interval_sec=0.75):
     utterances = []
 
     for p in candidate_peaks:
+        sec = (p * HOP_SAMPLES) / SAMPLE_RATE
+        if sec < 0.35:  # Skip start transients or initial button clicks
+            continue
+
         n_start = max(0, p - nhood_frames)
         n_end = min(len(peak_counts), p + nhood_frames + 1)
         local_max_peak = float(np.max(peak_counts[n_start:n_end]))
         local_rms = float(rms_counts[p])
 
-        # A human utterance on this mic produces sharp vocal peak > 450 ADC counts
-        if local_max_peak >= 450.0:
+        # A human utterance on this mic produces sharp vocal peak > 350 ADC counts
+        if local_max_peak >= 350.0:
             mid_sample = p * HOP_SAMPLES + (FRAME_SAMPLES // 2)
-            sec = mid_sample / SAMPLE_RATE
             utterances.append({
                 "mid_sample": mid_sample,
                 "peak_adc": local_max_peak,

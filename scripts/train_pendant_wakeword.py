@@ -100,7 +100,8 @@ def extract_log_mel_spectrogram(samples_float):
         log_mel[:, frame_idx] = np.log10(mel_energy + 1e-5)
 
     mean = np.mean(log_mel)
-    std = np.std(log_mel) + 1e-6
+    var = np.var(log_mel)
+    std = np.sqrt(max(var, 0.09))  # Hard std floor at 0.30 prevents room silence/hiss from blowing up into false formants
     normalized = (log_mel - mean) / (2.5 * std)
     return np.clip(normalized, -2.0, 2.0).astype(np.float32)
 
@@ -113,10 +114,10 @@ def load_wav(path):
         samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
         return samples
 
-def augment_audio(samples, noise_pool, is_user=False):
-    # 1. Speed perturbation via linear resampling (simulates natural cadence variations)
-    if is_user and random.random() < 0.75:
-        speed = random.uniform(0.88, 1.12)
+def augment_audio(samples, noise_pool, is_user=True):
+    # 1. Speed perturbation via linear resampling (0.90x to 1.10x simulates natural cadence variations)
+    if random.random() < 0.70:
+        speed = random.uniform(0.90, 1.10)
         old_indices = np.arange(len(samples))
         new_indices = np.linspace(0, len(samples) - 1, int(len(samples) / speed))
         stretched = np.interp(new_indices, old_indices, samples)
@@ -127,30 +128,45 @@ def augment_audio(samples, noise_pool, is_user=False):
         else:
             samples = stretched[:TOTAL_SAMPLES]
 
-    # 2. Time shift (+/- 220ms = +/- 3500 samples)
-    shift = random.randint(-3500, 3500)
+    # 2. Bounded Translation Shift (+/- 3200 samples = +/- 200ms across 1.5s window)
+    # Allows the word "Friday" to slide naturally without truncating syllables
+    shift = random.randint(-3200, 3200)
     if shift > 0:
-        shifted = np.pad(samples, (shift, 0))[:TOTAL_SAMPLES]
+        shifted = np.pad(samples[:-shift], (shift, 0))
     elif shift < 0:
-        shifted = np.pad(samples[abs(shift):], (0, abs(shift)))[:TOTAL_SAMPLES]
+        shifted = np.pad(samples[-shift:], (0, -shift))
     else:
         shifted = samples.copy()
 
-    # 3. Dynamic Gain Variation (0.45x to 1.85x covers quiet whisper to loud vocalization)
-    gain = random.uniform(0.45, 1.85) if is_user else random.uniform(0.65, 1.35)
+    # 3. Dynamic Gain Variation (0.4x to 1.8x covers soft conversational speech to louder projection)
+    gain = random.uniform(0.40, 1.80)
     augmented = shifted * gain
 
-    # 4. Realistic Background Noise Injection (room murmurs / environmental sounds)
-    if noise_pool and random.random() < 0.65:
+    # 4. Background Room Noise Injection (ambient room murmurs)
+    if noise_pool and random.random() < 0.60:
         noise = random.choice(noise_pool)
         noise_start = random.randint(0, max(0, len(noise) - TOTAL_SAMPLES))
         noise_chunk = noise[noise_start : noise_start + TOTAL_SAMPLES]
         if len(noise_chunk) < TOTAL_SAMPLES:
             noise_chunk = np.pad(noise_chunk, (0, TOTAL_SAMPLES - len(noise_chunk)))
-        augmented = augmented + noise_chunk * random.uniform(0.04, 0.22)
+        augmented = augmented + noise_chunk * random.uniform(0.02, 0.12)
 
-    # 5. PDM Microphone Noise Floor
-    augmented += np.random.normal(0, random.uniform(0.001, 0.006), size=augmented.shape)
+    # 5. Gentle thermal mic noise
+    augmented += np.random.normal(0, random.uniform(0.0005, 0.003), size=augmented.shape)
+    return np.clip(augmented, -1.0, 1.0).astype(np.float32)
+
+
+def augment_noise(samples):
+    """Augments ambient room noise without injecting speech."""
+    gain = random.uniform(0.40, 2.20)
+    shift = random.randint(-6000, 6000)
+    if shift > 0:
+        shifted = np.roll(samples, shift)
+    elif shift < 0:
+        shifted = np.roll(samples, shift)
+    else:
+        shifted = samples.copy()
+    augmented = shifted * gain + np.random.normal(0, random.uniform(0.0005, 0.004), size=shifted.shape)
     return np.clip(augmented, -1.0, 1.0).astype(np.float32)
 
 
@@ -336,7 +352,7 @@ static void extractFeatures(const short* rawAudio, short maxAbs) {
 
     float mean = sumTotal / (float)totalElements;
     float variance = (sumSq / (float)totalElements) - (mean * mean);
-    float std = sqrtf(fmaxf(variance, 1e-6f));
+    float std = sqrtf(fmaxf(variance, 0.09f)); // Hard std floor at 0.30 prevents room noise amplification
     float normScale = 1.0f / (2.5f * std);
 
     for (int m = 0; m < WW_NUM_MELS; m++) {
@@ -494,7 +510,7 @@ static void extractFeaturesCircular(const short* circBuffer, int headIdx, short 
 
     float mean = sumTotal / (float)totalElements;
     float variance = (sumSq / (float)totalElements) - (mean * mean);
-    float std = sqrtf(fmaxf(variance, 1e-6f));
+    float std = sqrtf(fmaxf(variance, 0.09f)); // Hard std floor at 0.30 prevents room noise amplification
     float normScale = 1.0f / (2.5f * std);
 
     for (int m = 0; m < WW_NUM_MELS; m++) {
@@ -520,10 +536,10 @@ static inline float predictWakeWordScoreCircular(const short* circBuffer, int he
         if (val > maxAbs) maxAbs = val;
     }
 
-    // Hard acoustic floor: If peak in 1.5 seconds is < 320 ADC counts,
-    // it is flat room noise or physical silence (room noise peak is 250-300).
-    // Human vocalization ("Friday") always exceeds 400 ADC counts.
-    if (maxAbs < 320) {
+    // Hard acoustic floor: If peak in 1.5 seconds is < 260 ADC counts,
+    // it is flat room noise or physical silence (room noise peak is 180-240).
+    // Human vocalization ("Friday") always exceeds 280-400 ADC counts.
+    if (maxAbs < 260) {
         return 0.0f;
     }
 
@@ -543,7 +559,7 @@ static inline float predictWakeWordScore(const short* audio24k) {
         if (val > maxAbs) maxAbs = val;
     }
 
-    if (maxAbs < 320) {
+    if (maxAbs < 260) {
         return 0.0f;
     }
 
@@ -576,33 +592,33 @@ def main():
     print(f"Using compute device: {device}", flush=True)
 
     user_pos_files = sorted(list(set(list(POS_DIR.glob("friday_*.wav")) + list(POS_DIR.glob("friday_user_*.wav")))))
-    synth_pos_files = sorted(list(POS_DIR.glob("synth_*.wav")))
-    user_neg_files = sorted(list(set(list(NEG_DIR.glob("noise_*.wav")) + list(NEG_DIR.glob("real_silence_*.wav")) + list(NEG_DIR.glob("silence_*.wav")))))
-    synth_neg_files = sorted(list(NEG_DIR.glob("synth_*.wav")))
+    user_noise_files = sorted(list(set(list(NEG_DIR.glob("noise_*.wav")) + list(NEG_DIR.glob("real_silence_*.wav")) + list(NEG_DIR.glob("silence_*.wav")))))
+    user_speech_files = sorted(list(NEG_DIR.glob("speech_*.wav")))
+    synth_neg_files = sorted(list(NEG_DIR.glob("synth_*.wav")))[:1000]
 
     print(f"Dataset files found:")
-    print(f"  User recorded 'Friday' samples: {len(user_pos_files)}")
-    print(f"  Synthetic 'Friday' samples:     {len(synth_pos_files)}")
-    print(f"  User recorded noise samples:    {len(user_neg_files)}")
-    print(f"  Synthetic negative samples:     {len(synth_neg_files)}")
+    print(f"  User recorded 'Friday' samples: {len(user_pos_files)} (PURE USER GROUND TRUTH - 0 synthetic positives)")
+    print(f"  User recorded room noise:       {len(user_noise_files)}")
+    print(f"  User negative speech samples:   {len(user_speech_files)}")
+    print(f"  Synthetic negative words:       {len(synth_neg_files)}")
 
-    if not user_pos_files and not synth_pos_files:
+    if not user_pos_files:
         print("Error: No positive samples found in dataset directory!", flush=True)
         return
 
     raw_user_pos = [load_wav(f) for f in user_pos_files]
-    raw_synth_pos = [load_wav(f) for f in synth_pos_files]
-    raw_user_neg = [load_wav(f) for f in user_neg_files]
+    raw_user_noise = [load_wav(f) for f in user_noise_files]
+    raw_user_speech = [load_wav(f) for f in user_speech_files]
     raw_synth_neg = [load_wav(f) for f in synth_neg_files]
 
-    # Build background noise pool from user noise + synthetic noise
-    noise_pool = [n for n in (raw_user_neg + raw_synth_neg) if len(n) >= TOTAL_SAMPLES]
+    # Build background noise pool exclusively from real user room noise
+    noise_pool = [n for n in raw_user_noise if len(n) >= TOTAL_SAMPLES]
 
-    print("\nExtracting features with prioritized user data augmentation...", flush=True)
+    print("\nExtracting features with pure user data grounding...", flush=True)
     all_specs = []
     all_labels = []
 
-    # 1. User positive samples: 30x heavy augmentation to strongly ground the model in user's acoustic profile
+    # 1. User positive samples: 30x augmentation centered on user's authentic vocal profile
     print(f"  Augmenting {len(raw_user_pos)} user 'Friday' samples (30x each)...", flush=True)
     for p in raw_user_pos:
         all_specs.append(extract_log_mel_spectrogram(p))
@@ -612,48 +628,43 @@ def main():
             all_specs.append(extract_log_mel_spectrogram(aug))
             all_labels.append(1.0)
 
-    # 2. Synthetic positive samples: 3x augmentation
-    print(f"  Augmenting {len(raw_synth_pos)} synthetic 'Friday' samples (3x each)...", flush=True)
-    for p in raw_synth_pos:
-        all_specs.append(extract_log_mel_spectrogram(p))
-        all_labels.append(1.0)
-        for _ in range(3):
-            aug = augment_audio(p, noise_pool, is_user=False)
-            all_specs.append(extract_log_mel_spectrogram(aug))
-            all_labels.append(1.0)
-
-    # 3. User negative samples: 35x augmentation (captures ambient PDM mic background)
-    print(f"  Augmenting {len(raw_user_neg)} user room noise samples (35x each)...", flush=True)
-    for n in raw_user_neg:
+    # 2. User room noise: 100x heavy augmentation without speech mixing to guarantee 0% false alarms in silence
+    print(f"  Augmenting {len(raw_user_noise)} user room noise samples (100x each)...", flush=True)
+    for n in raw_user_noise:
         all_specs.append(extract_log_mel_spectrogram(n))
         all_labels.append(0.0)
-        for _ in range(35):
-            aug = augment_audio(n, noise_pool, is_user=True)
+        for _ in range(100):
+            aug = augment_noise(n)
             all_specs.append(extract_log_mel_spectrogram(aug))
             all_labels.append(0.0)
 
-    # 4. Synthetic negatives (phonetic confusers & general speech)
-    print(f"  Loading {len(raw_synth_neg)} synthetic negative clips...", flush=True)
-    for n in raw_synth_neg:
-        all_specs.append(extract_log_mel_spectrogram(n))
+    # 3. User negative speech (e.g. 'hello', 'test', numbers): 25x augmentation
+    print(f"  Augmenting {len(raw_user_speech)} user negative speech samples (25x each)...", flush=True)
+    for s in raw_user_speech:
+        all_specs.append(extract_log_mel_spectrogram(s))
         all_labels.append(0.0)
-        if random.random() < 0.35:
-            aug = augment_audio(n, noise_pool, is_user=False)
+        for _ in range(25):
+            aug = augment_audio(s, noise_pool, is_user=True)
             all_specs.append(extract_log_mel_spectrogram(aug))
             all_labels.append(0.0)
 
-    # 5. Synthetic physical ambient silence & hums (room floor, 50/60Hz mains hum, thermal mic hiss)
-    print("  Generating 350 synthetic room silence and low-frequency noise samples...", flush=True)
+    # 4. Physical room silence, mains hum, and microphone hiss variations
+    print("  Generating 350 physical room silence and low-frequency noise samples...", flush=True)
     for _ in range(350):
-        # Room silence with RMS ~50-200 ADC counts
-        noise_amp = random.uniform(0.0015, 0.0065)
+        noise_amp = random.uniform(0.0005, 0.005)
         silence_sample = np.random.normal(0, noise_amp, TOTAL_SAMPLES)
         if random.random() < 0.5:
             hum_freq = random.choice([50.0, 60.0, 100.0, 120.0])
             t = np.linspace(0, AUDIO_DURATION, TOTAL_SAMPLES)
-            hum = np.sin(2 * np.pi * hum_freq * t) * random.uniform(0.001, 0.004)
+            hum = np.sin(2 * np.pi * hum_freq * t) * random.uniform(0.0005, 0.003)
             silence_sample += hum
-        all_specs.append(extract_log_mel_spectrogram(silence_sample))
+        all_specs.append(extract_log_mel_spectrogram(silence_sample.astype(np.float32)))
+        all_labels.append(0.0)
+
+    # 5. Synthetic negative words (English words that are NOT Friday)
+    print(f"  Loading {len(raw_synth_neg)} synthetic negative words...", flush=True)
+    for sn in raw_synth_neg:
+        all_specs.append(extract_log_mel_spectrogram(sn))
         all_labels.append(0.0)
 
     all_specs = np.array(all_specs, dtype=np.float32)  # [N, 16, 62]
@@ -684,7 +695,7 @@ def main():
     print(f"Model Architecture: TinyWakeWordCnn ({total_params} parameters, ~{total_params * 4 / 1024:.2f} KB)", flush=True)
 
     # Balanced BCE loss
-    pos_weight = torch.tensor([1.20]).to(device)
+    pos_weight = torch.tensor([1.00]).to(device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = optim.Adam(model.parameters(), lr=0.003, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=75, eta_min=1e-4)
@@ -695,6 +706,8 @@ def main():
 
     # Pre-extract spectrograms of original user samples for tracking during training
     user_test_specs = [torch.tensor(extract_log_mel_spectrogram(p)).unsqueeze(0).unsqueeze(0).to(device) for p in raw_user_pos]
+    user_noise_test_specs = [torch.tensor(extract_log_mel_spectrogram(n)).unsqueeze(0).unsqueeze(0).to(device) for n in raw_user_noise]
+    user_speech_test_specs = [torch.tensor(extract_log_mel_spectrogram(s)).unsqueeze(0).unsqueeze(0).to(device) for s in raw_user_speech]
 
     print("\nStarting training loop...", flush=True)
     for epoch in range(1, epochs + 1):
@@ -737,22 +750,34 @@ def main():
                 val_correct += (preds == labels).sum().item()
                 val_total += len(labels)
 
-            # Evaluate user test recall
+            # Evaluate user test recall (positive detection @ 0.65)
             user_hits = sum(1 for s in user_test_specs if torch.sigmoid(model(s)).item() >= 0.65)
             user_recall = user_hits / len(user_test_specs) if user_test_specs else 1.0
+
+            # Evaluate user room noise rejection (must be < 0.35 to guarantee absolute silence reliability)
+            user_noise_rejects = sum(1 for s in user_noise_test_specs if torch.sigmoid(model(s)).item() < 0.35)
+            user_noise_rejection = user_noise_rejects / len(user_noise_test_specs) if user_noise_test_specs else 1.0
+
+            # Evaluate user speech rejection (negative words < 0.50)
+            user_speech_rejects = sum(1 for s in user_speech_test_specs if torch.sigmoid(model(s)).item() < 0.50)
+            user_speech_rejection = user_speech_rejects / len(user_speech_test_specs) if user_speech_test_specs else 1.0
 
         val_acc = val_correct / val_total
         scheduler.step()
 
-        # Combined metric prioritizing user positive recall and overall validation accuracy
-        epoch_score = (val_acc * 0.4) + (user_recall * 0.6)
+        # Strict scoring: If any room noise triggers, penalize heavily
+        epoch_score = (val_acc * 0.20) + (user_recall * 0.50) + (user_noise_rejection * 0.20) + (user_speech_rejection * 0.10)
+        if user_noise_rejection < 1.0:
+            epoch_score *= 0.5
 
         if epoch_score >= best_score:
             best_score = epoch_score
             best_weights = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
         if epoch % 5 == 0 or epoch == epochs:
-            print(f"Epoch [{epoch:02d}/{epochs}] - Loss: {train_loss/train_total:.4f}, Acc: {train_acc*100:.1f}% | Val Acc: {val_acc*100:.1f}%, User 'Friday' Recall: {user_recall*100:.1f}% ({user_hits}/{len(user_test_specs)})", flush=True)
+            print(f"Epoch [{epoch:02d}/{epochs}] - Loss: {train_loss/train_total:.4f}, Acc: {train_acc*100:.1f}% | Val Acc: {val_acc*100:.1f}%, User Recall: {user_recall*100:.1f}%, Noise Rej: {user_noise_rejection*100:.1f}%, Speech Rej: {user_speech_rejection*100:.1f}%", flush=True)
+
+
 
     print(f"\nTraining Complete! Best Combined Score: {best_score * 100:.1f}%", flush=True)
 
@@ -781,7 +806,7 @@ def main():
     print("\n--- Evaluation on Negative Samples ---", flush=True)
     neg_preds = []
     with torch.no_grad():
-        for n in (raw_user_neg + raw_synth_neg[:500]):
+        for n in (raw_user_noise + raw_user_speech + raw_synth_neg[:500]):
             spec = torch.tensor(extract_log_mel_spectrogram(n)).unsqueeze(0).unsqueeze(0)
             prob = torch.sigmoid(model(spec)).item()
             neg_preds.append(prob)

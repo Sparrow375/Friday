@@ -49,11 +49,11 @@ enum PendantState {
 PendantState currentState = STATE_IDLE;
 
 // VAD & Wake-word calibrated parameters
-float backgroundRms = 90.0f;
-const float VAD_MULTIPLIER = 1.25f;
-const float MIN_SPEECH_RMS = 115.0f;          // Room silence is ~85-105 RMS; conversational speech is 140-400 RMS
-const float WAKE_CONFIDENCE_STRICT = 0.70f;   // Instant single-hit trigger (user speech averages 0.960!)
-const float WAKE_CONFIDENCE_MODERATE = 0.52f; // Requires 2 consecutive hits (~160ms) for softer utterances
+float backgroundRms = 85.0f;
+const float VAD_MULTIPLIER = 1.20f;
+const float MIN_SPEECH_RMS = 105.0f;          // Room silence is ~75-95 RMS; conversational speech is 130-400 RMS
+const float WAKE_CONFIDENCE_STRICT = 0.68f;   // Instant single-hit trigger (user speech averages 0.940-0.980)
+const float WAKE_CONFIDENCE_MODERATE = 0.50f; // Requires 2 consecutive hits (~160ms) for softer utterances
 unsigned long wakeTriggerTimestamp = 0;
 unsigned long wakeCooldownUntil = 0;          // Cooldown to prevent recursive re-triggering
 static int consecutiveWakeHits = 0;
@@ -151,11 +151,11 @@ void onPDMdata() {
     if (bytesRead <= 0) break;
     int samples = bytesRead / sizeof(short);
 
-    long sumSquares = 0;
+    uint64_t sumSquares = 0; // 64-bit unsigned prevents 32-bit signed overflow on loud speech / transients
     int writeIdx = rollingWriteIdx;
     for (int i = 0; i < samples; i++) {
       short sample = tempBuffer[i];
-      sumSquares += ((long)sample * sample);
+      sumSquares += ((uint64_t)sample * sample);
       rollingBuffer[writeIdx] = sample;
       writeIdx = (writeIdx + 1);
       if (writeIdx >= ROLLING_BUFFER_SIZE) writeIdx = 0;
@@ -164,7 +164,9 @@ void onPDMdata() {
     totalSamplesCollected += samples;
     totalFramesReceived++;
 
-    lastCalculatedRms = sqrtf((float)sumSquares / samples);
+    float rms = sqrtf((float)sumSquares / (float)samples);
+    if (isnan(rms) || isinf(rms)) rms = 0.0f;
+    lastCalculatedRms = rms;
     newAudioReady = true;
 
     bytesAvailable = PDM.available();
@@ -179,29 +181,44 @@ bool checkWakeWord(float currentRms) {
     return false;
   }
 
-  // Wait until circular buffer has at least 1.5 seconds of live audio
-  if (totalSamplesCollected < ROLLING_BUFFER_SIZE) {
-    // Dynamic noise floor calibration during startup buffer fill (first ~1.5 seconds)
-    if (totalFramesReceived > 5) {
-      backgroundRms = (backgroundRms * 0.92f) + (currentRms * 0.08f);
-    }
+  // Sanity guard against NaN/inf
+  if (isnan(currentRms) || isinf(currentRms)) {
+    return false;
+  }
+  if (isnan(backgroundRms) || isinf(backgroundRms) || backgroundRms < 30.0f) {
+    backgroundRms = 85.0f;
+  }
+
+  // Discard startup PDM decimation filter DC transient during first ~32 frames (500ms)
+  if (totalFramesReceived < 32) {
     return false;
   }
 
-  // Adaptive speech threshold: 1.25x background noise + 15 RMS offset
-  float speechThreshold = backgroundRms * VAD_MULTIPLIER + 15.0f;
+  // Wait until circular buffer has at least 1.5 seconds of live audio
+  if (totalSamplesCollected < ROLLING_BUFFER_SIZE) {
+    // Dynamic noise floor calibration during startup buffer fill (after settling)
+    backgroundRms = (backgroundRms * 0.92f) + (currentRms * 0.08f);
+    if (backgroundRms > 200.0f) backgroundRms = 200.0f;
+    return false;
+  }
+
+  // Adaptive speech threshold: 1.20x background noise + 12 RMS offset
+  float speechThreshold = backgroundRms * VAD_MULTIPLIER + 12.0f;
   if (speechThreshold < MIN_SPEECH_RMS) speechThreshold = MIN_SPEECH_RMS;
 
   // Hysteresis Voice Activity Detection:
-  // Once voice starts, maintain speech window for at least 16 frames (~250ms) across syllables
+  // Once voice starts, maintain speech window for at least 45 frames (~720ms) across syllables
+  // to allow the spoken word to slide through the circular buffer across multiple inference evaluations
   if (currentRms >= speechThreshold) {
-    speechActiveFrames = 16;
+    speechActiveFrames = 45;
   } else {
     if (speechActiveFrames > 0) {
       speechActiveFrames--;
     } else {
       // Ambient silence: slowly adapt background noise baseline
       backgroundRms = (backgroundRms * 0.99f) + (currentRms * 0.01f);
+      if (backgroundRms > 200.0f) backgroundRms = 200.0f;
+      if (backgroundRms < 40.0f) backgroundRms = 40.0f;
       consecutiveWakeHits = 0;
     }
   }

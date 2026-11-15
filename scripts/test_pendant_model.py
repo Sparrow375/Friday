@@ -77,7 +77,8 @@ def extract_features(samples_float):
         log_mel[:, frame_idx] = np.log10(mel_energy + 1e-5)
 
     mean = np.mean(log_mel)
-    std = np.std(log_mel) + 1e-6
+    var = np.var(log_mel)
+    std = np.sqrt(max(var, 0.09))  # Hard std floor at 0.30 prevents room silence/hiss from blowing up into false formants
     normalized = (log_mel - mean) / (2.5 * std)
     return np.clip(normalized, -2.0, 2.0).astype(np.float32)
 
@@ -137,7 +138,7 @@ def main():
         for p in pos_files:
             audio = load_wav(p)
             peak = float(np.max(np.abs(audio)) * 32768.0)
-            if peak < 320.0:
+            if peak < 260.0:
                 score = 0.0
             else:
                 spec = torch.tensor(extract_features(audio)).unsqueeze(0).unsqueeze(0)
@@ -147,7 +148,7 @@ def main():
         for n in neg_files:
             audio = load_wav(n)
             peak = float(np.max(np.abs(audio)) * 32768.0)
-            if peak < 320.0:
+            if peak < 260.0:
                 score = 0.0
             else:
                 spec = torch.tensor(extract_features(audio)).unsqueeze(0).unsqueeze(0)

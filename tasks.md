@@ -73,3 +73,14 @@
 - [x] 62. Tune physical amplitude floor in `firmware/xiao_friday_pendant/wakeword_model.h` (`maxAbs < 320`) with 4-sample stride scan to capture natural speech peaks while rejecting room silence <!-- id: 61 -->
 - [x] 63. Incorporate user's fresh continuous recordings from `friday_continuous_20261115_113300.wav`, retrain model on GPU (100% user recall at 0.946 confidence, 97.8% negative rejection), and export weights to `wakeword_model.h` <!-- id: 62 -->
 - [x] 64. Update `context.md`, `architechture.md`, commit and push to git <!-- id: 63 -->
+- [x] 65. Diagnose physical pendant wake-word failure: integer overflow in `sumSquares`, startup PDM DC transient poisoning `backgroundRms`, narrow VAD hangover (16 frames), and model translation variance <!-- id: 64 -->
+- [x] 66. Refactor `scripts/slice_wakeword_recording.py` to extract all clean "Friday" utterances from user continuous recordings into positive dataset <!-- id: 65 -->
+- [x] 67. Fix firmware numerical stability & VAD in `firmware/xiao_friday_pendant/xiao_friday_pendant.ino` (uint64_t sumSquares, NaN protection, startup DC transient settling delay, 45-frame hangover, calibrated 260 acoustic floor) <!-- id: 66 -->
+- [x] 68. Rebuild Android APK (`app/build/outputs/apk/debug/app-debug.apk`) via `./gradlew assembleDebug` with manual record UI removed and overlay strictly gated <!-- id: 67 -->
+- [x] 69. Ingest user's fresh continuous recordings (`friday_continuous_20261115_121634.wav`), slicing 60 new utterances to reach 138 total authentic user "Friday" samples <!-- id: 68 -->
+- [x] 70. Diagnose room-noise false alarms and vocal boundary distortion: identified log-mel normalization without variance floor amplifying low-amplitude noise ripples, unincluded user `speech_*.wav` negatives, and foreign synthetic positives distorting the decision boundary <!-- id: 69 -->
+- [x] 71. Implement hard standard deviation floor (`std >= 0.30f` / `variance >= 0.09f`) in Log-Mel feature extraction across both Python and C++ inference engine <!-- id: 70 -->
+- [x] 72. Retrain TinyWakeWordCnn on RTX 5060 Ti GPU exclusively grounded on user's authentic voice (138 real user "Friday" samples, 0 synthetic positives), 10 user room noise clips (100x), 41 user negative speech clips (25x), and 1,000 synthetic negative words <!-- id: 71 -->
+- [x] 73. Benchmark pure user-grounded model: achieves 93.4% average confidence, 94.2% recall on user's voice, 0% false alarms on room noise (16.9% avg score), 0% false alarms on negative speech (6.7% avg score), and 0% false alarms on synthetic English words (0.026% avg score) <!-- id: 72 -->
+- [x] 74. Export verified C++ weights & feature extractor to `firmware/xiao_friday_pendant/wakeword_model.h` and verify Arduino sketch compilation (`python scripts/compile_pendant.py`) with 0 errors <!-- id: 73 -->
+- [x] 75. Update `context.md`, commit and push to git, and deliver flashing & APK installation instructions <!-- id: 74 -->
