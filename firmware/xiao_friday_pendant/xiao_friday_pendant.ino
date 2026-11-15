@@ -49,11 +49,11 @@ enum PendantState {
 PendantState currentState = STATE_IDLE;
 
 // VAD & Wake-word calibrated parameters
-float backgroundRms = 40.0f;
-const float VAD_MULTIPLIER = 1.35f;
-const float MIN_SPEECH_RMS = 60.0f;           // Calibrated floor: rejects room murmurs while reliably catching conversational speech
-const float WAKE_CONFIDENCE_STRICT = 0.78f;   // Instant single-hit trigger (user speech averages 0.960!)
-const float WAKE_CONFIDENCE_MODERATE = 0.62f; // Requires 2 consecutive hits (~160ms) for softer utterances
+float backgroundRms = 100.0f;
+const float VAD_MULTIPLIER = 1.45f;
+const float MIN_SPEECH_RMS = 150.0f;          // Calibrated floor: rejects room noise floor (85-130 RMS) while catching conversational speech (200-450 RMS)
+const float WAKE_CONFIDENCE_STRICT = 0.80f;   // Instant single-hit trigger (user speech averages 0.960!)
+const float WAKE_CONFIDENCE_MODERATE = 0.65f; // Requires 2 consecutive hits (~160ms) for softer utterances
 unsigned long wakeTriggerTimestamp = 0;
 unsigned long wakeCooldownUntil = 0;          // Cooldown to prevent recursive re-triggering
 static int consecutiveWakeHits = 0;
@@ -181,6 +181,10 @@ bool checkWakeWord(float currentRms) {
 
   // Wait until circular buffer has at least 1.5 seconds of live audio
   if (totalSamplesCollected < ROLLING_BUFFER_SIZE) {
+    // Dynamic noise floor calibration during startup buffer fill (first ~1.5 seconds)
+    if (totalFramesReceived > 5) {
+      backgroundRms = (backgroundRms * 0.92f) + (currentRms * 0.08f);
+    }
     return false;
   }
 

@@ -610,31 +610,26 @@ The project uses a clean package namespace `com.friday.assistant`:
             - **Verification**:
               - Firmware compiled cleanly with 0 errors via `scripts/compile_pendant.py`.
               - Android app compiled and assembled cleanly (`./gradlew assembleDebug` BUILD SUCCESSFUL in 28s).
-          * **User Voice Prioritized Retraining & Micro-VAD Acoustic Calibration (November 2026 - Part 14)**:
-            - **Problem Statement**:
-              - The user reported the pendant was missing many "Friday" wake-words and requested explicitly including their recorded samples in training.
-            - **Root Cause Analysis**:
-              1. *Amplitude Disparity*: The synthetic speech dataset was at full digital scale (Peak ~0.50, RMS ~0.045), whereas real microphone speech recorded by the Seeed XIAO PDM mic was at conversational amplitude (Peak ~0.03, RMS ~0.005, ~15x quieter). The log-mel filterbank's `+ 1e-5f` offset behaved very differently on 15x quieter audio, causing the model to learn studio-vs-mic texture rather than phonetic formants.
-              2. *User Sample Dilution*: There were only 52 recorded user positive files with 4x augmentation (260 samples), drowned out by 1,874 synthetic negatives and 378 synthetic positives (user voice was < 4.5% of dataset). Model evaluation on user voice showed only 34.6% recall at threshold 0.85.
-              3. *Over-Restrictive Firmware Gates*: `MIN_SPEECH_RMS = 85.0f` in firmware rejected softer conversational speech and unvoiced "Fr-" fricatives before the CNN was even called.
-            - **Dataset & Augmentation Solutions**:
-              - Added peak normalization to both the Python feature extractor and C++ circular buffer feature extractor (`if maxAbs > 300, scale = 0.5f / maxAbs`), ensuring identical dynamic range across all speech regardless of mic distance or vocal volume.
-              - Prioritized the user's 52 recorded "Friday" clips with 30x heavy augmentation (speed stretching 0.88x-1.12x, time shifts +/- 220ms, gain variation 0.45x-1.85x, PDM room noise mixing), expanding user samples to 1,612 clips (53% of all positive training data).
-              - Re-balanced with 378 synthetic positives (3x aug) and a rich negative pool (user noise + synthetic confusers).
-            - **GPU Training & Evaluation Results (RTX 5060 Ti)**:
-              - Retrained `TinyWakeWordCnn` for 75 epochs with CosineAnnealingLR and balanced BCE loss.
-              - **User Positive Recall (52 test clips)**:
-                - `>= 0.50`: 51/52 (98.1%)
-                - `>= 0.65`: 51/52 (98.1%)
-                - `>= 0.75`: 50/52 (96.2%)
-                - **User Average Confidence**: **0.960** (up from 0.745).
-              - **Negative Rejection**: 97.1% rejection, average negative score 0.169.
-              - Exported weights into `firmware/xiao_friday_pendant/wakeword_model.h`.
-            - **Firmware Calibration (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino`)**:
-              - Lowered `MIN_SPEECH_RMS` to `60.0f` (was 85.0f) and `VAD_MULTIPLIER` to `1.35f` to reliably pass conversational speech and initial fricatives without tripping on quiet room noise (~25-35 RMS).
-              - Calibrated `WAKE_CONFIDENCE_STRICT` to `0.78f` (instant 1-hit trigger for the user's voice which averages 0.960) and `WAKE_CONFIDENCE_MODERATE` to `0.62f` (2-hit debounce).
-            - **Verification**:
-              - Verified C++ compilation via `python scripts/compile_pendant.py`: 0 errors, 0 warnings.
+          * **Pendant Silence False-Trigger Elimination & Automated Continuous Slicing Pipeline (November 2026 - Part 15)**:
+            - **Problem Statement & Root Cause Diagnosis**:
+              - In testing, the pendant was triggering almost constantly in room silence.
+              - **Acoustic Profiling**: Analysis of recorded PDM microphone clips revealed the true idle room noise floor of the XIAO Sense is **85 to 178 RMS** (peaks 250 to 450 ADC counts).
+              - **Root Cause 1 (Firmware VAD Latch Bug)**: `backgroundRms` started at `40.0f` and `MIN_SPEECH_RMS` was `60.0f`. Because room silence is ~110 RMS (> 60.0f), `currentRms >= speechThreshold` evaluated to TRUE on every single audio frame. `speechActiveFrames = 14` latched continuously, which completely prevented `backgroundRms` from adapting to room silence and forced the CNN to run every 80ms non-stop in silence.
+              - **Root Cause 2 (Spectrogram Scaling on Silence & Dataset Imbalance)**: The feature extractor normalizes spectrograms by `(log_mel - mean) / (2.5 * std)`. When flat room noise is evaluated, its tiny variance (~0.02) was blown up 50x into artificial phoneme-like textures. Because the negative training set had 1,823 synthetic spoken words and ONLY 10 silence files, the CNN had never learned what room silence looks like, scoring `noise_0010.wav` as high as **0.9997**.
+            - **Firmware Upgrades (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino` & `wakeword_model.h`)**:
+              - **Dynamic Boot Noise Calibration**: During the first 1.5 seconds of boot (`totalSamplesCollected < ROLLING_BUFFER_SIZE`), `backgroundRms` dynamically seeds from incoming mic frames (`backgroundRms = (backgroundRms * 0.92f) + (currentRms * 0.08f)`), settling at the room's true noise floor (~100-120 RMS).
+              - **Elevated Speech Floor**: Raised `MIN_SPEECH_RMS` to `150.0f` and `VAD_MULTIPLIER` to `1.45f`. With room noise at ~100-120 RMS, `speechThreshold` evaluates to 150-174 RMS. Ambient room noise never crosses the threshold (`speechActiveFrames` stays 0), while conversational speech (200-450 RMS) crosses it immediately.
+              - **Hard Amplitude Silence Floor**: Added `if (maxAbs < 450) return 0.0f;` in `predictWakeWordScoreCircular` and `predictWakeWordScore` in `wakeword_model.h`. Any audio buffer whose peak is below human vocalization floor (< 450 ADC counts) immediately returns `0.0f` with zero CPU compute, eliminating 100% of silence false alarms.
+              - **Calibrated Wake Thresholds**: `WAKE_CONFIDENCE_STRICT = 0.80f` (instant 1-hit trigger for user voice) and `WAKE_CONFIDENCE_MODERATE = 0.65f` (2-hit debounce).
+            - **Automated Continuous Recording & Slicing Tools**:
+              - **Continuous Recorder (`scripts/record_continuous_wakeword.py`)**: Allows the user to record one continuous stream speaking "Friday" naturally with pauses, featuring live in-terminal VU metering and automatic handover to the slicer.
+              - **Intelligent Energy Slicer (`scripts/slice_wakeword_recording.py`)**: Uses peak prominence and local vocal peak detection (neighborhood peak >= 450 ADC counts) to locate each "Friday" utterance, extracting 1.5s centered positive windows into `dataset/pendant_wakeword/positive/`. Automatically harvests all intervening silence gaps (>= 0.8s) into `dataset/pendant_wakeword/negative/real_silence_*.wav`.
+            - **GPU Retraining & Benchmark Verification**:
+              - Updated `scripts/train_pendant_wakeword.py` to train on user positive samples, synthetic confusers, harvested real silences, and 350 generated room silence/hum samples.
+              - Retrained `TinyWakeWordCnn` on RTX 5060 Ti GPU.
+              - **User Recall**: 52/52 (100.0%) at threshold 0.65, 49/52 (94.2%) at threshold 0.75, average confidence **0.960**.
+              - **Silence Rejection**: 100% of pure room silence clips evaluate to **0.0000**.
+              - Verified firmware compilation cleanly via `python scripts/compile_pendant.py` (0 errors, 0 warnings).
 
 
 

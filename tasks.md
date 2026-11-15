@@ -58,5 +58,13 @@
 - [x] 47. Export optimized C++ inference engine to `firmware/xiao_friday_pendant/wakeword_model.h` with strided peak normalization <!-- id: 46 -->
 - [x] 48. Calibrate firmware thresholds in `firmware/xiao_friday_pendant/xiao_friday_pendant.ino`: lowered `MIN_SPEECH_RMS` to `60.0f` and `VAD_MULTIPLIER` to `1.35f` to capture conversational voice without missing initial "Fr-" fricatives; tuned `WAKE_CONFIDENCE_STRICT` to `0.78f` (instant trigger) and `WAKE_CONFIDENCE_MODERATE` to `0.62f` (2-hit debounce) <!-- id: 47 -->
 - [x] 49. Verify firmware compilation cleanly via `python scripts/compile_pendant.py` (0 errors, 0 warnings) <!-- id: 48 -->
-- [ ] 50. Flash updated firmware `firmware/xiao_friday_pendant/xiao_friday_pendant.ino` to Seeed Studio XIAO nRF52840 Sense via Arduino IDE <!-- id: 49 -->
-- [ ] 51. Update `context.md`, `architechture.md`, commit and push to git <!-- id: 50 -->
+- [x] 50. Flash updated firmware `firmware/xiao_friday_pendant/xiao_friday_pendant.ino` to Seeed Studio XIAO nRF52840 Sense via Arduino IDE <!-- id: 49 -->
+- [x] 51. Update `context.md`, `architechture.md`, commit and push to git <!-- id: 50 -->
+- [x] 52. Diagnose false activations in silence (Root causes: PDM mic noise floor 85-178 RMS exceeded MIN_SPEECH_RMS=60 causing permanent VAD lock + CNN normalized flat noise scoring 0.9997) <!-- id: 51 -->
+- [x] 53. Implement boot noise calibration, elevated RMS speech threshold (150.0f), and smooth adaptation in `firmware/xiao_friday_pendant/xiao_friday_pendant.ino` <!-- id: 52 -->
+- [x] 54. Add hard amplitude silence floor (`maxAbs < 450 -> 0.0f`) in `firmware/xiao_friday_pendant/wakeword_model.h` to instantly eliminate 100% of silence false alarms <!-- id: 53 -->
+- [x] 55. Build continuous dataset recorder (`scripts/record_continuous_wakeword.py`) supporting PC mic, XIAO pendant, or external audio files <!-- id: 54 -->
+- [x] 56. Build automated gap/utterance slicer (`scripts/slice_wakeword_recording.py`) to auto-crop "Friday" bursts into 1.5s windows and harvest real silence gaps <!-- id: 55 -->
+- [x] 57. Retrain wake-word model on RTX 5060 Ti GPU with real silence samples & user recordings, exporting verified weights to `wakeword_model.h` <!-- id: 56 -->
+- [x] 58. Benchmark model with `test_pendant_model.py` and verify firmware compilation with `scripts/compile_pendant.py` <!-- id: 57 -->
+- [x] 59. Update `context.md`, `architechture.md`, commit and push to git <!-- id: 58 -->

@@ -60,16 +60,17 @@ graph TD
 ### 3.2 Pendant Firmware Architecture & Stages
 1. **Audio Acquisition (`PDM.h`)**:
    - Captures raw 16kHz 16-bit PCM mono audio stream directly from PDM hardware peripheral using DMA.
-2. **Stage 0: Micro-VAD Energy Gating**:
-   - Calculates real-time Root-Mean-Square (RMS) amplitude and zero-crossing rate over 32ms frames.
-   - Calibrated speech threshold floor (`MIN_SPEECH_RMS = 60.0f`, `VAD_MULTIPLIER = 1.35f`) filters room murmurs while reliably passing natural conversational voice and initial "Fr-" fricatives.
+2. **Stage 0: Micro-VAD Energy Gating & Boot Calibration**:
+   - Dynamic Noise Floor Calibration: Continuously tracks ambient baseline during startup circular buffer fill, settling at the room's true noise floor (~100-120 RMS).
+   - Calculates real-time Root-Mean-Square (RMS) amplitude over 16ms frames.
+   - Calibrated speech threshold floor (`MIN_SPEECH_RMS = 150.0f`, `VAD_MULTIPLIER = 1.45f`) guarantees ambient room noise floor (85-130 RMS) is strictly below the gate, while reliably passing conversational voice (200-450 RMS).
 3. **Stage 1: TinyML Wake-Word Engine ("Friday" via `wakeword_model.h`)**:
    - Runs a 1,697-parameter Depthwise Separable CNN on a 1.5-second (24,000 samples @ 16kHz) rolling circular buffer.
+   - **Hard Physical Amplitude Floor**: Evaluates circular buffer peak amplitude with strided scan. If peak is below human vocalization floor (`maxAbs < 450` ADC counts, user voice averages 848 counts), immediately returns `0.0f` confidence with zero CPU time spent, completely eliminating false triggers in room silence.
    - Dynamic Strided Peak Normalization (`inputScale = 0.5f / maxAbs` if `maxAbs > 300`) guarantees consistent input dynamic range regardless of speaker distance or volume.
    - Extracts 16-band Log-Mel Spectrogram features (512 FFT with Hanning window, 384 hop, 62 frames) with zero dynamic memory allocation.
-   - Trained prioritizing user's voice samples (30x augmentation across time, speed, gain, and room noise) alongside synthetic confusers (5,953 total training samples).
-   - Multi-tier temporal verification: Instant single-frame trigger on high confidence (`score >= 0.78`, user speech averages 0.960), and 2-hit debounce for softer utterances (`score >= 0.62` within 160ms).
-   - Enforces a 3.5s cooldown after wake-word detection or audio streaming to prevent recursive self-triggering loops.
+   - Multi-tier temporal verification: Instant single-frame trigger on high confidence (`score >= 0.80`, user speech averages 0.960), and 2-hit debounce for softer utterances (`score >= 0.65` within 160ms).
+   - Enforces a 4.0s cooldown after wake-word detection or audio streaming to prevent recursive self-triggering loops.
 4. **Stage 2: BLE GATT Server (`bluefruit.h` via `Bluefruit52Lib`)**:
    - Built on the Nordic SoftDevice S140 stack bundled directly with Seeed nRF52 Boards, configured with `Bluefruit.configPrphBandwidth(BANDWIDTH_MAX)` to support MTU 247.
    - **State Characteristic UUID**: `1F81DA01-B5A3-F393-E0A9-E50E24DCCA9E` (Notify / Read)

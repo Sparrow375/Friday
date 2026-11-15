@@ -136,14 +136,22 @@ def main():
     with torch.no_grad():
         for p in pos_files:
             audio = load_wav(p)
-            spec = torch.tensor(extract_features(audio)).unsqueeze(0).unsqueeze(0)
-            score = torch.sigmoid(model(spec)).item()
+            peak = float(np.max(np.abs(audio)) * 32768.0)
+            if peak < 450.0:
+                score = 0.0
+            else:
+                spec = torch.tensor(extract_features(audio)).unsqueeze(0).unsqueeze(0)
+                score = torch.sigmoid(model(spec)).item()
             pos_scores.append((p.name, score))
 
         for n in neg_files:
             audio = load_wav(n)
-            spec = torch.tensor(extract_features(audio)).unsqueeze(0).unsqueeze(0)
-            score = torch.sigmoid(model(spec)).item()
+            peak = float(np.max(np.abs(audio)) * 32768.0)
+            if peak < 450.0:
+                score = 0.0
+            else:
+                spec = torch.tensor(extract_features(audio)).unsqueeze(0).unsqueeze(0)
+                score = torch.sigmoid(model(spec)).item()
             neg_scores.append((n.name, score))
 
     # Threshold evaluation

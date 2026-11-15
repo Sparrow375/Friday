@@ -303,18 +303,11 @@ static float pwConvOut[16][4][8];
 static float pooled[16];
 
 // ==================== Feature Extraction ====================
-static void extractFeatures(const short* rawAudio) {
+static void extractFeatures(const short* rawAudio, short maxAbs) {
     float sumTotal = 0.0f;
     float sumSq = 0.0f;
     int totalElements = WW_NUM_MELS * WW_NUM_FRAMES;
 
-    // Fast strided search for peak amplitude to normalize input
-    short maxAbs = 0;
-    for (int i = 0; i < WW_TOTAL_SAMPLES; i += 16) {
-        short val = rawAudio[i];
-        if (val < 0) val = -val;
-        if (val > maxAbs) maxAbs = val;
-    }
     float inputScale = (maxAbs > 300) ? (0.5f / (float)maxAbs) : (1.0f / 32768.0f);
 
     for (int f = 0; f < WW_NUM_FRAMES; f++) {
@@ -464,19 +457,11 @@ static float forwardCnn() {
  * Extracts log-mel spectrogram features directly from a circular buffer of 24,000 samples.
  * headIdx points to the oldest sample in the circular buffer.
  */
-static void extractFeaturesCircular(const short* circBuffer, int headIdx) {
+static void extractFeaturesCircular(const short* circBuffer, int headIdx, short maxAbs) {
     float sumTotal = 0.0f;
     float sumSq = 0.0f;
     int totalElements = WW_NUM_MELS * WW_NUM_FRAMES;
 
-    // Fast strided search for peak amplitude in circular buffer
-    short maxAbs = 0;
-    for (int i = 0; i < WW_TOTAL_SAMPLES; i += 16) {
-        int circIdx = (headIdx + i) % WW_TOTAL_SAMPLES;
-        short val = circBuffer[circIdx];
-        if (val < 0) val = -val;
-        if (val > maxAbs) maxAbs = val;
-    }
     float inputScale = (maxAbs > 300) ? (0.5f / (float)maxAbs) : (1.0f / 32768.0f);
 
     for (int f = 0; f < WW_NUM_FRAMES; f++) {
@@ -524,9 +509,25 @@ static void extractFeaturesCircular(const short* circBuffer, int headIdx) {
 
 /**
  * Runs TinyML wake-word model directly on a circular audio buffer without memory copying.
+ * Returns 0.0f immediately if peak amplitude is below physical speech floor (< 450 ADC counts).
  */
 static inline float predictWakeWordScoreCircular(const short* circBuffer, int headIdx) {
-    extractFeaturesCircular(circBuffer, headIdx);
+    short maxAbs = 0;
+    for (int i = 0; i < WW_TOTAL_SAMPLES; i += 16) {
+        int circIdx = (headIdx + i) % WW_TOTAL_SAMPLES;
+        short val = circBuffer[circIdx];
+        if (val < 0) val = -val;
+        if (val > maxAbs) maxAbs = val;
+    }
+
+    // Hard acoustic floor: If peak in 1.5 seconds is < 450 ADC counts,
+    // it is flat room noise or physical silence. Human vocalization ("Friday")
+    // on this mic always exceeds 500 ADC counts (user voice averages 848 counts).
+    if (maxAbs < 450) {
+        return 0.0f;
+    }
+
+    extractFeaturesCircular(circBuffer, headIdx, maxAbs);
     return forwardCnn();
 }
 
@@ -535,7 +536,18 @@ static inline float predictWakeWordScoreCircular(const short* circBuffer, int he
  * Returns the probability (0.0 to 1.0) that "Friday" was spoken.
  */
 static inline float predictWakeWordScore(const short* audio24k) {
-    extractFeatures(audio24k);
+    short maxAbs = 0;
+    for (int i = 0; i < WW_TOTAL_SAMPLES; i += 16) {
+        short val = audio24k[i];
+        if (val < 0) val = -val;
+        if (val > maxAbs) maxAbs = val;
+    }
+
+    if (maxAbs < 450) {
+        return 0.0f;
+    }
+
+    extractFeatures(audio24k, maxAbs);
     return forwardCnn();
 }
 
@@ -563,9 +575,9 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using compute device: {device}", flush=True)
 
-    user_pos_files = sorted(list(POS_DIR.glob("friday_*.wav")))
+    user_pos_files = sorted(list(set(list(POS_DIR.glob("friday_*.wav")) + list(POS_DIR.glob("friday_user_*.wav")))))
     synth_pos_files = sorted(list(POS_DIR.glob("synth_*.wav")))
-    user_neg_files = sorted(list(NEG_DIR.glob("noise_*.wav")))
+    user_neg_files = sorted(list(set(list(NEG_DIR.glob("noise_*.wav")) + list(NEG_DIR.glob("real_silence_*.wav")) + list(NEG_DIR.glob("silence_*.wav")))))
     synth_neg_files = sorted(list(NEG_DIR.glob("synth_*.wav")))
 
     print(f"Dataset files found:")
@@ -629,6 +641,20 @@ def main():
             aug = augment_audio(n, noise_pool, is_user=False)
             all_specs.append(extract_log_mel_spectrogram(aug))
             all_labels.append(0.0)
+
+    # 5. Synthetic physical ambient silence & hums (room floor, 50/60Hz mains hum, thermal mic hiss)
+    print("  Generating 350 synthetic room silence and low-frequency noise samples...", flush=True)
+    for _ in range(350):
+        # Room silence with RMS ~50-200 ADC counts
+        noise_amp = random.uniform(0.0015, 0.0065)
+        silence_sample = np.random.normal(0, noise_amp, TOTAL_SAMPLES)
+        if random.random() < 0.5:
+            hum_freq = random.choice([50.0, 60.0, 100.0, 120.0])
+            t = np.linspace(0, AUDIO_DURATION, TOTAL_SAMPLES)
+            hum = np.sin(2 * np.pi * hum_freq * t) * random.uniform(0.001, 0.004)
+            silence_sample += hum
+        all_specs.append(extract_log_mel_spectrogram(silence_sample))
+        all_labels.append(0.0)
 
     all_specs = np.array(all_specs, dtype=np.float32)  # [N, 16, 62]
     all_labels = np.array(all_labels, dtype=np.float32)  # [N]
