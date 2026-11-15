@@ -628,12 +628,12 @@ def main():
             all_specs.append(extract_log_mel_spectrogram(aug))
             all_labels.append(1.0)
 
-    # 2. User room noise: 100x heavy augmentation without speech mixing to guarantee 0% false alarms in silence
-    print(f"  Augmenting {len(raw_user_noise)} user room noise samples (100x each)...", flush=True)
+    # 2. User room noise: 30x heavy augmentation without speech mixing to guarantee 0% false alarms in silence
+    print(f"  Augmenting {len(raw_user_noise)} user room noise samples (30x each)...", flush=True)
     for n in raw_user_noise:
         all_specs.append(extract_log_mel_spectrogram(n))
         all_labels.append(0.0)
-        for _ in range(100):
+        for _ in range(30):
             aug = augment_noise(n)
             all_specs.append(extract_log_mel_spectrogram(aug))
             all_labels.append(0.0)

@@ -85,4 +85,7 @@
 - [x] 74. Export verified C++ weights & feature extractor to `firmware/xiao_friday_pendant/wakeword_model.h` and verify Arduino sketch compilation (`python scripts/compile_pendant.py`) with 0 errors <!-- id: 73 -->
 - [x] 75. Update `context.md`, commit and push to git, and deliver flashing & APK installation instructions <!-- id: 74 -->
 - [x] 76. Update silence harvesting logic in `scripts/slice_wakeword_recording.py` (50% overlapping 1.5s windows for 2x density, auto-detection of pure silence recordings) and tune firmware thresholds in `firmware/xiao_friday_pendant/xiao_friday_pendant.ino` (`MIN_SPEECH_RMS = 135.0f`, `WAKE_CONFIDENCE_STRICT = 0.85f`, 3-hit debounce for moderate, and `backgroundRms` adaptation up to 350.0f) <!-- id: 75 -->
-- [ ] 77. User records room silence via `python scripts/record_continuous_wakeword.py --silence-only`, harvest authentic room silence clips, and retrain model on GPU <!-- id: 76 -->
+- [x] 77. User records room silence via `python scripts/record_continuous_wakeword.py --silence-only`, harvest authentic room silence clips, and retrain model on GPU <!-- id: 76 -->
+- [x] 78. Ingest 111 authentic room silence clips (`silence_continuous_20261115_125057.wav`), expanding negative set to 121 real silence recordings <!-- id: 77 -->
+- [x] 79. Retrain TinyWakeWordCnn on RTX 5060 Ti GPU (10,445 samples): achieves 96.3% confidence on user's "Friday", 96.4% recall at 0.70 threshold, and 98.2% zero-activation rejection across all 111 authentic room silence clips <!-- id: 78 -->
+- [x] 80. Export verified C++ model to `firmware/xiao_friday_pendant/wakeword_model.h`, compile cleanly via `scripts/compile_pendant.py`, commit and push to git <!-- id: 79 -->

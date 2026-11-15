@@ -704,6 +704,19 @@ The project uses a clean package namespace `com.friday.assistant`:
               - Allowed `backgroundRms` to adapt up to 350.0 RMS (previously capped at 200.0) so loud rooms with computer fans or AC can calibrate baseline upwards.
               - Raised `WAKE_CONFIDENCE_STRICT` to 0.85f (matching user's genuine speech average of 0.934) and `WAKE_CONFIDENCE_MODERATE` to 0.70f with 3-hit debounce (~240ms) to ensure isolated noise spikes never trigger false wake alarms.
             - **Status**: Firmware verified with 0 compilation errors. Ready for user to record a continuous silence session.
+          * **Authentic Room Silence Model Retraining & Production C++ Deployment (November 2026 - Part 20)**:
+            - **User Silence Ingestion**:
+              - User recorded an 84-second room silence session (`silence_continuous_20261115_125057.wav`). Sliced 111 authentic ambient room silence clips (`real_silence_silence_continuous_20261115_125057_0001`..`0111.wav`), capturing the room's actual ambient noise floor (mean RMS 395.7 counts, mean peak 739.5 counts).
+              - Expanded the user's authentic negative room noise dataset to **121 total recordings**.
+            - **GPU Retraining (RTX 5060 Ti)**:
+              - Retrained `TinyWakeWordCnn` on 10,445 samples (4,278 positive user samples from 138 recordings, 3,751 authentic room silence samples from 121 recordings, 1,066 user negative speech samples from 41 recordings, 350 room silence variations, and 1,000 synthetic negative English words).
+              - **Benchmark Results**:
+                - User "Friday" Confidence: **96.34% average**, **96.4% recall** (133/138 triggered at 0.70), **93.5% recall** (129/138 at strict 0.85).
+                - Authentic Room Silence (111 clips): **3.76% average score**, **98.2% zero-trigger rejection** (109/111 scored < 0.50).
+                - User Negative Speech (41 clips): **8.98% average score**, **95.1% zero-trigger rejection**.
+            - **Production C++ Export**:
+              - Model exported directly to `firmware/xiao_friday_pendant/wakeword_model.h`.
+              - Firmware compiled cleanly with 0 errors via `scripts/compile_pendant.py`.
 
 
 
