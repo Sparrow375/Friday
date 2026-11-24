@@ -864,8 +864,12 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
     private fun cleanAndValidateTranscript(raw: String, isPartial: Boolean = false): String {
         var text = raw.trim()
-        // Strip Whisper bracketed tokens e.g. [BLANK_AUDIO], (music), [applause]
-        text = text.replace(Regex("\\[.*?\\]"), "").replace(Regex("\\(.*?\\)"), "").trim()
+        // Strip Whisper bracketed / music tokens e.g. [BLANK_AUDIO], (music), [applause], ♪
+        text = text.replace(Regex("\\[.*?\\]"), "")
+            .replace(Regex("\\(.*?\\)"), "")
+            .replace("♪", "")
+            .replace("*", "")
+            .trim()
         // Reject strings containing replacement characters (\uFFFD or ï¿½) or control codes like %08
         if (text.contains("\uFFFD") || text.contains("ï¿½") || text.contains("%08") || text.contains("\\x")) return ""
         // Must have at least 2 characters and contain at least one ASCII letter
@@ -874,7 +878,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         val lower = text.lowercase()
         val hallucinations = listOf(
             "thank you.", "thank you", "thanks for watching", "subtitles by",
-            "you", "bye.", "bye", "amara.org", "watching", "subscribe"
+            "you", "bye.", "bye", "amara.org", "watching", "subscribe",
+            "music", "applause", "silence"
         )
         if (hallucinations.any { lower == it || lower.startsWith(it) }) return ""
 

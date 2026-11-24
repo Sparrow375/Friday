@@ -102,3 +102,8 @@
 - [x] 91. Update `test_pendant_model.py` and benchmark model to verify 0 false alarms across TV speech, coughing, and room transients with 100% user "Friday" recall <!-- id: 90 -->
 - [x] 92. Export zero-dependency C++ inference engine to `firmware/xiao_friday_pendant/wakeword_model.h` and verify clean Arduino firmware compilation via `scripts/compile_pendant.py` <!-- id: 91 -->
 - [x] 93. Update `context.md`, `architechture.md`, commit and push to git <!-- id: 92 -->
+- [x] 94. Eliminate train/val data leakage: build strict group-based hold-out split (unseen 46s loud music, unseen TV/cough, unseen JFK tail, unseen TTS voices, unseen user "Friday" utterances) in `train_pendant_wakeword.py` and `test_pendant_model.py` <!-- id: 93 -->
+- [x] 95. Upgrade audio pipeline for DC removal & wide dynamic range: strip per-window DC offset in Python + C++ (`wakeword_model.h` & `xiao_friday_pendant.ino`), add SNR-calibrated loud music/noise positive mixing + mixed speech-on-music hard negatives + SpecAugment + label smoothing <!-- id: 94 -->
+- [x] 96. Upgrade model to translation-invariant `PhoneticWakeWordNetV2` (32 Mel -> DS-Conv blocks -> Temporal Motif 1D Conv + Global Max/Avg Pool -> MLP) and train on RTX 5060 Ti GPU <!-- id: 95 -->
+- [x] 97. Upgrade firmware trigger & VAD logic in `xiao_friday_pendant.ino` (DC-removed AC RMS, multi-frame consecutive confirmation replacing single-hit `0.92` spike trigger, music-resilient VAD baseline) <!-- id: 96 -->
+- [x] 98. Benchmark strictly on held-out unseen streams, compile firmware (`compile_pendant.py`), update `context.md` & `architechture.md`, commit and push to git <!-- id: 97 -->

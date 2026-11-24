@@ -1,264 +1,184 @@
 #!/usr/bin/env python3
 """
-Project Friday - Pendant Wake-Word Benchmark
-Evaluates the retrained PhoneticWakeWordNet model across all audio categories:
-user "Friday" samples, continuous speech streams (JFK), continuous conversational negatives,
-negative words, room silence, and pure narrowband tones.
+Project Friday - Zero-Leakage Pendant Wake-Word Benchmark (V2)
+Evaluates PhoneticWakeWordNetV2 across BOTH full recordings AND strictly unseen
+hold-out partitions (unseen user 'Friday', unseen 45s loud music, unseen TV/cough,
+unseen JFK speech, unseen TTS speakers, and sliding-window shift invariance).
 """
 
-import os
+import sys
 import wave
+import math
 import numpy as np
 from pathlib import Path
-from scipy.fft import rfft
-
+from collections import defaultdict
 import torch
-import torch.nn as nn
 
-# Parameters matching training & C++ firmware
-SAMPLE_RATE = 16000
-TOTAL_SAMPLES = 24000  # 1.5 seconds
-FRAME_LEN = 512
-HOP_LEN = 384
-NUM_FRAMES = 62
-NUM_MELS = 32
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.train_pendant_wakeword import (
+    PhoneticWakeWordNetV2,
+    extract_log_mel_spectrogram,
+    load_wav,
+    mix_at_snr,
+    get_pos_session_key,
+    SAMPLE_RATE,
+    TOTAL_SAMPLES,
+    POS_DIR,
+    NEG_DIR,
+    HOLDOUT_NEG_DIR,
+)
 
 MODEL_PATH = Path("output/pendant_wakeword_model.pth")
-DATASET_ROOT = Path("dataset/pendant_wakeword")
-POS_DIR = DATASET_ROOT / "positive"
-NEG_DIR = DATASET_ROOT / "negative"
 
 
-def compute_mel_filterbank(sr=SAMPLE_RATE, n_fft=FRAME_LEN, n_mels=NUM_MELS, fmin=200.0, fmax=4000.0):
-    def hz_to_mel(hz): return 2595.0 * np.log10(1.0 + hz / 700.0)
-    def mel_to_hz(mel): return 700.0 * (10.0**(mel / 2595.0) - 1.0)
-
-    mel_min = hz_to_mel(fmin)
-    mel_max = hz_to_mel(fmax)
-    mel_points = np.linspace(mel_min, mel_max, n_mels + 2)
-    hz_points = mel_to_hz(mel_points)
-    bin_points = np.floor((n_fft + 1) * hz_points / sr).astype(int)
-
-    num_bins = n_fft // 2 + 1
-    fbank = np.zeros((n_mels, num_bins), dtype=np.float32)
-    for m in range(1, n_mels + 1):
-        f_m_minus = bin_points[m - 1]
-        f_m = bin_points[m]
-        f_m_plus = bin_points[m + 1]
-        for k in range(f_m_minus, f_m):
-            if f_m > f_m_minus:
-                fbank[m - 1, k] = (k - f_m_minus) / (f_m - f_m_minus)
-        for k in range(f_m, f_m_plus):
-            if f_m_plus > f_m:
-                fbank[m - 1, k] = (f_m_plus - k) / (f_m_plus - f_m)
-    return fbank
-
-MEL_FBANK = compute_mel_filterbank()
-HANNING_WINDOW = 0.5 * (1.0 - np.cos(2.0 * np.pi * np.arange(FRAME_LEN) / (FRAME_LEN - 1))).astype(np.float32)
-
-def extract_features(samples_float):
-    if len(samples_float) < TOTAL_SAMPLES:
-        samples_float = np.pad(samples_float, (0, TOTAL_SAMPLES - len(samples_float)))
-    else:
-        samples_float = samples_float[:TOTAL_SAMPLES]
-
-    peak = np.max(np.abs(samples_float))
-    if peak > (300.0 / 32768.0):
-        samples_float = (samples_float / peak) * 0.5
-
-    log_mel = np.zeros((NUM_MELS, NUM_FRAMES), dtype=np.float32)
-    for frame_idx in range(NUM_FRAMES):
-        start = frame_idx * HOP_LEN
-        frame = samples_float[start : start + FRAME_LEN] * HANNING_WINDOW
-        fft_mag = np.abs(rfft(frame))
-        mel_energy = np.dot(MEL_FBANK, fft_mag)
-        log_mel[:, frame_idx] = np.log10(mel_energy + 1e-5)
-
-    mean = np.mean(log_mel)
-    var = np.var(log_mel)
-    if var < 0.052:
-        return None
-    std = np.sqrt(max(var, 0.09))
-    normalized = (log_mel - mean) / (2.5 * std)
-    return np.clip(normalized, -2.0, 2.0).astype(np.float32)
-
-def load_wav(path):
-    with wave.open(str(path), "rb") as wf:
-        n_frames = wf.getnframes()
-        frames = wf.readframes(n_frames)
-        samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-        return samples
-
-
-class PhoneticWakeWordNet(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv1 = nn.Conv2d(1, 16, kernel_size=3, stride=(2, 2), padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(16)
-        self.relu1 = nn.ReLU()
-
-        self.dw_conv2 = nn.Conv2d(16, 16, kernel_size=3, stride=(2, 2), padding=1, groups=16, bias=False)
-        self.bn_dw2 = nn.BatchNorm2d(16)
-        self.relu_dw2 = nn.ReLU()
-        self.pw_conv2 = nn.Conv2d(16, 32, kernel_size=1, bias=False)
-        self.bn_pw2 = nn.BatchNorm2d(32)
-        self.relu_pw2 = nn.ReLU()
-
-        self.dw_conv3 = nn.Conv2d(32, 32, kernel_size=3, stride=(2, 2), padding=1, groups=32, bias=False)
-        self.bn_dw3 = nn.BatchNorm2d(32)
-        self.relu_dw3 = nn.ReLU()
-        self.pw_conv3 = nn.Conv2d(32, 32, kernel_size=1, bias=False)
-        self.bn_pw3 = nn.BatchNorm2d(32)
-        self.relu_pw3 = nn.ReLU()
-
-        self.pool = nn.AdaptiveAvgPool2d((1, 8))
-        self.fc1 = nn.Linear(32 * 8, 32)
-        self.relu_fc1 = nn.ReLU()
-        self.drop = nn.Dropout(0.25)
-        self.fc2 = nn.Linear(32, 1)
-
-    def forward(self, x):
-        x = self.relu1(self.bn1(self.conv1(x)))
-        x = self.relu_dw2(self.bn_dw2(self.dw_conv2(x)))
-        x = self.relu_pw2(self.bn_pw2(self.pw_conv2(x)))
-        x = self.relu_dw3(self.bn_dw3(self.dw_conv3(x)))
-        x = self.relu_pw3(self.bn_pw3(self.pw_conv3(x)))
-        x = self.pool(x)
-        x = torch.flatten(x, 1)
-        x = self.drop(self.relu_fc1(self.fc1(x)))
-        x = self.fc2(x)
-        return x
+def eval_stream(model, chunks):
+    scores = []
+    with torch.no_grad():
+        for chunk in chunks:
+            feat = extract_log_mel_spectrogram(chunk, check_gates=True)
+            if feat is None:
+                scores.append(0.0)
+            else:
+                s = torch.sigmoid(model(torch.tensor(feat).unsqueeze(0).unsqueeze(0))).item()
+                scores.append(s)
+    arr = np.array(scores, dtype=np.float32)
+    single_75 = int(np.sum(arr >= 0.75))
+    single_85 = int(np.sum(arr >= 0.85))
+    consec2_85 = int(np.sum((arr[1:] >= 0.85) & (arr[:-1] >= 0.85))) if len(arr) > 1 else 0
+    # Firmware rule: 2 consec >= 0.85 with avg >= 0.88 OR 3-of-4 >= 0.70 with cur >= 0.74
+    fw_triggers = 0
+    for i in range(len(arr)):
+        trig = False
+        if i >= 1 and arr[i] >= 0.85 and arr[i - 1] >= 0.85 and 0.5 * (arr[i] + arr[i - 1]) >= 0.88:
+            trig = True
+        elif i >= 3:
+            hits = sum(1 for k in range(i - 3, i + 1) if arr[k] >= 0.70)
+            if hits >= 3 and arr[i] >= 0.74:
+                trig = True
+        if trig:
+            fw_triggers += 1
+    return {
+        "n": len(arr),
+        "single_75": single_75,
+        "single_85": single_85,
+        "consec2_85": consec2_85,
+        "fw_triggers": fw_triggers,
+        "max": float(np.max(arr)) if len(arr) else 0.0,
+        "mean": float(np.mean(arr)) if len(arr) else 0.0,
+    }
 
 
 def main():
-    print("==================================================")
-    print("  Project Friday - Phonetic Wake-Word Benchmark   ")
-    print("==================================================")
+    print("===========================================================")
+    print("  Project Friday - Zero-Leakage Wake-Word Benchmark (V2)   ")
+    print("===========================================================")
 
     if not MODEL_PATH.exists():
         print(f"Error: Model file {MODEL_PATH} not found. Run training first.")
         return
 
-    model = PhoneticWakeWordNet()
+    model = PhoneticWakeWordNetV2()
     model.load_state_dict(torch.load(MODEL_PATH, weights_only=True))
     model.eval()
 
-    # 1. User positive recordings
-    user_pos = sorted(list(POS_DIR.glob("friday_*.wav")))
-    pos_scores = []
-    with torch.no_grad():
-        for p in user_pos:
-            audio = load_wav(p)
-            feat = extract_features(audio)
-            s = 0.0 if feat is None else torch.sigmoid(model(torch.tensor(feat).unsqueeze(0).unsqueeze(0))).item()
-            pos_scores.append((p.name, s))
+    # 1. Positives: All vs Strictly Unseen Hold-Out
+    user_pos_files = sorted(list(POS_DIR.glob("friday_*.wav")))
+    pos_by_session = defaultdict(list)
+    for f in user_pos_files:
+        pos_by_session[get_pos_session_key(f)].append(f)
 
-    # 2. Continuous Speech: JFK Speech (11s = 119 sliding windows)
-    jfk_path = Path("app/.cxx/Debug/q656mh6g/arm64-v8a/_deps/whispercpp_new-src/samples/jfk.wav")
-    jfk_scores = []
-    if jfk_path.exists():
-        with wave.open(str(jfk_path), "rb") as wf:
-            jfk_audio = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
-        step = 1280
+    holdout_pos_files = []
+    for sess, files in sorted(pos_by_session.items()):
+        cut = max(1, int(len(files) * 0.80))
+        holdout_pos_files.extend(files[cut:])
+
+    def eval_pos_list(files):
+        sc = []
         with torch.no_grad():
-            for i in range(0, len(jfk_audio) - 24000, step):
-                chunk = jfk_audio[i : i + 24000]
-                feat = extract_features(chunk)
+            for f in files:
+                feat = extract_log_mel_spectrogram(load_wav(f), check_gates=True)
                 s = 0.0 if feat is None else torch.sigmoid(model(torch.tensor(feat).unsqueeze(0).unsqueeze(0))).item()
-                jfk_scores.append(s)
+                sc.append(s)
+        return np.array(sc)
 
-    # 3. Continuous Room Silence (84s = 1,037 sliding windows)
-    sil_path = Path("dataset/raw_recordings/silence_continuous_20261115_125057.wav")
-    sil_scores = []
-    if sil_path.exists():
-        with wave.open(str(sil_path), "rb") as wf:
-            sil_audio = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
-        step = 1280
+    all_pos_sc = eval_pos_list(user_pos_files)
+    ho_pos_sc = eval_pos_list(holdout_pos_files)
+
+    print("\n--- Positive 'Friday' Recall ---")
+    print(f"  ALL User Clips ({len(all_pos_sc)}):      >=0.74: {np.sum(all_pos_sc>=0.74)}/{len(all_pos_sc)} ({np.mean(all_pos_sc>=0.74)*100:.1f}%) | Mean={np.mean(all_pos_sc):.4f}")
+    print(f"  UNSEEN Hold-Out ({len(ho_pos_sc)}):     >=0.74: {np.sum(ho_pos_sc>=0.74)}/{len(ho_pos_sc)} ({np.mean(ho_pos_sc>=0.74)*100:.1f}%) | Mean={np.mean(ho_pos_sc):.4f}")
+
+    # Test Unseen Hold-Out Fridays across +/- 400ms circular translation shifts (realistic sliding window!)
+    print("\n--- Translation Invariance on UNSEEN Hold-Out 'Fridays' ---")
+    for ms in [-400, -250, 0, +250, +400]:
+        s_samp = int(ms * 16)
+        hits = 0
         with torch.no_grad():
-            for i in range(0, len(sil_audio) - 24000, step):
-                chunk = sil_audio[i : i + 24000]
-                peak = np.max(np.abs(chunk)) * 32768.0
-                if peak < 260.0:
-                    s = 0.0
-                else:
-                    feat = extract_features(chunk)
-                    s = 0.0 if feat is None else torch.sigmoid(model(torch.tensor(feat).unsqueeze(0).unsqueeze(0))).item()
-                sil_scores.append(s)
+            for f in holdout_pos_files:
+                a = load_wav(f)
+                w = np.roll(a, s_samp) if s_samp != 0 else a
+                feat = extract_log_mel_spectrogram(w, check_gates=True)
+                if feat is not None and torch.sigmoid(model(torch.tensor(feat).unsqueeze(0).unsqueeze(0))).item() >= 0.74:
+                    hits += 1
+        print(f"  Shift {ms:+4d}ms: {hits}/{len(holdout_pos_files)} ({hits/len(holdout_pos_files)*100:5.1f}%)")
 
-    # 3b. Continuous 110s Ambiance (TV playing, coughing, keyboard clicks = 1,353 sliding windows)
-    amb_path = Path("dataset/raw_recordings/silence_continuous_20261115_135706.wav")
-    amb_scores = []
-    cough_scores = []
-    if amb_path.exists():
-        with wave.open(str(amb_path), "rb") as wf:
-            amb_audio = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
-        step = 1280
+    # 2. Strictly Unseen Continuous Negative Streams (last 25% after 1.5s gap)
+    print("\n--- STRICT UNSEEN Hold-Out Continuous Negative Streams ---")
+    for name, fname in [
+        ("UNSEEN Loud Music (last 46s)", "silence_continuous_20261124_233125.wav"),
+        ("UNSEEN TV/Cough (last 26s)", "silence_continuous_20261115_135706.wav"),
+        ("UNSEEN Room Silence (last 19s)", "silence_continuous_20261115_125057.wav"),
+    ]:
+        p = Path("dataset/raw_recordings") / fname
+        if p.exists():
+            raw_s = load_wav(p)
+            ho_start = int(len(raw_s) * 0.75) + TOTAL_SAMPLES
+            chunks = [raw_s[i : i + TOTAL_SAMPLES] for i in range(ho_start, len(raw_s) - TOTAL_SAMPLES + 1, 1280)]
+            r = eval_stream(model, chunks)
+            print(f"  {name} ({r['n']} win): FW_Triggers={r['fw_triggers']}, 2Consec>=0.85={r['consec2_85']}, Single>=0.85={r['single_85']}, Max={r['max']:.4f}, Mean={r['mean']:.4f}")
+
+    # Test Unseen Fridays mixed with Unseen Loud Music at +3dB SNR
+    mus_p = Path("dataset/raw_recordings/silence_continuous_20261124_233125.wav")
+    if mus_p.exists():
+        raw_m = load_wav(mus_p)
+        ho_start = int(len(raw_m) * 0.75) + TOTAL_SAMPLES
+        ho_m_chunks = [raw_m[i : i + TOTAL_SAMPLES] for i in range(ho_start, len(raw_m) - TOTAL_SAMPLES + 1, 1280)]
+        hits_m = 0
         with torch.no_grad():
-            for i in range(0, len(amb_audio) - 24000, step):
-                chunk = amb_audio[i : i + 24000]
-                peak = np.max(np.abs(chunk)) * 32768.0
-                time_sec = i / 16000.0
-                if peak < 260.0:
-                    s = 0.0
-                else:
-                    feat = extract_features(chunk)
-                    s = 0.0 if feat is None else torch.sigmoid(model(torch.tensor(feat).unsqueeze(0).unsqueeze(0))).item()
-                amb_scores.append(s)
-                # Cough section occurs around 9.5s to 11.0s
-                if 9.5 <= time_sec <= 11.0:
-                    cough_scores.append(s)
+            for idx, f in enumerate(holdout_pos_files):
+                mixed = mix_at_snr(load_wav(f), ho_m_chunks[idx % len(ho_m_chunks)], 3.0)
+                feat = extract_log_mel_spectrogram(mixed, check_gates=True)
+                if feat is not None and torch.sigmoid(model(torch.tensor(feat).unsqueeze(0).unsqueeze(0))).item() >= 0.74:
+                    hits_m += 1
+        print(f"\n  UNSEEN 'Friday' + UNSEEN Loud Music (+3dB SNR): {hits_m}/{len(holdout_pos_files)} ({hits_m/len(holdout_pos_files)*100:.1f}%)")
 
-    # 4. Pure Tones
-    t = np.linspace(0, 1.5, 24000)
-    tone_scores = []
-    with torch.no_grad():
-        for freq in [200, 300, 440, 600, 800, 1000, 1200, 1500, 2000, 3000]:
-            tone = (np.sin(2 * np.pi * freq * t) * 0.7).astype(np.float32)
-            feat = extract_features(tone)
-            s = 0.0 if feat is None else torch.sigmoid(model(torch.tensor(feat).unsqueeze(0).unsqueeze(0))).item()
-            tone_scores.append((freq, s))
+    # 3. 100% Unseen JFK Speech, Hold-Out TTS Speakers, and Hold-Out User Negatives
+    print("\n--- STRICT UNSEEN Speech Generalization ---")
+    jfk_path = Path("app/.cxx/Debug/q656mh6g/arm64-v8a/_deps/whispercpp_new-src/samples/jfk.wav")
+    if jfk_path.exists():
+        jfk = load_wav(jfk_path)
+        jfk_chunks = [jfk[i : i + TOTAL_SAMPLES] for i in range(0, len(jfk) - TOTAL_SAMPLES + 1, 1280)]
+        r = eval_stream(model, jfk_chunks)
+        print(f"  UNSEEN JFK Speech ({r['n']} win):       FW_Triggers={r['fw_triggers']}, Single>=0.75={r['single_75']}, Max={r['max']:.4f}")
 
-    # 5. User negative speech
-    user_speech_files = sorted(list(NEG_DIR.glob("speech_*.wav")))
-    speech_scores = []
-    with torch.no_grad():
-        for sf in user_speech_files:
-            audio = load_wav(sf)
-            feat = extract_features(audio)
-            s = 0.0 if feat is None else torch.sigmoid(model(torch.tensor(feat).unsqueeze(0).unsqueeze(0))).item()
-            speech_scores.append(s)
+    tts_files = sorted(list(HOLDOUT_NEG_DIR.glob("holdout_tts_*.wav")))
+    if tts_files:
+        r = eval_stream(model, [load_wav(f) for f in tts_files])
+        print(f"  UNSEEN TTS Voices ({r['n']} clips):     Single>=0.75={r['single_75']}, Single>=0.85={r['single_85']}, Max={r['max']:.4f}")
 
-    # Print Report
-    print("\n---------------- Performance Summary ----------------")
-    avg_pos = np.mean([s for _, s in pos_scores])
-    recall_75 = sum(1 for _, s in pos_scores if s >= 0.75) / len(pos_scores) * 100.0
-    print(f"User 'Friday' Recall (>= 0.75):       {sum(1 for _, s in pos_scores if s >= 0.75)} / {len(pos_scores)} ({recall_75:.1f}%)")
-    print(f"User 'Friday' Average Confidence:     {avg_pos:.4f} ({avg_pos*100:.1f}%)")
+    usp_files = sorted(list(NEG_DIR.glob("speech_*.wav")))
+    usp_ho = usp_files[int(len(usp_files) * 0.70):]
+    if usp_ho:
+        r = eval_stream(model, [load_wav(f) for f in usp_ho])
+        print(f"  UNSEEN User Neg Speech ({r['n']} clips):Single>=0.75={r['single_75']}, Max={r['max']:.4f}")
 
-    if jfk_scores:
-        jfk_alarms = sum(1 for s in jfk_scores if s >= 0.75)
-        print(f"JFK Continuous Speech False Alarms:   {jfk_alarms} / {len(jfk_scores)} (Max score: {np.max(jfk_scores):.4f})")
-
-    if sil_scores:
-        sil_alarms = sum(1 for s in sil_scores if s >= 0.75)
-        print(f"84s Room Silence False Alarms:        {sil_alarms} / {len(sil_scores)} (Mean score: {np.mean(sil_scores):.6f})")
-
-    if amb_scores:
-        amb_alarms = sum(1 for s in amb_scores if s >= 0.75)
-        amb_alarms_50 = sum(1 for s in amb_scores if s >= 0.50)
-        max_cough = np.max(cough_scores) if cough_scores else 0.0
-        print(f"110s Ambiance (TV/Cough) False Alarms:{amb_alarms} / {len(amb_scores)} (>= 0.75), {amb_alarms_50} / {len(amb_scores)} (>= 0.50)")
-        print(f"  Max Ambiance Score: {np.max(amb_scores):.4f} | Max Cough Score: {max_cough:.4f} | Mean: {np.mean(amb_scores):.4f}")
-
-    tone_alarms = sum(1 for _, s in tone_scores if s >= 0.50)
-    print(f"Narrowband Tone False Alarms:         {tone_alarms} / {len(tone_scores)}")
-
-    if speech_scores:
-        speech_alarms = sum(1 for s in speech_scores if s >= 0.50)
-        print(f"User Negative Speech False Alarms:    {speech_alarms} / {len(speech_scores)} (Mean score: {np.mean(speech_scores):.4f})")
-
-    print("-----------------------------------------------------")
-    print("\nBenchmark complete! Verified that PhoneticWakeWordNet has 0 false alarms on continuous speech.")
+    # Pure Tones
+    t = np.linspace(0, 1.5, 24000, dtype=np.float32)
+    tone_chunks = [(np.sin(2 * np.pi * f * t) * 0.7).astype(np.float32) for f in [200, 300, 440, 600, 800, 1000, 1200, 1500, 2000, 3000]]
+    r_t = eval_stream(model, tone_chunks)
+    print(f"  Narrowband Tones ({r_t['n']} freqs):     Single>=0.75={r_t['single_75']}, Max={r_t['max']:.4f}")
+    print("===========================================================")
 
 
 if __name__ == "__main__":

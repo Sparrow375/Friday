@@ -785,6 +785,24 @@ The project uses a clean package namespace `com.friday.assistant`:
               - **Narrowband Tones (200-3500 Hz)**: **0 / 10 (0.0%!) false alarms** (all tones score 0.000000).
               - **User Negative Speech**: **0 / 41 (0.0%!) false alarms** (mean score: 0.0000).
             - **Production C++ Export & Firmware Verification**:
-              - Exported zero-dependency C++ inference engine to irmware/xiao_friday_pendant/wakeword_model.h (243.2 KB).
-              - Verified clean Arduino firmware compilation via scripts/compile_pendant.py (Return code 0, 0 errors, 0 warnings).
+              - Exported zero-dependency C++ inference engine to `firmware/xiao_friday_pendant/wakeword_model.h` (243.2 KB).
+              - Verified clean Arduino firmware compilation via `scripts/compile_pendant.py` (Return code 0, 0 errors, 0 warnings).
+
+          * **Zero-Leakage PhoneticWakeWordNetV2, Loud Music Immunity & Multi-Frame Firmware Upgrade (November 2026 - Part 25)**:
+            - **Root Cause Audit of Real-Life False Alarms**:
+              - Evaluating the previous V1 model on the user's brand-new UNSEEN 191.6s loud music recording (`silence_continuous_20261124_233125.wav`) exposed **177 single-hit false triggers (`>= 0.92`) out of 2,377 windows**, proving earlier 0-FA scores were inflated by train/val window leakage.
+              - Identified four underlying causes: (1) train/val random shuffle after slicing leaked validation streams into training; (2) single-frame `0.92` instant trigger fired on isolated 80ms transient glitches; (3) static ADC DC bias (`+211` to `-548` counts) was unremoved before RMS/peak/FFT, which had also caused `slice_wakeword_recording.py` to mis-slice 6 silent/constant-tail clips as fake `"Friday"` positives; and (4) fixed-slot flattening (`Linear(256, 32)`) dropped recall to `5.8%` at `+400ms` shift.
+            - **Pipeline, Architecture & Firmware Upgrades**:
+              - **DC Offset Removal Everywhere**: Fixed `slice_wakeword_recording.py`, `train_pendant_wakeword.py`, `wakeword_model.h`, and `onPDMdata()` in `xiao_friday_pendant.ino` to subtract DC mean prior to AC RMS, AC peak (`< 240` floor), and FFT extraction. Re-sliced all continuous `"Friday"` recordings (`179` clean verified user vocalizations).
+              - **`PhoneticWakeWordNetV2` (25,489 params)**: Upgraded to 4 DS-Conv blocks (`1->16->32->48->48`) + translation-invariant **1D Temporal Motif Conv (`Conv1d(48, 64, kernel=5)`)** + Global Max/Avg Dual-Pooling (`128 -> 32 -> 1`) with folded BatchNorm (`425.8 KB` C++ header, `143 KB` Flash / `141 KB` total sketch `.bss` on nRF52840).
+              - **Zero-Leakage Group Split & Music Hardening**: Held out trailing 20% of every `"Friday"` session (`38` clips), trailing 25% of every continuous stream (with `1.5s` isolation gap: `562` unseen loud music windows, `306` unseen TV/cough windows, `227` unseen silence windows), all `119` windows of `jfk.wav`, `109` clips from unseen TTS speakers (`generate_hard_confusers.py` -> `holdout_neg/`), and 30% of user negative words. Added `212` hard phonetic confusers, `3,500` mixed Speech-on-Music/babble negatives, `1,000` synthetic polyphonic music/beat clips, circular shifts (`±400ms`), low-SNR music mixing (`-2` to `+24 dB`), GPU SpecAugment, and label smoothing (`0.96`/`0.02`).
+              - **Multi-Frame Firmware Verification (`xiao_friday_pendant.ino`)**: Replaced single-hit instant triggers with 2 consecutive frames `>= 0.85` (avg `>= 0.88`, 160ms) OR 3-of-4 frames `>= 0.70` (`>= 0.74`, 240ms), and capped AC `backgroundRms` at `300.0` (`MIN_SPEECH_RMS = 95.0`). Added Whisper music-token filtering (`♪`, `music`, `applause`, `silence`) in `FridayService.kt`.
+            - **Strictly Unseen Zero-Leakage Benchmark Results**:
+              - **Unseen User "Friday"**: `38 / 38 (100.0%)` (mean `0.9794`); **All 179 User Clips**: `179 / 179 (100.0%)` (mean `0.9815`).
+              - **Translation Invariance (`±400ms`)**: `97.4%` at `-400ms/+400ms`, `100.0%` across `-250ms..+250ms` (up from `5.8%` at `+400ms`).
+              - **Unseen "Friday" + Unseen Loud Music (`+3 dB` SNR)**: `38 / 38 (100.0%)`.
+              - **Unseen Loud Music (`562` windows)**: `0` firmware triggers (`0` single `>= 0.85`, **max score `0.0443`** vs 177 triggers previously).
+              - **Unseen TV/Cough (`306` windows) & Unseen Silence (`227` windows)**: `0` triggers (`max 0.0883` and `0.0685`).
+              - **100% Unseen JFK Speech (`119` windows) & Unseen TTS Voices (`109` clips)**: `0` firmware triggers (single isolated `0.8869` JFK frame rejected by multi-frame confirmation; TTS max `0.0759`).
+            - **Build Verification**: Pendant Arduino compilation (`compile_pendant.py`) succeeded with 0 errors (`146,782` bytes text, `144,428` bytes bss); Android `./gradlew compileDebugKotlin` succeeded cleanly.
 

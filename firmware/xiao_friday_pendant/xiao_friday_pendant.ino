@@ -48,16 +48,20 @@ enum PendantState {
 };
 PendantState currentState = STATE_IDLE;
 
-// VAD & Wake-word calibrated parameters
-float backgroundRms = 120.0f;
-const float VAD_MULTIPLIER = 1.35f;
-const float MIN_SPEECH_RMS = 150.0f;          // Adaptive floor: ambient silence is 85-390 RMS; user speech is 500-1100 RMS
-const float WAKE_CONFIDENCE_STRICT = 0.92f;   // Instant single-hit trigger (user speech averages 0.949)
-const float WAKE_CONFIDENCE_MODERATE = 0.75f; // Requires 3 consecutive hits (~240ms) for softer utterances
+// VAD & Wake-word calibrated parameters (pure AC RMS after DC removal)
+float backgroundRms = 60.0f;
+const float VAD_MULTIPLIER = 1.30f;
+const float MIN_SPEECH_RMS = 95.0f;            // True AC RMS floor: captures soft pendant speech (80-480 AC RMS)
+const float MAX_BG_RMS = 300.0f;               // Caps threshold <= 405 AC RMS so loud music doesn't starve voice detection
+const float WAKE_STRONG_FRAME = 0.85f;         // 2 consecutive frames >= 0.85 (avg >= 0.88) -> 160ms fast trigger
+const float WAKE_STRONG_AVG   = 0.88f;
+const float WAKE_SUSTAINED_FRAME = 0.70f;      // OR 3-of-4 recent frames >= 0.70 (latest >= 0.74) -> 240ms robust trigger
 unsigned long wakeTriggerTimestamp = 0;
-unsigned long wakeCooldownUntil = 0;          // Cooldown to prevent recursive re-triggering
-static int consecutiveWakeHits = 0;
-bool streamAudioOverBle = true;               // Stream compressed voice command to phone
+unsigned long wakeCooldownUntil = 0;           // Cooldown to prevent recursive re-triggering
+static float prevWakeConfidence = 0.0f;
+static float wakeHistory[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+static int wakeHistoryIdx = 0;
+bool streamAudioOverBle = true;                // Stream compressed voice command to phone
 volatile uint16_t globalChunkIndex = 0;
 
 // ==================== IMA-ADPCM Encoder ====================
@@ -151,20 +155,26 @@ void onPDMdata() {
     if (bytesRead <= 0) break;
     int samples = bytesRead / sizeof(short);
 
-    uint64_t sumSquares = 0; // 64-bit unsigned prevents 32-bit signed overflow on loud speech / transients
+    int64_t sumRaw = 0;
     int writeIdx = rollingWriteIdx;
     for (int i = 0; i < samples; i++) {
       short sample = tempBuffer[i];
-      sumSquares += ((uint64_t)sample * sample);
+      sumRaw += sample;
       rollingBuffer[writeIdx] = sample;
       writeIdx = (writeIdx + 1);
       if (writeIdx >= ROLLING_BUFFER_SIZE) writeIdx = 0;
+    }
+    float frameMean = (float)sumRaw / (float)samples;
+    double sumSqAc = 0.0;
+    for (int i = 0; i < samples; i++) {
+      float ac = (float)tempBuffer[i] - frameMean;
+      sumSqAc += (double)(ac * ac);
     }
     rollingWriteIdx = writeIdx;
     totalSamplesCollected += samples;
     totalFramesReceived++;
 
-    float rms = sqrtf((float)sumSquares / (float)samples);
+    float rms = sqrtf((float)(sumSqAc / (double)samples)); // Pure AC RMS (immune to mic DC bias)
     if (isnan(rms) || isinf(rms)) rms = 0.0f;
     lastCalculatedRms = rms;
     newAudioReady = true;
@@ -173,11 +183,19 @@ void onPDMdata() {
   }
 }
 
+// Helper to reset multi-frame wake-word history
+static inline void resetWakeHistory() {
+  prevWakeConfidence = 0.0f;
+  for (int i = 0; i < 4; i++) wakeHistory[i] = 0.0f;
+  wakeHistoryIdx = 0;
+}
+
 // ==================== Wake-Word Detection ====================
-// Returns true when "Friday" is detected by the on-chip CNN model
+// Returns true when "Friday" is detected by the on-chip CNN model across multiple consecutive frames
 bool checkWakeWord(float currentRms) {
   // Cooldown guard: prevent self-triggering after wake detection or audio recording
   if (millis() < wakeCooldownUntil) {
+    resetWakeHistory();
     return false;
   }
 
@@ -185,8 +203,8 @@ bool checkWakeWord(float currentRms) {
   if (isnan(currentRms) || isinf(currentRms)) {
     return false;
   }
-  if (isnan(backgroundRms) || isinf(backgroundRms) || backgroundRms < 30.0f) {
-    backgroundRms = 85.0f;
+  if (isnan(backgroundRms) || isinf(backgroundRms) || backgroundRms < 20.0f) {
+    backgroundRms = 55.0f;
   }
 
   // Discard startup PDM decimation filter DC transient during first ~32 frames (500ms)
@@ -196,70 +214,83 @@ bool checkWakeWord(float currentRms) {
 
   // Wait until circular buffer has at least 1.5 seconds of live audio
   if (totalSamplesCollected < ROLLING_BUFFER_SIZE) {
-    // Dynamic noise floor calibration during startup buffer fill (after settling)
+    // Dynamic AC noise floor calibration during startup buffer fill (after settling)
     backgroundRms = (backgroundRms * 0.92f) + (currentRms * 0.08f);
-    if (backgroundRms > 500.0f) backgroundRms = 500.0f;
+    if (backgroundRms > MAX_BG_RMS) backgroundRms = MAX_BG_RMS;
     return false;
   }
 
-  // Adaptive speech threshold: 1.35x background noise + 20 RMS offset
-  float speechThreshold = backgroundRms * VAD_MULTIPLIER + 20.0f;
+  // Adaptive speech threshold capped via MAX_BG_RMS so loud room music does not blind normal voice
+  float speechThreshold = backgroundRms * VAD_MULTIPLIER + 15.0f;
   if (speechThreshold < MIN_SPEECH_RMS) speechThreshold = MIN_SPEECH_RMS;
 
   // Hysteresis Voice Activity Detection:
-  // Once voice starts, maintain speech window for at least 32 frames (~500ms) across syllables
-  // to allow the spoken word to slide through the circular buffer across multiple inference evaluations
+  // Once voice/sound crosses threshold, maintain speech window for 32 frames (~500ms)
   if (currentRms >= speechThreshold) {
     speechActiveFrames = 32;
+    // Track background slowly down if currentRms is steady-ish lower? No, adapt only during quiet gaps or very slowly
   } else {
     if (speechActiveFrames > 0) {
       speechActiveFrames--;
     } else {
-      // Ambient silence: slowly adapt background noise baseline
-      backgroundRms = (backgroundRms * 0.99f) + (currentRms * 0.01f);
-      if (backgroundRms > 500.0f) backgroundRms = 500.0f;
-      if (backgroundRms < 40.0f) backgroundRms = 40.0f;
-      consecutiveWakeHits = 0;
+      // Ambient silence: adapt AC background noise baseline
+      backgroundRms = (backgroundRms * 0.985f) + (currentRms * 0.015f);
+      if (backgroundRms > MAX_BG_RMS) backgroundRms = MAX_BG_RMS;
+      if (backgroundRms < 25.0f) backgroundRms = 25.0f;
+      resetWakeHistory();
     }
   }
 
-  // Run TinyML CNN forward pass when speech is active, throttled to every 80ms
+  // Run TinyML CNN forward pass when VAD is active, throttled to every 80ms
   if (speechActiveFrames > 0 && (millis() - lastInferenceTime >= 80)) {
     lastInferenceTime = millis();
 
-    // Zero-copy circular inference (direct evaluation on rollingBuffer, 0 extra RAM)
+    // Zero-copy circular inference (direct evaluation on rollingBuffer with DC removal)
     int head = rollingWriteIdx;
     float confidence = predictWakeWordScoreCircular(rollingBuffer, head);
 
+    // Push into sliding 4-frame ring buffer
+    wakeHistory[wakeHistoryIdx] = confidence;
+    wakeHistoryIdx = (wakeHistoryIdx + 1) & 0x03;
+
+    int moderateHits = 0;
+    for (int i = 0; i < 4; i++) {
+      if (wakeHistory[i] >= WAKE_SUSTAINED_FRAME) moderateHits++;
+    }
+
     // Live feedback in Serial Monitor
-    Serial.print(F("[VAD Active] RMS: "));
+    Serial.print(F("[VAD Active] AC_RMS: "));
     Serial.print((int)currentRms);
     Serial.print(F(" | Thresh: "));
     Serial.print((int)speechThreshold);
     Serial.print(F(" | BG: "));
     Serial.print((int)backgroundRms);
-    Serial.print(F(" | 'Friday' Score: "));
-    Serial.println(confidence, 3);
+    Serial.print(F(" | 'Friday': "));
+    Serial.print(confidence, 3);
+    Serial.print(F(" (Prev: "));
+    Serial.print(prevWakeConfidence, 3);
+    Serial.println(F(")"));
 
+    // Multi-frame verification eliminates single-frame 80ms false spikes completely!
     bool isTrigger = false;
-    if (confidence >= WAKE_CONFIDENCE_STRICT) {
-      isTrigger = true;
-    } else if (confidence >= WAKE_CONFIDENCE_MODERATE) {
-      consecutiveWakeHits++;
-      if (consecutiveWakeHits >= 3) {
-        isTrigger = true;
-      }
-    } else {
-      consecutiveWakeHits = 0;
+    float twoFrameAvg = 0.5f * (confidence + prevWakeConfidence);
+    if (confidence >= WAKE_STRONG_FRAME && prevWakeConfidence >= WAKE_STRONG_FRAME && twoFrameAvg >= WAKE_STRONG_AVG) {
+      isTrigger = true; // Fast 160ms double confirmation
+    } else if (moderateHits >= 3 && confidence >= 0.74f) {
+      isTrigger = true; // Sustained 240ms confirmation (handles softer utterances over music)
     }
+
+    prevWakeConfidence = confidence;
 
     if (isTrigger) {
       Serial.println(F("**************************************************"));
-      Serial.print(F(">>> WAKE-WORD DETECTED ('Friday')! Confidence: "));
-      Serial.println(confidence, 3);
+      Serial.print(F(">>> WAKE-WORD CONFIRMED ('Friday')! Score: "));
+      Serial.print(confidence, 3);
+      Serial.print(F(" | 2-Frame Avg: "));
+      Serial.println(twoFrameAvg, 3);
       Serial.println(F("**************************************************"));
       speechActiveFrames = 0;
-      consecutiveWakeHits = 0;
+      resetWakeHistory();
       wakeCooldownUntil = millis() + 4000; // 4s cooldown during speech recording and command turnaround
       return true;
     }

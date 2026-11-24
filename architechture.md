@@ -60,21 +60,17 @@ graph TD
 ### 3.2 Pendant Firmware Architecture & Stages
 1. **Audio Acquisition (`PDM.h`)**:
    - Captures raw 16kHz 16-bit PCM mono audio stream directly from PDM hardware peripheral using DMA.
-2. **Stage 0: Micro-VAD Energy Gating & Boot Calibration**:
-   - Dynamic Noise Floor Calibration: Continuously tracks ambient baseline during startup circular buffer fill, settling at the room's true noise floor (~90-110 RMS).
-   - Calculates real-time Root-Mean-Square (RMS) amplitude over 16ms frames.
-   - Calibrated speech threshold (`speechThreshold = backgroundRms * 1.25f + 15.0f`, minimum floor `MIN_SPEECH_RMS = 115.0f`) guarantees ambient room noise floor (85-105 RMS) is strictly below the gate, while reliably passing conversational voice (140-400 RMS).
+2. **Stage 0: DC-Removed Micro-VAD Energy Gating & Boot Calibration**:
+   - Dynamic AC Noise Floor Calibration: `onPDMdata()` subtracts per-frame DC offset before computing Root-Mean-Square (RMS), eliminating static mic/ADC biases (-548 to +211 ADC counts).
+   - Adaptive speech threshold (`speechThreshold = backgroundRms * 1.30f + 15.0f`, minimum floor `MIN_SPEECH_RMS = 95.0f`, background ceiling `MAX_BG_RMS = 300.0f`) ensures soft speech triggers cleanly in silence while preventing loud room music from starving normal-volume speech.
 3. **Stage 1: TinyML Wake-Word Engine ("Friday" via `wakeword_model.h`)**:
-   - Runs a 10,625-parameter Depthwise Separable CNN with a 2-Layer Non-Linear MLP Head (`PhoneticWakeWordNet`) on a 1.5-second (24,000 samples @ 16kHz) rolling circular buffer (~41 KB Flash, ~73 KB RAM).
-   - **4-Layer Defense & Phonetic Feature Architecture**:
-     - **32 Mel Filterbank Channels**: Doubled frequency resolution from 16 to 32 bands, resolving formant trajectories F1 (300-800 Hz) and F2 (800-2200 Hz), separating /f/ (high-frequency frication), /r/ (F3 dip), /aI/ (diphthong glide), /d/ (closure + burst), and /eI/ (coda).
-     - **Depthwise-Separable Convolutions with Folded BatchNorm**: Stabilizes intermediate channel activations during training and folds mathematically into static convolution weights and biases at compile time ($W_{\text{folded}} = W \cdot \frac{\gamma}{\sqrt{\sigma^2 + \epsilon}}$) for zero runtime overhead on Cortex-M4F.
-     - **8-Step Temporal Phoneme Sequence Pooling (`AdaptiveAvgPool2d((1, 8))`):** Preserves 8 chronological phoneme time slices across 32 acoustic channels ($32 \times 8 = 256$ features).
-     - **2-Layer Non-Linear MLP Head (`256 -> 32 -> 1`)**: Replaces linear classifiers with a 32-neuron hidden layer and ReLU activation function. Acts as a non-linear phoneme coincidence gate: requires all phonemic components of "Friday" to be satisfied in sequence, preventing isolated loud vowels, normal conversational speech, coughing, or TV dialogue from swinging the logit positive (0/119 false alarms on continuous JFK speech stream, 0/1,353 false alarms across 110s of real coughing/TV ambiance).
-     - **Layer 1 (VAD)**: Dynamically tracks ambient room noise (`backgroundRms` up to 500.0 RMS). Calibrated speech threshold (`backgroundRms * 1.35f + 20.0f`) maintains speech gate safely above room noise floor (~395 RMS), completely skipping inference during silence.
-     - **Layer 2 (Peak Floor)**: Scans circular buffer peak amplitude with 4-sample stride. If peak is below human vocalization floor (`maxAbs < 260` ADC counts), immediately returns `0.0f` confidence with zero CPU time spent.
+   - Runs a 25,489-parameter Translation-Invariant Depthwise Separable CNN + 1D Temporal Motif Conv (`PhoneticWakeWordNetV2`) on a 1.5-second (24,000 samples @ 16kHz) rolling circular buffer (~143 KB total sketch Flash, ~141 KB total static BSS RAM).
+   - **Per-Window DC Removal & 4-Layer Phonetic Defense Architecture**:
+     - **DC Subtraction (`meanRaw`) & AC Peak Gate (`acMaxAbs < 240.0f`)**: Strips window DC mean prior to AC peak normalization and FFT, ensuring uniform behavior across sessions and preventing DC offsets from bypassing the silence gate.
+     - **32 Mel Filterbank Channels & 4 DS-Conv Blocks (`1->16->32->48->48`)**: Resolves formant trajectories F1 (300-800 Hz) and F2 (800-2200 Hz) into 8 chronological time slices.
+     - **1D Temporal Motif Conv (`Conv1d(48, 64, kernel_size=5)`) + Global Max/Avg Dual-Pooling (`128 -> 32 -> 1`)**: Detects the ordered phoneme progression /f/ -> /r/ -> /aI/ -> /d/ -> /eI/ anywhere inside the 1.5s sliding window (`97.4% - 100.0%` recall across ±400ms shifts), achieving `0` triggers on unseen loud music (562 windows), unseen TV/cough (306 windows), unseen JFK speech (119 windows), and unseen TTS voices (109 clips).
      - **Layer 3 (Spectral Variance Pre-Filter)**: Instantly rejects stationary room noise and hiss (`variance < 0.052f`).
-   - Multi-tier temporal verification: Instant single-frame trigger on strict confidence (`score >= 0.92`, user speech averages 0.9999), and 3-hit debounce for moderate utterances (`score >= 0.75` across ~240ms).
+   - **Multi-Frame Temporal Verification** (no single-frame instant triggers): Fires only on 2 consecutive 80ms frames `>= 0.85` (avg `>= 0.88`, ~160ms) OR 3-of-4 frames `>= 0.70` (latest `>= 0.74`, ~240ms), eliminating isolated 80ms transient glitches.
    - Enforces a 4.0s cooldown after wake-word detection or audio streaming to prevent recursive self-triggering loops.
 4. **Stage 2: BLE GATT Server (`bluefruit.h` via `Bluefruit52Lib`)**:
    - Built on the Nordic SoftDevice S140 stack bundled directly with Seeed nRF52 Boards, configured with `Bluefruit.configPrphBandwidth(BANDWIDTH_MAX)` to support MTU 247.

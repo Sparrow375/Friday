@@ -95,14 +95,15 @@ def save_wav(file_path, samples_float):
 
 
 def compute_energy_envelope(samples):
-    """Computes RMS and Peak envelope over 16ms frames with 8ms hop."""
-    num_frames = (len(samples) - FRAME_SAMPLES) // HOP_SAMPLES + 1
+    """Computes AC RMS and Peak envelope over 16ms frames with 8ms hop (DC-removed)."""
+    samples_ac = samples - np.mean(samples)
+    num_frames = (len(samples_ac) - FRAME_SAMPLES) // HOP_SAMPLES + 1
     rms_env = np.zeros(num_frames, dtype=np.float32)
     peak_env = np.zeros(num_frames, dtype=np.float32)
 
     for i in range(num_frames):
         start = i * HOP_SAMPLES
-        frame = samples[start : start + FRAME_SAMPLES]
+        frame = samples_ac[start : start + FRAME_SAMPLES]
         rms_env[i] = np.sqrt(np.mean(frame**2))
         peak_env[i] = np.max(np.abs(frame))
 
