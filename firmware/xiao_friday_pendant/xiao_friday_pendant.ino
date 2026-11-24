@@ -299,11 +299,19 @@ bool checkWakeWord(float currentRms) {
   return false;
 }
 
-// Command characteristic write callback (phone can echo back transcripts for serial monitoring)
+// Command characteristic write callback:
+// - Single byte 0x10: Phone started TTS speaking -> clear wake cooldown immediately for voice barge-in
+// - Text bytes: Phone echoes back recognized speech for serial debugging
 void command_write_callback(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
   (void) conn_hdl;
   (void) chr;
   if (len == 0 || data == NULL) return;
+
+  if (len == 1 && data[0] == 0x10) {
+    wakeCooldownUntil = millis() + 450; // Brief 450ms acoustic guard, then allow instant barge-in
+    Serial.println(F("[Pendant BLE] TTS speaking started on phone -> barge-in armed"));
+    return;
+  }
 
   // Phone echoes back transcribed text for serial debugging
   Serial.print(F("[Phone STT Echo]: "));
@@ -355,6 +363,8 @@ void connect_callback(uint16_t conn_handle) {
     conn->getPeerName(central_name, sizeof(central_name));
     conn->requestDataLengthUpdate();
     conn->requestMtuExchange(247);
+    conn->requestPHY(BLE_GAP_PHY_2MBPS);
+    conn->requestConnectionParameter(6); // 6 * 1.25ms = 7.5ms fastest BLE connection interval
     Serial.print(F("BLE Connected: "));
     Serial.print(central_name);
     Serial.print(F(" (Negotiating MTU, current: "));
@@ -595,12 +605,12 @@ void loop() {
       // Check for completion of spoken phrase
       bool finishStreaming = false;
       // Hands-Free Wake-Word triggered command mode:
-      // Automatically stop when the user finishes speaking (silence >= 40 frames = ~640ms after speech),
-      // or if silence continues for ~1.5s (90 frames) with no speech,
+      // Automatically stop when the user finishes speaking (silence >= 26 frames = ~416ms after speech),
+      // or if silence continues for ~1.4s (88 frames) with no speech,
       // or max duration 5 seconds (312 chunks)
-      if (speechFrames >= 4 && silenceFrames >= 40) {
+      if (speechFrames >= 4 && silenceFrames >= 26) {
         finishStreaming = true;
-      } else if (speechFrames == 0 && silenceFrames >= 90) {
+      } else if (speechFrames == 0 && silenceFrames >= 88) {
         finishStreaming = true;
       } else if (globalChunkIndex >= 312 || (millis() - recordingStartTime > 5000)) {
         finishStreaming = true;

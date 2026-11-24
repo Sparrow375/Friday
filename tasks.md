@@ -107,3 +107,13 @@
 - [x] 96. Upgrade model to translation-invariant `PhoneticWakeWordNetV2` (32 Mel -> DS-Conv blocks -> Temporal Motif 1D Conv + Global Max/Avg Pool -> MLP) and train on RTX 5060 Ti GPU <!-- id: 95 -->
 - [x] 97. Upgrade firmware trigger & VAD logic in `xiao_friday_pendant.ino` (DC-removed AC RMS, multi-frame consecutive confirmation replacing single-hit `0.92` spike trigger, music-resilient VAD baseline) <!-- id: 96 -->
 - [x] 98. Benchmark strictly on held-out unseen streams, compile firmware (`compile_pendant.py`), update `context.md` & `architechture.md`, commit and push to git <!-- id: 97 -->
+
+## Latency Optimization, Sports Scores, Speak Interrupt & Biometric Screen Lock
+
+- [x] 99. Optimize BLE & Pendant Firmware (`xiao_friday_pendant.ino`, `FridayBleWearableManager.kt`): 7.5ms connection interval + 2M PHY request, 416ms end-of-speech hangover, `0x10` barge-in cooldown clear, stateful `StreamImaAdpcmDecoder` (zero re-decoding / zero per-byte allocs)
+- [x] 100. Optimize JNI & STT Pipeline (`friday_jni.cpp`, `WhisperEngine.kt`, `LlamaEngine.kt`, `FridayService.kt`, `SpeechToTextHelper.kt`): dynamic performance+prime core affinity, atomic Whisper/Llama abort callbacks, BLE Whisper pre-warming, PCM DC/silence-trim/peak normalization, `initial_prompt`, `ContactHelper` BLE correction, and `onEarlyCommit` wiring
+- [x] 101. Eliminate NLU/Execution IPC Bottlenecks (`InstalledAppsCache.kt`, `PostClassificationValidator.kt`, `AppLauncherTool.kt`, `NluIntentClassifier.kt`): 5-min cached installed-app index, ORT session tuning, tensor lifecycle cleanup
+- [x] 102. Implement Live Sports Scores (`SportsScoreTool.kt`, `ToolRegistrar.kt`, `AgentCore.kt`, `PostClassificationValidator.kt`, `MainActivity.kt`): ESPNcricinfo RSS + ESPN soccer JSON APIs, default followed teams (`India`, `Real Madrid`), concise TTS formatter, voice/UI team management
+- [x] 103. Implement Speak Interrupt / Barge-In (`FridayService.kt`, `WakeWordDetector.kt`, `xiao_friday_pendant.ino`): `interruptActivePipeline()` with query generation guard + TTS/LLM/Whisper abort, remove BLE wake-word `THINKING`/`SPEAKING` blocker, and enable `SPEAKING`-only phone-mic `WakeWordDetector` with AEC
+- [x] 104. Implement Biometric-Friendly Screen Lock (`FridayAccessibilityService.kt`, `AutomationBridge.kt`, `SystemControlsTool.kt`, `QueryResult.kt`, `FridayService.kt`): `GLOBAL_ACTION_LOCK_SCREEN` primary path (refuse `DevicePolicyManager.lockNow()` so biometrics stay enabled) + immediate overlay dismiss
+- [x] 105. Add unit tests, compile Android APK (`./gradlew testDebugUnitTest assembleDebug`) and pendant firmware (`scripts/compile_pendant.py`), update `context.md` & `architechture.md`, commit and push to git

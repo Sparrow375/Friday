@@ -155,7 +155,11 @@ class NluIntentClassifier(private val context: Context) {
 
             if (modelBytes != null && tokenizerLoaded) {
                 ortEnv = OrtEnvironment.getEnvironment()
-                ortSession = ortEnv?.createSession(modelBytes)
+                OrtSession.SessionOptions().use { opts ->
+                    opts.setIntraOpNumThreads(2)
+                    opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                    ortSession = ortEnv?.createSession(modelBytes, opts)
+                }
                 isLoaded = true
                 Log.i(TAG, "Joint NLU ONNX session successfully initialized with ${intentLabels.size} intents and ${slotLabels.size} slots")
             } else {
@@ -200,15 +204,14 @@ class NluIntentClassifier(private val context: Context) {
             val attentionMaskBuffer = LongBuffer.wrap(LongArray(seqLen) { 1L })
 
             val env = ortEnv!!
-            val inputIdsTensor = OnnxTensor.createTensor(env, inputIdsBuffer, shape)
-            val attentionMaskTensor = OnnxTensor.createTensor(env, attentionMaskBuffer, shape)
+            OnnxTensor.createTensor(env, inputIdsBuffer, shape).use { inputIdsTensor ->
+                OnnxTensor.createTensor(env, attentionMaskBuffer, shape).use { attentionMaskTensor ->
+                    val inputs = mapOf(
+                        "input_ids" to inputIdsTensor,
+                        "attention_mask" to attentionMaskTensor
+                    )
 
-            val inputs = mapOf(
-                "input_ids" to inputIdsTensor,
-                "attention_mask" to attentionMaskTensor
-            )
-
-            ortSession!!.run(inputs).use { results ->
+                    ortSession!!.run(inputs).use { results ->
                 // 1. Decode Intent Logits
                 val intentOutputValue = results[0].value
                 val intentLogits = when {
@@ -322,6 +325,8 @@ class NluIntentClassifier(private val context: Context) {
 
                 Log.d(TAG, "Joint NLU: intent=$intent ($confidence), slots=$cleanedSlotsMap")
                 return JointNluResult(intent, confidence, cleanedSlotsMap)
+                    }
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed running Joint NLU classification", e)

@@ -108,6 +108,14 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         audioCaptureManager = com.friday.assistant.audio.AudioCaptureManager(this)
         FridayApplication.agentCore  // warm up singleton
 
+        // Pre-warm contacts and installed-app cache in background so first query has zero Binder/DB stall
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                com.friday.assistant.intelligence.ContactHelper.getContacts(this@FridayService)
+                com.friday.assistant.core.InstalledAppsCache.getApps(this@FridayService)
+            } catch (_: Exception) {}
+        }
+
         // 2. Register Agentic Tools
         ToolRegistrar.registerAll(this, FridayApplication.memoryManager)
 
@@ -121,9 +129,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 overlayManager?.updateState(pipelineState.value, "Listening...", trans = text)
             },
             onFinalResult = { finalResult ->
-                serviceScope.launch {
-                    executeAgentQuery(finalResult)
-                }
+                launchAgentQuery(finalResult)
             },
             onRmsUpdate = { amplitude ->
                 if (pipelineState.value == PipelineState.LISTENING) {
@@ -132,7 +138,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             },
             onStateChanged = { state ->
                 transitionToState(state)
-            }
+            },
+            onEarlyCommit = { _ -> /* Activates fast deterministic command early-commit */ }
         ).apply {
             warmUp()
         }
@@ -183,6 +190,21 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             onCommandTextReceived = { text ->
                 onWearableTextCommandReceived(text)
             }
+            // Pre-load Whisper once pendant connects so first voice command incurs zero model-load latency
+            connectionState.onEach { connState ->
+                if (connState == com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.CONNECTED) {
+                    serviceScope.launch(Dispatchers.IO) {
+                        val whisperEngine = FridayApplication.whisperEngine
+                        if (!whisperEngine.isModelLoaded()) {
+                            val whisperPath = modelManager.getWhisperModelPath()
+                            if (File(whisperPath).exists()) {
+                                val ok = whisperEngine.loadModel(whisperPath)
+                                com.friday.assistant.core.FridayLogger.i(TAG, "Pre-warmed Whisper model on BLE connect: $ok")
+                            }
+                        }
+                    }
+                }
+            }.launchIn(serviceScope)
         }
     }
 
@@ -262,33 +284,58 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                     }
                 }
 
-                // Restart wake word only if wake_word_enabled is true
-                startWakeWordListening()
+                // Restore normal wake-word mode; stops listener if 24/7 wake_word_enabled is false
+                wakeWordDetector?.setBargeInMode(false)
+                val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                if (prefs.getBoolean("wake_word_enabled", false)) {
+                    startWakeWordListening()
+                } else {
+                    stopWakeWordListening()
+                }
+            } else if (newState == PipelineState.SPEAKING) {
+                // Arm phone-mic barge-in listener during active TTS (zero idle battery cost)
+                val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                val bargeInEnabled = prefs.getBoolean("barge_in_enabled", true)
+                if (bargeInEnabled) {
+                    startWakeWordListening(forBargeIn = true)
+                } else {
+                    stopWakeWordListening()
+                }
+                // Tell BLE pendant to clear wake cooldown for instant voice barge-in
+                bleWearableManager?.sendControlByte(0x10)
             } else {
                 stopWakeWordListening()
             }
         }
     }
 
-    private fun startWakeWordListening() {
+    private fun startWakeWordListening(forBargeIn: Boolean = false) {
         val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
         val enabled = prefs.getBoolean("assistant_enabled", true)
         val wakeWordEnabled = prefs.getBoolean("wake_word_enabled", false)
-        if (!enabled || !wakeWordEnabled) {
-            com.friday.assistant.core.FridayLogger.d(TAG, "Background wake-word listening inactive (assistantEnabled=$enabled, wakeWordEnabled=$wakeWordEnabled)")
+        val bargeInEnabled = prefs.getBoolean("barge_in_enabled", true)
+        if (!enabled || (!forBargeIn && !wakeWordEnabled) || (forBargeIn && !bargeInEnabled)) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "Wake-word listening inactive (assistantEnabled=$enabled, wakeWordEnabled=$wakeWordEnabled, forBargeIn=$forBargeIn)")
             return
         }
 
         val hasMicPerm = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         if (!hasMicPerm) {
-            com.friday.assistant.core.FridayLogger.w(TAG, "No mic permission - cannot start background wake-word listening")
+            com.friday.assistant.core.FridayLogger.w(TAG, "No mic permission - cannot start wake-word listening")
             return
         }
 
-        if (pipelineState.value == PipelineState.IDLE) {
-            com.friday.assistant.core.FridayLogger.d(TAG, "Starting low-power VAD-gated wake-word listening")
+        val allowedState = if (forBargeIn) {
+            pipelineState.value == PipelineState.SPEAKING
+        } else {
+            pipelineState.value == PipelineState.IDLE
+        }
+
+        if (allowedState) {
+            com.friday.assistant.core.FridayLogger.d(TAG, "Starting wake-word listening (forBargeIn=$forBargeIn)")
             val detector = wakeWordDetector
             if (detector != null) {
+                detector.setBargeInMode(forBargeIn)
                 audioCaptureManager.registerListener(detector)
                 detector.startListening()
                 audioCaptureManager.startCapture()
@@ -323,7 +370,37 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         }
     }
 
+    private var currentQueryJob: kotlinx.coroutines.Job? = null
+    private var queryGenerationId: Long = 0L
+
+    private fun launchAgentQuery(query: String) {
+        currentQueryJob?.cancel()
+        val myGen = ++queryGenerationId
+        currentQueryJob = serviceScope.launch {
+            executeAgentQuery(query, myGen)
+        }
+    }
+
+    private fun interruptActivePipeline(source: String) {
+        com.friday.assistant.core.FridayLogger.i(TAG, "Interrupting active pipeline (source=$source, state=${pipelineState.value})")
+        queryGenerationId++
+        cancelTtsSafetyTimeout()
+        try {
+            tts?.stop()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping TTS during interrupt", e)
+        }
+        currentQueryJob?.cancel()
+        currentQueryJob = null
+        partialWhisperJob?.cancel()
+        partialWhisperJob = null
+        streamingAudioBuffer.clear()
+        FridayApplication.llamaEngine.abortGeneration()
+        FridayApplication.whisperEngine.abortTranscription()
+    }
+
     private suspend fun onWakeWordTriggered() {
+        interruptActivePipeline("phone_wake")
         overlayManager?.show()
         transitionToState(PipelineState.LISTENING)
         // No delay needed — SpeechRecognizer manages its own audio session setup
@@ -346,12 +423,14 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         }
     }
 
-    private suspend fun executeAgentQuery(query: String) {
+    private suspend fun executeAgentQuery(query: String, genId: Long = queryGenerationId) {
         val cleanQuery = cleanAndValidateTranscript(query)
         if (cleanQuery.isBlank()) {
             com.friday.assistant.core.FridayLogger.w(TAG, "executeAgentQuery rejected invalid/garbled query: '$query'")
-            transitionToState(PipelineState.IDLE)
-            overlayManager?.dismiss()
+            if (genId == queryGenerationId) {
+                transitionToState(PipelineState.IDLE)
+                overlayManager?.dismiss()
+            }
             return
         }
 
@@ -362,6 +441,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         val queryResult = agentCore.processQuery(cleanQuery) { token ->
             serviceScope.launch {
+                if (genId != queryGenerationId) return@launch
                 if (pipelineState.value != PipelineState.THINKING && pipelineState.value != PipelineState.SPEAKING) {
                     transitionToState(PipelineState.THINKING, statusMessage = "Thinking...", transcriptText = query)
                 }
@@ -391,6 +471,11 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             }
         }
 
+        if (genId != queryGenerationId) {
+            com.friday.assistant.core.FridayLogger.i(TAG, "Discarding stale query result (genId=$genId != current=$queryGenerationId)")
+            return
+        }
+
         // Final unconditional UI flush — ensures the complete response is always shown
         // even if the last tokens were gated out by the 50ms debounce
         if (responseAccumulator.isNotEmpty()) {
@@ -403,6 +488,13 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         }
 
         val response = queryResult.message
+
+        if (queryResult.shouldDismissOverlay) {
+            com.friday.assistant.core.FridayLogger.i(TAG, "Query requested immediate overlay dismiss (e.g., lock_phone)")
+            overlayManager?.dismiss()
+            transitionToState(PipelineState.IDLE)
+            return
+        }
 
         if (queryResult.isFastTool) {
             com.friday.assistant.core.FridayLogger.d(TAG, "Fast tool result received (${response.length} chars): ${response.take(100)}")
@@ -671,35 +763,32 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         if (!prefs.getBoolean("assistant_enabled", true)) return
 
         val now = System.currentTimeMillis()
-        if (now - lastWearableWakeTriggerMs < 2000L) {
+        if (now - lastWearableWakeTriggerMs < 900L) {
             com.friday.assistant.core.FridayLogger.d(TAG, "Ignoring wearable wake trigger — inside cooldown (${now - lastWearableWakeTriggerMs}ms)")
             return
         }
-        if (pipelineState.value == PipelineState.THINKING || pipelineState.value == PipelineState.SPEAKING) {
-            com.friday.assistant.core.FridayLogger.d(TAG, "Ignoring wearable wake trigger while assistant is ${pipelineState.value}")
-            return
-        }
         lastWearableWakeTriggerMs = now
-        isPendantWakeActive = true
 
-        com.friday.assistant.core.FridayLogger.i(TAG, "Wearable wake-word ('Friday') confirmed by pendant — activating assistant")
-
-        // Timeout safeguard: if no command speech follows within 6.5s, dismiss overlay cleanly
-        pendantWakeTimeoutJob?.cancel()
-        pendantWakeTimeoutJob = serviceScope.launch {
-            kotlinx.coroutines.delay(6500L)
-            if (isPendantWakeActive && pipelineState.value == PipelineState.LISTENING) {
-                com.friday.assistant.core.FridayLogger.i(TAG, "Pendant wake timed out without command speech — dismissing overlay")
-                isPendantWakeActive = false
-                transitionToState(PipelineState.IDLE)
-                overlayManager?.dismiss()
-            }
-        }
+        com.friday.assistant.core.FridayLogger.i(TAG, "Wearable wake-word ('Friday') confirmed by pendant — activating assistant (was ${pipelineState.value})")
 
         serviceScope.launch {
-            if (pipelineState.value == PipelineState.SPEAKING) {
-                try { tts?.stop() } catch (e: Exception) { Log.e(TAG, "Error stopping TTS", e) }
+            if (pipelineState.value != PipelineState.IDLE) {
+                interruptActivePipeline("wearable_wake")
             }
+            isPendantWakeActive = true
+
+            // Timeout safeguard: if no command speech follows within 6.5s, dismiss overlay cleanly
+            pendantWakeTimeoutJob?.cancel()
+            pendantWakeTimeoutJob = serviceScope.launch {
+                kotlinx.coroutines.delay(6500L)
+                if (isPendantWakeActive && pipelineState.value == PipelineState.LISTENING) {
+                    com.friday.assistant.core.FridayLogger.i(TAG, "Pendant wake timed out without command speech — dismissing overlay")
+                    isPendantWakeActive = false
+                    transitionToState(PipelineState.IDLE)
+                    overlayManager?.dismiss()
+                }
+            }
+
             overlayManager?.show()
             transitionToState(PipelineState.LISTENING, statusMessage = "Listening to Pendant...", transcriptText = "Say command into pendant...")
         }
@@ -734,10 +823,11 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         streamingAudioBuffer.add(chunkSamples)
 
-        // 2. Real-time partial transcription every ~20 chunks (~320ms)
-        if (chunkIdx - lastPartialTranscribeChunk >= 20 && partialWhisperJob?.isActive != true) {
+        // 2. Real-time partial transcription after >= 1s audio, throttled to every ~40 chunks (~640ms)
+        if (chunkIdx >= 62 && chunkIdx - lastPartialTranscribeChunk >= 40 && partialWhisperJob?.isActive != true) {
             lastPartialTranscribeChunk = chunkIdx
             val totalSamples = streamingAudioBuffer.sumOf { it.size }
+            if (totalSamples < 16000) return
             val snapshot = FloatArray(totalSamples)
             var offset = 0
             for (arr in streamingAudioBuffer) {
@@ -753,8 +843,9 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                         whisperEngine.loadModel(whisperPath)
                     }
                 }
-                if (whisperEngine.isModelLoaded() && snapshot.size >= 4000) {
-                    val rawPartial = whisperEngine.transcribe(snapshot).trim()
+                if (whisperEngine.isModelLoaded()) {
+                    val prepared = preprocessPendantAudio(snapshot)
+                    val rawPartial = whisperEngine.transcribe(prepared, buildWhisperInitialPrompt()).trim()
                     val cleanPartial = cleanAndValidateTranscript(rawPartial, isPartial = true)
                     if (cleanPartial.isNotBlank() && pipelineState.value == PipelineState.LISTENING && isPendantWakeActive) {
                         withContext(Dispatchers.Main) {
@@ -771,6 +862,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     }
 
     private fun onWearableAudioCommandReceived(audioSamples: FloatArray) {
+        // Immediately abort any in-flight partial Whisper pass so final transcription never blocks on mutex
+        FridayApplication.whisperEngine.abortTranscription()
         partialWhisperJob?.cancel()
         pendantWakeTimeoutJob?.cancel()
         streamingAudioBuffer.clear()
@@ -816,27 +909,33 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 }
             }
 
+            val preparedSamples = preprocessPendantAudio(audioSamples)
             val rawTranscribed = if (whisperEngine.isModelLoaded()) {
-                whisperEngine.transcribe(audioSamples).trim()
+                whisperEngine.transcribe(preparedSamples, buildWhisperInitialPrompt()).trim()
             } else {
                 ""
             }
 
             val cleanTranscribed = cleanAndValidateTranscript(rawTranscribed)
+            val correctedTranscribed = if (cleanTranscribed.isNotBlank()) {
+                com.friday.assistant.intelligence.ContactHelper.correctTranscript(this@FridayService, cleanTranscribed)
+            } else {
+                ""
+            }
 
-            if (cleanTranscribed.isNotBlank()) {
-                com.friday.assistant.core.FridayLogger.i(TAG, "★ Chip speech cleanly transcribed: '$cleanTranscribed'")
+            if (correctedTranscribed.isNotBlank()) {
+                com.friday.assistant.core.FridayLogger.i(TAG, "★ Chip speech cleanly transcribed: '$correctedTranscribed' (raw='$cleanTranscribed')")
 
                 // Echo back to chip over BLE so it prints to the chip's Serial Monitor
-                bleWearableManager?.sendTextToWearable(cleanTranscribed)
+                bleWearableManager?.sendTextToWearable(correctedTranscribed)
 
                 overlayManager?.updateState(
                     PipelineState.THINKING,
                     "Processing command...",
-                    trans = cleanTranscribed,
-                    resp = cleanTranscribed
+                    trans = correctedTranscribed,
+                    resp = correctedTranscribed
                 )
-                executeAgentQuery(cleanTranscribed)
+                launchAgentQuery(correctedTranscribed)
             } else {
                 com.friday.assistant.core.FridayLogger.w(TAG, "Pendant transcription was invalid or hallucinated: '$rawTranscribed'")
                 overlayManager?.updateState(
@@ -855,11 +954,57 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     private fun onWearableTextCommandReceived(text: String) {
         val clean = cleanAndValidateTranscript(text)
         if (clean.isNotBlank()) {
-            serviceScope.launch {
-                overlayManager?.show()
-                executeAgentQuery(clean)
+            overlayManager?.show()
+            launchAgentQuery(clean)
+        }
+    }
+
+    /**
+     * Removes DC offset, trims leading/trailing silence (keeping 120ms speech padding),
+     * and applies soft peak normalization to improve Whisper Tiny transcription accuracy on quiet pendant audio.
+     */
+    private fun preprocessPendantAudio(samples: FloatArray): FloatArray {
+        if (samples.isEmpty()) return samples
+
+        var sum = 0.0
+        for (s in samples) sum += s
+        val mean = (sum / samples.size).toFloat()
+
+        var firstSpeech = -1
+        var lastSpeech = -1
+        var maxPeak = 0.0f
+        val ac = FloatArray(samples.size)
+        val silenceThresh = 0.014f
+
+        for (i in samples.indices) {
+            val v = samples[i] - mean
+            ac[i] = v
+            val absV = kotlin.math.abs(v)
+            if (absV > maxPeak) maxPeak = absV
+            if (absV >= silenceThresh) {
+                if (firstSpeech == -1) firstSpeech = i
+                lastSpeech = i
             }
         }
+
+        if (firstSpeech == -1) return ac
+
+        val pad = 1920 // 120ms @ 16kHz
+        val startIdx = (firstSpeech - pad).coerceAtLeast(0)
+        val endIdx = (lastSpeech + pad).coerceAtMost(ac.size - 1)
+        val trimmedLen = endIdx - startIdx + 1
+        val out = FloatArray(trimmedLen)
+        val gain = if (maxPeak in 0.015f..0.60f) (0.75f / maxPeak).coerceAtMost(8.0f) else 1.0f
+
+        for (i in 0 until trimmedLen) {
+            out[i] = (ac[startIdx + i] * gain).coerceIn(-1.0f, 1.0f)
+        }
+        return out
+    }
+
+    private fun buildWhisperInitialPrompt(): String {
+        val teams = com.friday.assistant.tools.search.SportsPrefs.getAllFollowedTeams(this).joinToString(", ")
+        return "Friday, WhatsApp, Spotify, YouTube, cricket score, football score, $teams, flashlight, brightness, volume, WiFi, Bluetooth, alarm, timer, reminder, lock the phone."
     }
 
     private fun cleanAndValidateTranscript(raw: String, isPartial: Boolean = false): String {
@@ -901,8 +1046,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         overlayManager?.show()
         if (startListening) {
             serviceScope.launch {
-                if (pipelineState.value == PipelineState.SPEAKING) {
-                    try { tts?.stop() } catch (e: Exception) { Log.e(TAG, "Error stopping TTS", e) }
+                if (pipelineState.value != PipelineState.IDLE) {
+                    interruptActivePipeline("show_overlay")
                 }
                 transitionToState(PipelineState.LISTENING)
                 speechToTextHelper.startListening()

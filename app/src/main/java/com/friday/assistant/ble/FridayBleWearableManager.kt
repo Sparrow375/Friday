@@ -89,11 +89,14 @@ class FridayBleWearableManager private constructor(private val context: Context)
     private var isScanning = false
     private var isEnabled = false
 
-    // Incoming audio packet reassembly
+    // Incoming audio packet reassembly & zero-allocation streaming ADPCM decoder
     private var expectedChunks = 0
     private var expectedBytes = 0
     private var sampleRate = 16000
-    private val audioBufferAccumulator = ByteArrayOutputStream()
+    private val streamAdpcmDecoder = StreamImaAdpcmDecoder()
+    private val decodedChunksAccumulator = ArrayList<FloatArray>()
+    private var decodedTotalSamples = 0
+    private val audioStreamLock = Any()
 
     // Live debug StateFlows for UI & Service
     private val _isAudioStreaming = MutableStateFlow(false)
@@ -111,6 +114,27 @@ class FridayBleWearableManager private constructor(private val context: Context)
     var onAudioChunkReceived: ((Int, FloatArray) -> Unit)? = null
     var onCommandAudioReceived: ((FloatArray) -> Unit)? = null
     var onCommandTextReceived: ((String) -> Unit)? = null
+
+    fun sendControlByte(opcode: Byte) {
+        val gatt = activeGatt ?: return
+        val service = gatt.getService(SERVICE_UUID) ?: return
+        val char = service.getCharacteristic(COMMAND_CHAR_UUID) ?: return
+        val bytes = byteArrayOf(opcode)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(char, bytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+            } else {
+                @Suppress("DEPRECATION")
+                char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                @Suppress("DEPRECATION")
+                char.value = bytes
+                @Suppress("DEPRECATION")
+                gatt.writeCharacteristic(char)
+            }
+        } catch (e: Exception) {
+            FridayLogger.w(TAG, "Error sending control byte 0x%02X to wearable: ${e.message}".format(opcode))
+        }
+    }
 
     fun sendTextToWearable(text: String) {
         val gatt = activeGatt ?: return
@@ -399,36 +423,55 @@ class FridayBleWearableManager private constructor(private val context: Context)
     }
 
     private val streamTimeoutRunnable = Runnable {
-        if (_isAudioStreaming.value || audioBufferAccumulator.size() > 0) {
-            FridayLogger.w(TAG, "Wearable audio stream silence timeout reached (no chunks for 1200ms) - finalizing buffer")
+        if (_isAudioStreaming.value || synchronized(audioStreamLock) { decodedTotalSamples > 0 }) {
+            FridayLogger.w(TAG, "Wearable audio stream silence timeout reached (no chunks for 900ms) - finalizing buffer")
             finalizeAudioStream()
         }
     }
 
     private fun resetStreamTimeout() {
         mainHandler.removeCallbacks(streamTimeoutRunnable)
-        mainHandler.postDelayed(streamTimeoutRunnable, 1200L)
+        mainHandler.postDelayed(streamTimeoutRunnable, 900L)
+    }
+
+    private fun resetStreamBuffers() {
+        synchronized(audioStreamLock) {
+            streamAdpcmDecoder.reset()
+            decodedChunksAccumulator.clear()
+            decodedTotalSamples = 0
+        }
     }
 
     private fun finalizeAudioStream() {
         mainHandler.removeCallbacks(streamTimeoutRunnable)
 
-        if (!_isAudioStreaming.value && audioBufferAccumulator.size() == 0) return
+        val chunksSnapshot: List<FloatArray>
+        val totalSamples: Int
+        synchronized(audioStreamLock) {
+            if (!_isAudioStreaming.value && decodedTotalSamples == 0) return
+            chunksSnapshot = ArrayList(decodedChunksAccumulator)
+            totalSamples = decodedTotalSamples
+            decodedChunksAccumulator.clear()
+            decodedTotalSamples = 0
+            streamAdpcmDecoder.reset()
+        }
 
         _isAudioStreaming.value = false
         val chunks = _streamChunksReceived.value
         _lastAudioDurationMs.value = chunks * 16
 
-        val compressedBytes = audioBufferAccumulator.toByteArray()
-        audioBufferAccumulator.reset()
-        FridayLogger.i(TAG, "Wearable audio stream finalized: ${compressedBytes.size} compressed bytes ($chunks chunks)")
+        FridayLogger.i(TAG, "Wearable audio stream finalized: $totalSamples decoded PCM samples ($chunks chunks, ${totalSamples / 16000.0f}s)")
 
-        if (compressedBytes.isNotEmpty()) {
+        if (totalSamples > 0) {
             scope.launch(Dispatchers.Default) {
-                val decodedSamples = ImaAdpcmDecoder.decode(compressedBytes)
-                FridayLogger.i(TAG, "Decoded IMA ADPCM -> ${decodedSamples.size} float PCM samples (${decodedSamples.size / 16000.0f}s)")
+                val merged = FloatArray(totalSamples)
+                var offset = 0
+                for (chunk in chunksSnapshot) {
+                    System.arraycopy(chunk, 0, merged, offset, chunk.size)
+                    offset += chunk.size
+                }
                 mainHandler.post {
-                    onCommandAudioReceived?.invoke(decodedSamples)
+                    onCommandAudioReceived?.invoke(merged)
                 }
             }
         }
@@ -453,7 +496,7 @@ class FridayBleWearableManager private constructor(private val context: Context)
                         FridayLogger.d(TAG, "★ Wearable reported VOICE RECORDING started!")
                         _isAudioStreaming.value = true
                         _streamChunksReceived.value = 0
-                        audioBufferAccumulator.reset()
+                        resetStreamBuffers()
                         resetStreamTimeout()
                         mainHandler.post {
                             onAudioStreamStarted?.invoke()
@@ -461,8 +504,9 @@ class FridayBleWearableManager private constructor(private val context: Context)
                     }
                     0x00 -> {
                         FridayLogger.d(TAG, "Wearable is idle.")
-                        if (audioBufferAccumulator.size() > 0) {
-                            FridayLogger.i(TAG, "Wearable signaled IDLE while ${audioBufferAccumulator.size()} audio bytes remain in buffer; finalizing stream")
+                        val hasPendingAudio = synchronized(audioStreamLock) { decodedTotalSamples > 0 }
+                        if (hasPendingAudio) {
+                            FridayLogger.i(TAG, "Wearable signaled IDLE while decoded audio remains in buffer; finalizing stream")
                             finalizeAudioStream()
                         } else {
                             _isAudioStreaming.value = false
@@ -502,7 +546,7 @@ class FridayBleWearableManager private constructor(private val context: Context)
 
                                 _isAudioStreaming.value = true
                                 _streamChunksReceived.value = 0
-                                audioBufferAccumulator.reset()
+                                resetStreamBuffers()
                                 resetStreamTimeout()
                                 FridayLogger.i(TAG, "Incoming Wearable Audio Header: $expectedChunks chunks, $expectedBytes bytes @ ${sampleRate}Hz")
 
@@ -519,14 +563,18 @@ class FridayBleWearableManager private constructor(private val context: Context)
                         // Audio Chunk: 0x02 | chunkIndex (2B) | chunkPayload
                         if (value.size > 3) {
                             val chunkIdx = ((value[1].toInt() and 0xFF) shl 8) or (value[2].toInt() and 0xFF)
-                            val payload = value.copyOfRange(3, value.size)
-                            audioBufferAccumulator.write(payload, 0, payload.size)
+                            val payloadLen = value.size - 3
+                            val chunkSamples = synchronized(audioStreamLock) {
+                                val decoded = streamAdpcmDecoder.decodeChunk(value, 3, payloadLen)
+                                decodedChunksAccumulator.add(decoded)
+                                decodedTotalSamples += decoded.size
+                                decoded
+                            }
                             _streamChunksReceived.value = _streamChunksReceived.value + 1
                             _isAudioStreaming.value = true
 
                             resetStreamTimeout()
 
-                            val chunkSamples = ImaAdpcmDecoder.decode(payload)
                             mainHandler.post {
                                 onAudioChunkReceived?.invoke(chunkIdx, chunkSamples)
                             }
@@ -567,38 +615,76 @@ object ImaAdpcmDecoder {
     )
 
     fun decode(adpcmData: ByteArray): FloatArray {
-        val out = FloatArray(adpcmData.size * 2)
+        val decoder = StreamImaAdpcmDecoder()
+        return decoder.decodeChunk(adpcmData, 0, adpcmData.size)
+    }
+}
+
+/**
+ * Stateful, zero-allocation IMA-ADPCM 4-bit streaming decoder.
+ * Preserves predictor state (valprev, index) across BLE chunk boundaries to eliminate
+ * inter-chunk clicks/drift and avoid redundant end-of-stream re-decoding.
+ */
+class StreamImaAdpcmDecoder {
+    companion object {
+        private val STEP_TABLE = intArrayOf(
+            7, 8, 9, 10, 11, 12, 13, 14, 16, 17,
+            19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+            50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
+            130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
+            337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
+            876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
+            2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358,
+            5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899,
+            15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
+        )
+
+        private val INDEX_TABLE = intArrayOf(
+            -1, -1, -1, -1, 2, 4, 6, 8,
+            -1, -1, -1, -1, 2, 4, 6, 8
+        )
+    }
+
+    private var valprev = 0
+    private var index = 0
+
+    fun reset() {
+        valprev = 0
+        index = 0
+    }
+
+    private fun decodeNibble(delta: Int): Float {
+        val step = STEP_TABLE[index]
+        var vpdiff = step shr 3
+        if ((delta and 4) != 0) vpdiff += step
+        if ((delta and 2) != 0) vpdiff += (step shr 1)
+        if ((delta and 1) != 0) vpdiff += (step shr 2)
+
+        if ((delta and 8) != 0) {
+            valprev -= vpdiff
+        } else {
+            valprev += vpdiff
+        }
+
+        if (valprev > 32767) valprev = 32767
+        else if (valprev < -32768) valprev = -32768
+
+        index += INDEX_TABLE[delta]
+        if (index < 0) index = 0
+        else if (index > 88) index = 88
+
+        return valprev / 32768.0f
+    }
+
+    fun decodeChunk(adpcmData: ByteArray, offset: Int = 0, length: Int = adpcmData.size - offset): FloatArray {
+        if (length <= 0) return FloatArray(0)
+        val out = FloatArray(length * 2)
         var outIdx = 0
-        var valprev = 0
-        var index = 0
-
-        for (b in adpcmData) {
-            val byteVal = b.toInt() and 0xFF
-            val nibble1 = byteVal and 0x0F
-            val nibble2 = (byteVal shr 4) and 0x0F
-
-            for (delta in intArrayOf(nibble1, nibble2)) {
-                val step = STEP_TABLE[index]
-                var vpdiff = step shr 3
-                if ((delta and 4) != 0) vpdiff += step
-                if ((delta and 2) != 0) vpdiff += (step shr 1)
-                if ((delta and 1) != 0) vpdiff += (step shr 2)
-
-                if ((delta and 8) != 0) {
-                    valprev -= vpdiff
-                } else {
-                    valprev += vpdiff
-                }
-
-                if (valprev > 32767) valprev = 32767
-                else if (valprev < -32768) valprev = -32768
-
-                index += INDEX_TABLE[delta]
-                if (index < 0) index = 0
-                else if (index > 88) index = 88
-
-                out[outIdx++] = valprev / 32768.0f
-            }
+        val end = offset + length
+        for (i in offset until end) {
+            val byteVal = adpcmData[i].toInt() and 0xFF
+            out[outIdx++] = decodeNibble(byteVal and 0x0F)
+            out[outIdx++] = decodeNibble((byteVal shr 4) and 0x0F)
         }
         return out
     }

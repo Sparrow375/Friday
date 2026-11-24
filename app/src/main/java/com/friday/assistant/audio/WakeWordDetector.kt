@@ -36,6 +36,8 @@ class WakeWordDetector(
         private const val SAMPLE_RATE = 16000
         private const val WINDOW_SIZE = 24000 // 1.5 seconds at 16kHz
         private const val CONFIDENCE_THRESHOLD = 0.70f
+        private const val BARGE_IN_CONFIDENCE_THRESHOLD = 0.78f
+        private const val BARGE_IN_GRACE_MS = 350L
         private const val MIN_SPEECH_RMS = 60f
     }
 
@@ -43,6 +45,12 @@ class WakeWordDetector(
 
     @Volatile
     private var isListeningEnabled = false
+
+    @Volatile
+    private var isBargeInMode = false
+
+    @Volatile
+    private var listeningStartMs = 0L
 
     private var ortEnv: OrtEnvironment? = null
     private var ortSession: OrtSession? = null
@@ -81,13 +89,18 @@ class WakeWordDetector(
 
     fun isModelLoaded(): Boolean = ortSession != null
 
+    fun setBargeInMode(active: Boolean) {
+        isBargeInMode = active
+    }
+
     fun startListening() {
         isListeningEnabled = true
+        listeningStartMs = System.currentTimeMillis()
         strideCounter = 0
         ringWriteIndex = 0
         silentFrames = 0
         Arrays.fill(ringBuffer, 0.toShort())
-        Log.i(TAG, "Two-stage low-power wake-word detection started (modelLoaded=${isModelLoaded()})")
+        Log.i(TAG, "Two-stage low-power wake-word detection started (modelLoaded=${isModelLoaded()}, bargeIn=$isBargeInMode)")
     }
 
     fun stopListening() {
@@ -188,8 +201,13 @@ class WakeWordDetector(
             val expPos = exp(posLogit - maxLogit)
             val confidence = expPos / (expNeg + expPos)
 
-            if (confidence >= CONFIDENCE_THRESHOLD) {
-                Log.i(TAG, "Wake-word 'Friday' DETECTED! (confidence: ${(confidence * 100).toInt()}%)")
+            val activeThreshold = if (isBargeInMode) BARGE_IN_CONFIDENCE_THRESHOLD else CONFIDENCE_THRESHOLD
+            if (isBargeInMode && (System.currentTimeMillis() - listeningStartMs) < BARGE_IN_GRACE_MS) {
+                return
+            }
+
+            if (confidence >= activeThreshold) {
+                Log.i(TAG, "Wake-word 'Friday' DETECTED! (confidence: ${(confidence * 100).toInt()}%, bargeIn=$isBargeInMode)")
                 // Clear buffer and pause detection to avoid repeated triggers
                 ringWriteIndex = 0
                 Arrays.fill(ringBuffer, 0.toShort())

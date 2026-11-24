@@ -2,6 +2,7 @@ package com.friday.assistant.intelligence
 
 import android.content.Context
 import android.util.Log
+import com.friday.assistant.core.InstalledAppsCache
 
 object PostClassificationValidator {
     private const val TAG = "PostClassificationValidator"
@@ -26,12 +27,27 @@ object PostClassificationValidator {
         // Bias confidence based on the active dialogue domain
         finalConfidence = dialogueStateTracker.biasConfidence(finalIntent, finalConfidence)
 
+        // 0. Sports score guard: prevent Google search / app-launch hijacking
+        val originalLowerForSports = preprocessed.originalText.lowercase()
+        val isSportsQuery = originalLowerForSports.contains("cricket score") ||
+            originalLowerForSports.contains("football score") ||
+            originalLowerForSports.contains("soccer score") ||
+            originalLowerForSports.contains("ipl score") ||
+            originalLowerForSports.contains("match score") ||
+            (originalLowerForSports.contains("score") &&
+                (originalLowerForSports.contains("cricket") || originalLowerForSports.contains("football") ||
+                    originalLowerForSports.contains("real madrid") || originalLowerForSports.contains("india") ||
+                    originalLowerForSports.contains("match")))
+        if (isSportsQuery) {
+            return ValidationResult("sports_score", 0.96f, routeToLlm = false)
+        }
+
         // 1. Play media vs Open app collision check
         if (finalIntent == "play_media" || finalIntent == "play_spotify" || finalIntent == "play_youtube") {
             val queryText = preprocessed.extractedEntities["[QUOTE]"] 
                 ?: EntityExtractor.extractMediaQuery(preprocessed.originalText).first
             
-            if (queryText.isNotBlank() && isAppInstalled(context, queryText)) {
+            if (queryText.isNotBlank() && InstalledAppsCache.isAppInstalled(context, queryText)) {
                 Log.i(TAG, "Reclassifying play_media query '$queryText' as open_app because it matches an installed application.")
                 finalIntent = "open_app"
                 finalConfidence = 0.95f
@@ -84,20 +100,5 @@ object PostClassificationValidator {
         }
 
         return ValidationResult(finalIntent, finalConfidence, routeToLlm)
-    }
-
-    private fun isAppInstalled(context: Context, appName: String): Boolean {
-        return try {
-            val pm = context.packageManager
-            val packages = pm.getInstalledPackages(0)
-            val cleanName = appName.lowercase().trim()
-            packages.any {
-                val label = it.applicationInfo?.loadLabel(pm)?.toString()?.lowercase()?.trim() ?: ""
-                label.isNotEmpty() && (label == cleanName || label.replace(" ", "") == cleanName.replace(" ", ""))
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error checking installed apps", e)
-            false
-        }
     }
 }

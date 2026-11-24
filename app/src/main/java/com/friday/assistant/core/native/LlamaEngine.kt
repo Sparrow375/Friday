@@ -33,8 +33,20 @@ class LlamaEngine {
     private external fun initLlama(modelPath: String): Long
     private external fun freeLlama(statePtr: Long)
     private external fun clearLlamaHistory(statePtr: Long)
+    private external fun abortLlama()
     private external fun generateLlama(statePtr: Long, promptStr: String, maxTokens: Int, temp: Float): String
     private external fun generateLlamaStream(statePtr: Long, promptStr: String, maxTokens: Int, temp: Float, callback: TokenCallback): String
+
+    /**
+     * Signals any active Llama decoding loop to abort immediately (e.g. on voice barge-in).
+     */
+    fun abortGeneration() {
+        try {
+            abortLlama()
+        } catch (e: Throwable) {
+            Log.w(TAG, "Error signaling Llama abort", e)
+        }
+    }
 
     suspend fun loadModel(modelPath: String): Boolean = mutex.withLock {
         withContext(Dispatchers.IO) {

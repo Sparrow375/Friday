@@ -15,6 +15,7 @@ import com.friday.assistant.tools.notes.RecallPreferenceTool
 import com.friday.assistant.tools.notes.RememberPreferenceTool
 import com.friday.assistant.tools.notifications.NotificationTool
 import com.friday.assistant.tools.phone.PhoneTool
+import com.friday.assistant.tools.search.SportsScoreTool
 import com.friday.assistant.tools.search.WebSearchTool
 import com.friday.assistant.tools.system.ScreenshotTool
 import com.friday.assistant.tools.system.SystemControlsTool
@@ -28,6 +29,7 @@ object ToolRegistrar {
         ToolRegistry.register(AppLauncherTool(context, memoryManager))
         ToolRegistry.register(MediaControlTool(context))
         ToolRegistry.register(WebSearchTool(context))
+        ToolRegistry.register(SportsScoreTool(context))
         ToolRegistry.register(ClipboardTool(context))
         ToolRegistry.register(NotesTool())
         ToolRegistry.register(CalendarTool(context))

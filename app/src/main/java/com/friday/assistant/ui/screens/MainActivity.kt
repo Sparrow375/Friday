@@ -164,6 +164,16 @@ class MainActivity : ComponentActivity() {
         var wakeWordEnabled by remember {
             mutableStateOf(context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("wake_word_enabled", false))
         }
+        var bargeInEnabled by remember {
+            mutableStateOf(context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("barge_in_enabled", true))
+        }
+        var cricketTeams by remember {
+            mutableStateOf(com.friday.assistant.tools.search.SportsPrefs.getCricketTeams(context))
+        }
+        var footballTeams by remember {
+            mutableStateOf(com.friday.assistant.tools.search.SportsPrefs.getFootballTeams(context))
+        }
+        var newSportsTeamText by remember { mutableStateOf("") }
         var hapticFeedbackEnabled by remember {
             mutableStateOf(context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE).getBoolean("haptic_feedback_enabled", true))
         }
@@ -287,6 +297,9 @@ class MainActivity : ComponentActivity() {
                 gestureActivationEnabled = aPrefs.getBoolean("gesture_activation_enabled", true)
                 gestureTriggerMode = aPrefs.getString("gesture_trigger_mode", "volume_down_double") ?: "volume_down_double"
                 wakeWordEnabled = aPrefs.getBoolean("wake_word_enabled", false)
+                bargeInEnabled = aPrefs.getBoolean("barge_in_enabled", true)
+                cricketTeams = com.friday.assistant.tools.search.SportsPrefs.getCricketTeams(context)
+                footballTeams = com.friday.assistant.tools.search.SportsPrefs.getFootballTeams(context)
                 hapticFeedbackEnabled = aPrefs.getBoolean("haptic_feedback_enabled", true)
                 audioChimeEnabled = aPrefs.getBoolean("audio_chime_enabled", true)
                 bleWearableEnabled = aPrefs.getBoolean("ble_wearable_enabled", true)
@@ -807,6 +820,48 @@ class MainActivity : ComponentActivity() {
                             )
                         )
                     }
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 12.dp),
+                        color = Color.White.copy(alpha = 0.1f)
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Speak Interrupt (Barge-In)",
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                fontSize = 15.sp
+                            )
+                            Text(
+                                text = "Say 'Friday' while speaking to interrupt (zero idle battery)",
+                                color = SilverText,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                        Switch(
+                            checked = bargeInEnabled,
+                            onCheckedChange = { checked ->
+                                bargeInEnabled = checked
+                                context.getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
+                                    .edit().putBoolean("barge_in_enabled", checked).apply()
+                                Toast.makeText(
+                                    context,
+                                    if (checked) "Speak Interrupt Enabled" else "Speak Interrupt Disabled",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = NeonCyan,
+                                checkedTrackColor = NeonBlue.copy(alpha = 0.5f)
+                            )
+                        )
+                    }
                 }
             }
 
@@ -940,6 +995,100 @@ class MainActivity : ComponentActivity() {
                             style = MaterialTheme.typography.bodySmall,
                             lineHeight = 18.sp
                         )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // 1.75 Followed Sports Teams Card
+            DashboardCard(title = "Followed Sports Teams") {
+                Text(
+                    text = "Ask \"what's the cricket score\" or \"Real Madrid score\" for instant live updates.",
+                    color = SilverText,
+                    style = MaterialTheme.typography.labelSmall
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                val allTeams = remember(cricketTeams, footballTeams) {
+                    cricketTeams.map { it to "Cricket" } + footballTeams.map { it to "Football" }
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    allTeams.forEach { (team, sportLabel) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(10.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = team,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Surface(
+                                    color = NeonCyan.copy(alpha = 0.15f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = sportLabel,
+                                        color = NeonCyan,
+                                        fontSize = 10.sp,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Remove $team",
+                                tint = SilverText,
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clickable {
+                                        com.friday.assistant.tools.search.SportsPrefs.removeTeam(context, team)
+                                        cricketTeams = com.friday.assistant.tools.search.SportsPrefs.getCricketTeams(context)
+                                        footballTeams = com.friday.assistant.tools.search.SportsPrefs.getFootballTeams(context)
+                                    }
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = newSportsTeamText,
+                        onValueChange = { newSportsTeamText = it },
+                        placeholder = { Text("Add team (e.g. Arsenal)", fontSize = 12.sp, color = SilverText) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = NeonCyan,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.2f)
+                        )
+                    )
+                    Button(
+                        onClick = {
+                            val trimmed = newSportsTeamText.trim()
+                            if (trimmed.isNotEmpty()) {
+                                com.friday.assistant.tools.search.SportsPrefs.addTeam(context, trimmed)
+                                cricketTeams = com.friday.assistant.tools.search.SportsPrefs.getCricketTeams(context)
+                                footballTeams = com.friday.assistant.tools.search.SportsPrefs.getFootballTeams(context)
+                                newSportsTeamText = ""
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonBlue)
+                    ) {
+                        Text("Add", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }

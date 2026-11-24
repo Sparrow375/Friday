@@ -25,7 +25,20 @@ class WhisperEngine {
     // JNI Declarations
     private external fun initWhisper(modelPath: String): Long
     private external fun freeWhisper(ctxPtr: Long)
-    private external fun transcribeWhisper(ctxPtr: Long, audioSamples: FloatArray): String
+    private external fun abortWhisper()
+    private external fun transcribeWhisper(ctxPtr: Long, audioSamples: FloatArray, initialPrompt: String?): String
+
+    /**
+     * Signals any in-flight Whisper transcription to abort immediately so the caller
+     * does not stall waiting on the WhisperEngine mutex.
+     */
+    fun abortTranscription() {
+        try {
+            abortWhisper()
+        } catch (e: Throwable) {
+            Log.w(TAG, "Error signaling Whisper abort", e)
+        }
+    }
 
     suspend fun loadModel(modelPath: String): Boolean = mutex.withLock {
         withContext(Dispatchers.IO) {
@@ -60,14 +73,14 @@ class WhisperEngine {
         }
     }
 
-    suspend fun transcribe(audioSamples: FloatArray): String = mutex.withLock {
+    suspend fun transcribe(audioSamples: FloatArray, initialPrompt: String? = null): String = mutex.withLock {
         withContext(Dispatchers.IO) {
             if (contextPtr == 0L) {
                 Log.e(TAG, "Whisper model not loaded")
                 return@withContext ""
             }
             try {
-                transcribeWhisper(contextPtr, audioSamples)
+                transcribeWhisper(contextPtr, audioSamples, initialPrompt)
             } catch (e: Throwable) {
                 Log.e(TAG, "Exception transcribing audio", e)
                 ""

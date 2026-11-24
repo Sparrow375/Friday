@@ -1,6 +1,8 @@
 #include <jni.h>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <algorithm>
 #include <android/log.h>
 #include <cmath>
 #include <sched.h>
@@ -12,19 +14,41 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// Helper to set CPU core affinity to high-performance cores (4-7)
+static std::atomic<bool> g_whisper_abort{false};
+static std::atomic<bool> g_llama_abort{false};
+
+static bool whisper_abort_cb(void *user_data) {
+    (void)user_data;
+    return g_whisper_abort.load(std::memory_order_relaxed);
+}
+
+static bool llama_abort_cb(void *user_data) {
+    (void)user_data;
+    return g_llama_abort.load(std::memory_order_relaxed);
+}
+
+// Helper to bind worker thread to high-performance + prime cores (e.g. cores 4-9 on Exynos 2400)
 static void set_thread_affinity() {
+    static thread_local bool affinity_applied = false;
+    if (affinity_applied) return;
+
+    long n_cpus = sysconf(_SC_NPROCESSORS_CONF);
+    if (n_cpus <= 0) n_cpus = 8;
+
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    CPU_SET(4, &cpuset);
-    CPU_SET(5, &cpuset);
-    CPU_SET(6, &cpuset);
-    CPU_SET(7, &cpuset);
+    int start_core = (n_cpus >= 8) ? 4 : 0;
+    int end_core = static_cast<int>(std::min<long>(n_cpus, CPU_SETSIZE));
+    for (int c = start_core; c < end_core; ++c) {
+        CPU_SET(c, &cpuset);
+    }
+
     pid_t tid = gettid();
     if (sched_setaffinity(tid, sizeof(cpu_set_t), &cpuset) != 0) {
         LOGE("Failed to set thread affinity for thread %d", tid);
     } else {
-        LOGI("Successfully bound thread %d to performance CPU cores 4-7", tid);
+        affinity_applied = true;
+        LOGI("Successfully bound thread %d to performance CPU cores %d-%d", tid, start_core, end_core - 1);
     }
 }
 
@@ -55,16 +79,35 @@ Java_com_friday_assistant_core_native_WhisperEngine_freeWhisper(JNIEnv *env, job
     }
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_friday_assistant_core_native_WhisperEngine_abortWhisper(JNIEnv *env, jobject thiz) {
+    (void)env;
+    (void)thiz;
+    g_whisper_abort.store(true, std::memory_order_relaxed);
+}
+
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_friday_assistant_core_native_WhisperEngine_transcribeWhisper(JNIEnv *env, jobject thiz, jlong ctx_ptr, jfloatArray audio_samples) {
+Java_com_friday_assistant_core_native_WhisperEngine_transcribeWhisper(
+        JNIEnv *env, jobject thiz, jlong ctx_ptr, jfloatArray audio_samples, jstring initial_prompt) {
     struct whisper_context *ctx = reinterpret_cast<struct whisper_context *>(ctx_ptr);
     if (ctx == nullptr) {
         LOGE("Whisper context is null");
         return env->NewStringUTF("");
     }
 
+    g_whisper_abort.store(false, std::memory_order_relaxed);
+
     // Bind Whisper transcription execution to high-performance cores
     set_thread_affinity();
+
+    std::string prompt_str;
+    if (initial_prompt != nullptr) {
+        const char *p = env->GetStringUTFChars(initial_prompt, nullptr);
+        if (p != nullptr) {
+            prompt_str = p;
+            env->ReleaseStringUTFChars(initial_prompt, p);
+        }
+    }
 
     jfloat *samples = env->GetFloatArrayElements(audio_samples, nullptr);
     jsize len = env->GetArrayLength(audio_samples);
@@ -75,6 +118,9 @@ Java_com_friday_assistant_core_native_WhisperEngine_transcribeWhisper(JNIEnv *en
     params.print_realtime = false;
     params.print_special = false;
     params.print_timestamps = false;
+    params.no_timestamps = true;
+    params.max_tokens = 48;
+    params.greedy.best_of = 1;
     params.language = "en";
     params.translate = false;
     params.suppress_blank = true;
@@ -85,10 +131,20 @@ Java_com_friday_assistant_core_native_WhisperEngine_transcribeWhisper(JNIEnv *en
     params.temperature_inc = 0.0f;
     params.entropy_thold = 2.4f;
     params.logprob_thold = -1.0f;
+    params.abort_callback = whisper_abort_cb;
+    params.abort_callback_user_data = nullptr;
+    if (!prompt_str.empty()) {
+        params.initial_prompt = prompt_str.c_str();
+    }
 
     LOGI("Starting Whisper transcription on %d samples", len);
     int ret = whisper_full(ctx, params, samples, len);
     env->ReleaseFloatArrayElements(audio_samples, samples, JNI_ABORT);
+
+    if (g_whisper_abort.load(std::memory_order_relaxed)) {
+        LOGI("Whisper transcription aborted cleanly");
+        return env->NewStringUTF("");
+    }
 
     if (ret != 0) {
         LOGE("Whisper transcription failed with code: %d", ret);
@@ -171,6 +227,9 @@ Java_com_friday_assistant_core_native_LlamaEngine_initLlama(JNIEnv *env, jobject
     cparams.n_batch = 512;
     cparams.n_threads = 4; // S24 performance cores
     cparams.n_threads_batch = 4;
+    cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+    cparams.abort_callback = llama_abort_cb;
+    cparams.abort_callback_data = nullptr;
     
     llama_context *ctx = llama_init_from_model(model, cparams);
     if (ctx == nullptr) {
@@ -216,6 +275,13 @@ Java_com_friday_assistant_core_native_LlamaEngine_clearLlamaHistory(JNIEnv *env,
     }
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_friday_assistant_core_native_LlamaEngine_abortLlama(JNIEnv *env, jobject thiz) {
+    (void)env;
+    (void)thiz;
+    g_llama_abort.store(true, std::memory_order_relaxed);
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
         JNIEnv *env, jobject thiz, jlong state_ptr, jstring prompt_str, jint max_tokens, jfloat temp) {
@@ -226,6 +292,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
         return env->NewStringUTF("Error: Model state is null");
     }
 
+    g_llama_abort.store(false, std::memory_order_relaxed);
     set_thread_affinity();
 
     const char *prompt_raw = env->GetStringUTFChars(prompt_str, nullptr);
@@ -291,7 +358,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
     int current_pos = n_prompt;
 
     // Autoregressive token generation loop
-    while (n_generated < max_tokens && current_pos < n_ctx_max - 1) {
+    while (n_generated < max_tokens && current_pos < n_ctx_max - 1 && !g_llama_abort.load(std::memory_order_relaxed)) {
         llama_token id = llama_sampler_sample(smpl, state->ctx, -1);
         llama_sampler_accept(smpl, id);
 
@@ -386,6 +453,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
         return env->NewStringUTF("Error: Model state is null");
     }
 
+    g_llama_abort.store(false, std::memory_order_relaxed);
     set_thread_affinity();
 
     const char *prompt_raw = env->GetStringUTFChars(prompt_str, nullptr);
@@ -457,7 +525,7 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
     int n_generated = 0;
     int current_pos = n_prompt;
 
-    while (n_generated < max_tokens && current_pos < n_ctx_max - 1) {
+    while (n_generated < max_tokens && current_pos < n_ctx_max - 1 && !g_llama_abort.load(std::memory_order_relaxed)) {
         llama_token id = llama_sampler_sample(smpl, state->ctx, -1);
         llama_sampler_accept(smpl, id);
 

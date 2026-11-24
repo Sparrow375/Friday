@@ -2,15 +2,13 @@ package com.friday.assistant.tools.apps
 
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ApplicationInfo
-import android.content.pm.PackageManager
 import android.util.Log
+import com.friday.assistant.core.InstalledAppsCache
 import com.friday.assistant.intelligence.MemoryManager
 import com.friday.assistant.tools.Tool
 import com.friday.assistant.tools.ToolResult
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import java.util.Locale
 
 class AppLauncherTool(
     private val context: Context,
@@ -47,49 +45,27 @@ class AppLauncherTool(
 
     private suspend fun launchApp(queryName: String): ToolResult {
         val pm = context.packageManager
-        val queryLower = queryName.trim().lowercase(Locale.ROOT)
-        
-        // Retrieve all installed applications
-        val appsList = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-        var bestMatchApp: ApplicationInfo? = null
-        var bestMatchLabel = ""
-        var bestScore = 0 // Fuzzy matching score
-
-        for (app in appsList) {
-            // Filter out system apps that are not launchable (optional, but checking launch intent is better)
-            val launchIntent = pm.getLaunchIntentForPackage(app.packageName) ?: continue
-            val label = app.loadLabel(pm).toString().lowercase(Locale.ROOT)
-            
-            val score = when {
-                label == queryLower -> 100
-                label.startsWith(queryLower) -> 80
-                label.contains(queryLower) -> 50
-                // Simple levenshtein or fuzzy distance could go here, but contains/startsWith works great for voice
-                else -> 0
+        val bestMatch = InstalledAppsCache.findBestLaunchableMatch(context, queryName)
+            ?: InstalledAppsCache.let {
+                // Force refresh once in case a new app was recently installed
+                it.getApps(context, forceRefresh = true)
+                it.findBestLaunchableMatch(context, queryName)
             }
 
-            if (score > bestScore) {
-                bestScore = score
-                bestMatchApp = app
-                bestMatchLabel = app.loadLabel(pm).toString()
-            }
-        }
-
-        return if (bestMatchApp != null && bestScore > 0) {
+        return if (bestMatch != null) {
             try {
-                val launchIntent = pm.getLaunchIntentForPackage(bestMatchApp.packageName)
+                val launchIntent = pm.getLaunchIntentForPackage(bestMatch.packageName)
                 if (launchIntent != null) {
                     launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     context.startActivity(launchIntent)
-                    // Track app launch stats in semantic memory
-                    memoryManager.incrementAppLaunchCount(bestMatchApp.packageName, bestMatchLabel)
-                    ToolResult(true, "Launching $bestMatchLabel")
+                    memoryManager.incrementAppLaunchCount(bestMatch.packageName, bestMatch.label)
+                    ToolResult(true, "Launching ${bestMatch.label}")
                 } else {
-                    ToolResult(false, "Could not resolve launch intent for $bestMatchLabel")
+                    ToolResult(false, "Could not resolve launch intent for ${bestMatch.label}")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to launch app: ${bestMatchApp.packageName}", e)
-                ToolResult(false, "Error launching $bestMatchLabel: ${e.message}")
+                Log.e(TAG, "Failed to launch app: ${bestMatch.packageName}", e)
+                ToolResult(false, "Error launching ${bestMatch.label}: ${e.message}")
             }
         } else {
             ToolResult(false, "Could not find any installed application matching '$queryName'")

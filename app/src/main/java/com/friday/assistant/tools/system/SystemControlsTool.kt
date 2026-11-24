@@ -75,6 +75,23 @@ class SystemControlsTool(private val context: Context) : Tool {
     }
 
     private fun lockPhone(): ToolResult {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            if (AutomationBridge.isReady()) {
+                val ok = AutomationBridge.lockScreen()
+                return if (ok) {
+                    ToolResult(true, "Locked the phone screen")
+                } else {
+                    ToolResult(false, "Could not lock the screen via UI Automation.")
+                }
+            }
+            // Do NOT fall back to DevicePolicyManager.lockNow(), because Android forces PIN/password
+            // and disables fingerprint/biometric unlock after lockNow().
+            return ToolResult(
+                false,
+                "Please enable Friday UI Automation in Accessibility Settings so I can lock the phone while keeping fingerprint unlock working."
+            )
+        }
+
         val devicePolicyManager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
         val adminComponent = android.content.ComponentName(context, com.friday.assistant.core.FridayDeviceAdminReceiver::class.java)
         return if (devicePolicyManager.isAdminActive(adminComponent)) {

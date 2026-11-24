@@ -34,6 +34,18 @@ object AutomationBridge {
         return result.get()
     }
 
+    fun lockScreen(): Boolean {
+        val svc = service ?: return false
+        val result = AtomicBoolean(false)
+        val latch = CountDownLatch(1)
+        svc.postLockScreen { ok ->
+            result.set(ok)
+            latch.countDown()
+        }
+        latch.await(1500, TimeUnit.MILLISECONDS)
+        return result.get()
+    }
+
     fun toggleQuickSetting(label: String, enable: Boolean): Boolean {
         val svc = service ?: return false
         

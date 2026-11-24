@@ -83,6 +83,7 @@ graph TD
      - `0x01`: Audio Header (`totalChunks`, `totalBytes`, `sampleRate = 16000`) with 5x retry.
      - `0x02`: Audio Chunk (`chunkIndex` + IMA-ADPCM compressed payload). Dynamically adapts chunk size based on negotiated MTU: full 128-byte ADPCM payload (256 samples) when MTU >= 134; 16-byte ADPCM payload (32 samples = 19B packet) when MTU < 134, completely eliminating packet truncation.
      - `0x03`: Audio End transmission sentinel with 20x retry.
+     - `0x10` write (Phone -> Pendant): Signals TTS playback started on phone, arming immediate voice barge-in cooldown (`450ms`).
      - Text write: Phone echoes recognized speech back to chip for USB Serial output.
 5. **Stage 3: Fast Audio Compression (IMA-ADPCM)**:
    - Compresses 16-bit linear PCM down to 4 bits per sample (4:1 compression ratio).
@@ -99,26 +100,27 @@ The Android application is organized under package namespace `com.friday.assista
 - **`FridayBleWearableManager.kt`**:
   - Central BLE manager operating in the background.
   - Automatic low-latency scanning (`ScanFilter` matching `Friday-Pendant`, `Friday-Wearable`, and `SERVICE_UUID`).
-  - Negotiates MTU 512 and requests `CONNECTION_PRIORITY_HIGH` (11.25–15ms connection intervals) for maximum packet throughput.
+  - Negotiates MTU 512 and requests `CONNECTION_PRIORITY_HIGH` (coupled with pendant-side `BLE_GAP_PHY_2MBPS` and 7.5 ms connection interval).
   - Sequential GATT CCCD subscription queue: Ensures descriptor writes for `STATE_CHAR_UUID` and `COMMAND_CHAR_UUID` complete sequentially via `onDescriptorWrite()`, eliminating GATT collision drops.
   - Platform deduplication: Binds deprecated `onCharacteristicChanged` exclusively on Android < 13 to eliminate double-firing and stale buffer reads on Samsung One UI (Android 14/15).
-  - Robust streaming architecture: Decodes 4-bit IMA-ADPCM chunks per-frame for real-time RMS volume metering and emits partial audio frames.
-  - Watchdog & delivery resilience: Automatically finalizes and dispatches collected audio upon receiving `0x03` Audio End sentinel, `0x00` (IDLE) state update, or after a 1200ms silence watchdog timer to prevent UI freezes.
+  - Stateful streaming architecture: `StreamImaAdpcmDecoder` decodes 4-bit IMA-ADPCM chunks continuously on arrival with preserved predictor state and zero redundant end-of-stream re-decoding.
+  - Watchdog & delivery resilience: Automatically finalizes and dispatches collected audio upon receiving `0x03` Audio End sentinel, `0x00` (IDLE) state update, or after a 900ms silence watchdog timer to prevent UI freezes.
   - Dispatches `onWakeWordDetected`, `onAudioStreamStarted`, `onAudioChunkReceived`, `onCommandAudioReceived`, and `onCommandTextReceived` to `FridayService`.
-- **`ImaAdpcmDecoder.kt`**:
-  - High-performance, zero-allocation Kotlin audio decoder converting 4-bit ADPCM packets back to standard 16kHz float PCM `[-1.0f, 1.0f]`.
+- **`StreamImaAdpcmDecoder` & `ImaAdpcmDecoder`**:
+  - Stateful, zero-allocation Kotlin audio decoder converting 4-bit ADPCM chunks back to standard 16kHz float PCM `[-1.0f, 1.0f]`.
 
 ### 4.2 Core Service & UI Layer (`ui/` & `core/`)
 - **`FridayService.kt`**:
   - System-bound `VoiceInteractionService` & `AccessibilityService` running continuously.
-  - Manages assistant lifecycle: `IDLE` -> `LISTENING` -> `THINKING` -> `SPEAKING`.
+  - Manages assistant lifecycle: `IDLE` -> `LISTENING` -> `THINKING` -> `SPEAKING`, with generation-guarded `interruptActivePipeline()` for instant speak-interrupt barge-in across both phone mic (`SPEAKING`-only `WakeWordDetector`) and BLE pendant (`0x10` cooldown reset).
   - Coordinates microphone ownership, audio focus (`AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK` during listening, `EXCLUSIVE` during TTS).
-  - Wearable activation routing: Does not activate phone microphone on wearable trigger; instead holds for BLE audio stream from the chip.
+  - Wearable activation routing: Does not activate phone microphone on wearable trigger; instead holds for BLE audio stream from the chip, pre-warming `WhisperEngine` on BLE connection.
   - Strict Wake-Word Gating: The overlay UI is strictly gated behind confirmed on-chip wake-word events (`isPendantWakeActive`); unauthenticated or rogue BLE audio streams are dropped immediately with zero UI interruption.
-  - Live Streaming Speech-to-Text: Runs background partial Whisper transcription every ~20 chunks (~320ms) during authenticated BLE voice streaming, displaying words on the overlay in real time.
-  - Command Audio Energy Gating: Enforces RMS and peak energy thresholds (`rms >= 0.012f`, `maxPeak >= 0.040f`) on finalized pendant audio to cleanly reject background babble and prevent Whisper hallucinations on silence.
-  - Anti-recursion cooldown: Enforces 3.5s cooldown and state validation to reject echo self-triggers.
+  - Live Streaming Speech-to-Text: Runs throttled, abortable (`ggml_abort_callback`) background partial Whisper transcription during authenticated BLE voice streaming, displaying words on the overlay in real time without blocking final transcription.
+  - Command Audio Energy Gating & Normalization: Enforces RMS and peak energy thresholds (`rms >= 0.012f`, `maxPeak >= 0.040f`), trims silence, normalizes gain (`preprocessPendantAudio`), and runs `ContactHelper.correctTranscript` on BLE transcripts.
   - Transcript Sanitizer (`cleanAndValidateTranscript`): Strips Whisper hallucination tokens (`[BLANK_AUDIO]`, `(music)`, `Thank you.`), rejects replacement characters (`\uFFFD`, `ï¿½`, `%08`), and requires >= 70% alphanumeric content before routing queries to NLU or web search.
+- **`InstalledAppsCache.kt`**:
+  - In-memory 5-minute TTL cache of installed application labels and launch intents, shared between `PostClassificationValidator` and `AppLauncherTool` to eliminate synchronous PackageManager IPC scans.
 - **`OverlayManager.kt` & Compose Overlays**:
   - WindowManager `TYPE_ACCESSIBILITY_OVERLAY` rendering glowing glassmorphic bubble, interactive typewriter text, source chips, and real-time audio waveforms driven by true microphone RMS volume.
   - Non-intrusive: top-anchored, passes through background touch events unless text input is requested.
@@ -150,15 +152,15 @@ The Android application is organized under package namespace `com.friday.assista
     - Media Controls (Spotify auto-play, YouTube streaming).
     - Notes & Preferences (Room DB note creation/search/update, personal facts).
     - Alarms & Timers (Exact alarms, countdown timers).
-    - Search & Navigation (Google Maps turn-by-turn, multi-tier web search).
+    - Search, Sports & Navigation (Google Maps turn-by-turn, `SportsScoreTool` live cricket & football scores, multi-tier web search).
   - Conversational fallback to local LLM when intent is ambiguous.
 - **`LlamaEngine.kt`**:
-  - Native JNI interface to `llama.cpp`, running quantized `Qwen2.5-0.5B-Instruct` or `1.5B-Instruct` GGUF models on CPU performance cores with flash attention and prompt caching.
+  - Native JNI interface to `llama.cpp`, running quantized `Qwen2.5-0.5B-Instruct` or `1.5B-Instruct` GGUF models on CPU performance cores with `LLAMA_FLASH_ATTN_TYPE_ENABLED` and `ggml_abort_callback` interruption.
 
 ### 4.5 Automation & Device Tools (`automation/` & `tools/`)
 - **`FridayAccessibilityService`**:
-  - Injected accessibility nodes with `dispatchGesture` for hardware-level coordinate taps (`dispatchTap(x, y)`), scrolling, and screen reading.
-- **Tools**: Fully decoupled tool implementations executing system intents, content provider queries, and UI interactions.
+  - Injected accessibility nodes with `dispatchGesture` for hardware-level coordinate taps (`dispatchTap(x, y)`), scrolling, screen reading, and biometric-preserving screen locking (`GLOBAL_ACTION_LOCK_SCREEN`).
+- **Tools**: Fully decoupled tool implementations executing system intents, content provider queries, live sports feeds (`SportsScoreTool`), and UI interactions.
 
 ---
 

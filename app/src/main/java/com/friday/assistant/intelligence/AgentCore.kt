@@ -126,11 +126,15 @@ class AgentCore(
             "Joint NLU result: matchedIntent=$matchedIntent, confidence=$confidence, slots=$nluSlots, routeToLlm=$routeToLlm"
         )
 
-        // 4. Direct Command Execution (bypassed if routeToLlm is true, EXCEPT for web/google searches)
-        val isExplicitSearch = matchedIntent == "search_google" || matchedIntent == "web_search" ||
+        // 4. Direct Command Execution (bypassed if routeToLlm is true, EXCEPT for web/google searches & live sports scores)
+        val isSportsQuery = matchedIntent == "sports_score" || isSportsScoreQuery(cleanQuery)
+        val isExplicitSearch = !isSportsQuery && (matchedIntent == "search_google" || matchedIntent == "web_search" ||
             cleanQuery.contains("google") || cleanQuery.startsWith("search ") || cleanQuery.startsWith("search on google") ||
-            cleanQuery.startsWith("look up ") || cleanQuery.contains("search the web")
-        if (!routeToLlm || isExplicitSearch) {
+            cleanQuery.startsWith("look up ") || cleanQuery.contains("search the web"))
+        if (!routeToLlm || isExplicitSearch || isSportsQuery) {
+            if (isSportsQuery) {
+                handleSportsScores(preprocessed.originalText)?.let { return it }
+            }
             handleBriefingAndAlarms(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
             handleMessagingAndCalls(cleanQuery, matchedIntent, preprocessed, nluSlots)?.let { return it }
             handleSystemControls(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
@@ -765,7 +769,11 @@ class AgentCore(
             val tool = ToolRegistry.get("system_control")
             if (tool != null) {
                 val result = tool.execute(JsonObject().apply { addProperty("action", "lock_phone") })
-                return if (result.success) fast(result.data) else QueryResult("Failed to lock the screen: ${result.data}", true)
+                return if (result.success) {
+                    QueryResult(result.data, isFastTool = true, shouldDismissOverlay = true)
+                } else {
+                    QueryResult(result.data, isFastTool = true)
+                }
             }
         }
 
@@ -1019,6 +1027,24 @@ class AgentCore(
             }
         }
 
+        val isFollowTeam = Regex("(?i)(?:remember(?: that)? )?(?:i follow|my favorite (?:cricket |football |soccer )?team is)\\s+(.+)").find(preprocessed.originalText)
+        if (isFollowTeam != null) {
+            val teamName = isFollowTeam.groupValues[1].replace(Regex("[.!?]$"), "").trim()
+            if (teamName.isNotEmpty()) {
+                val isFoot = cleanQuery.contains("football") || cleanQuery.contains("soccer")
+                val isCric = cleanQuery.contains("cricket")
+                val hint = when {
+                    isFoot -> true
+                    isCric -> false
+                    else -> null
+                }
+                val (added, sport) = com.friday.assistant.tools.search.SportsPrefs.addTeam(context, teamName, hint)
+                if (added.isNotEmpty()) {
+                    return fast("Got it. I've added $added to your followed $sport teams.")
+                }
+            }
+        }
+
         val isRemember = matchedIntent == "remember_preference" && confidence > 0.7f ||
                 cleanQuery.startsWith("remember that") || cleanQuery.startsWith("store the fact") ||
                 cleanQuery.startsWith("keep in mind") || cleanQuery.contains("note that i prefer")
@@ -1220,6 +1246,36 @@ class AgentCore(
         }
 
         return null
+    }
+
+    internal fun isSportsScoreQuery(cleanQuery: String): Boolean {
+        val followedTeams = com.friday.assistant.tools.search.SportsPrefs.getAllFollowedTeams(context)
+        val mentionsFollowedTeam = followedTeams.any { team ->
+            Regex("\\b${Regex.escape(team.lowercase())}\\b").containsMatchIn(cleanQuery)
+        }
+        val hasScoreWord = cleanQuery.contains("score") || cleanQuery.contains("scores") ||
+            cleanQuery.contains("match") || cleanQuery.contains("winning") ||
+            cleanQuery.contains("did ") && cleanQuery.contains(" win") ||
+            cleanQuery.contains("cricket update") || cleanQuery.contains("live cricket")
+        val hasSportKeyword = cleanQuery.contains("cricket") || cleanQuery.contains("football") ||
+            cleanQuery.contains("soccer") || cleanQuery.contains("ipl") ||
+            cleanQuery.contains("la liga") || cleanQuery.contains("champions league") ||
+            cleanQuery.contains("premier league") || cleanQuery.contains("real madrid") ||
+            cleanQuery.contains("barcelona") || cleanQuery.contains("india")
+
+        if (cleanQuery.contains("read briefing") || cleanQuery.contains("open briefing")) return false
+        return (hasScoreWord && (hasSportKeyword || mentionsFollowedTeam || cleanQuery == "what is the score" || cleanQuery == "whats the score" || cleanQuery == "what's the score")) ||
+            cleanQuery.contains("cricket score") || cleanQuery.contains("football score") ||
+            cleanQuery.contains("real madrid score") || cleanQuery.contains("india score")
+    }
+
+    private suspend fun handleSportsScores(originalQuery: String): QueryResult? {
+        _agentStatusFlow.emit("Checking live scores...")
+        val tool = ToolRegistry.get("sports_score") ?: return null
+        val result = tool.execute(JsonObject().apply {
+            addProperty("query", originalQuery)
+        })
+        return if (result.success) fast(result.data) else QueryResult(result.data, true)
     }
 
     private fun fast(msg: String, domain: String? = null, action: String? = null): QueryResult {

@@ -212,6 +212,21 @@ class FridayAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Locks the screen via GLOBAL_ACTION_LOCK_SCREEN (Android 9+ / API 28).
+     * Unlike DevicePolicyManager.lockNow(), this preserves fingerprint & biometric unlock.
+     */
+    fun postLockScreen(callback: (Boolean) -> Unit) {
+        mainHandler.post {
+            val locked = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+            } else {
+                false
+            }
+            callback(locked)
+        }
+    }
+
+    /**
      * Attempts to trigger media playback inside the currently-active app by searching for a
      * Play/Resume button and clicking it. Used as a Tier-3 fallback when deep links fail.
      *
