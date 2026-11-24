@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <atomic>
+#include <mutex>
 #include <algorithm>
 #include <android/log.h>
 #include <cmath>
@@ -9,6 +10,7 @@
 #include <unistd.h>
 #include "whisper.h"
 #include "llama.h"
+#include "wakeword_model.h"
 
 #define LOG_TAG "FridayJNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -16,6 +18,27 @@
 
 static std::atomic<bool> g_whisper_abort{false};
 static std::atomic<bool> g_llama_abort{false};
+static std::mutex g_wakeword_mutex;
+
+extern "C" JNIEXPORT jfloat JNICALL
+Java_com_friday_assistant_audio_WakeWordDetector_predictWakeWordNative(
+        JNIEnv *env, jobject thiz, jshortArray ring_buffer, jint head_idx) {
+    (void)thiz;
+    if (ring_buffer == nullptr) return 0.0f;
+    jsize len = env->GetArrayLength(ring_buffer);
+    if (len != WW_TOTAL_SAMPLES) return 0.0f;
+
+    jshort *samples = env->GetShortArrayElements(ring_buffer, nullptr);
+    if (samples == nullptr) return 0.0f;
+
+    float score = 0.0f;
+    {
+        std::lock_guard<std::mutex> lock(g_wakeword_mutex);
+        score = predictWakeWordScoreCircular(samples, head_idx);
+    }
+    env->ReleaseShortArrayElements(ring_buffer, samples, JNI_ABORT);
+    return score;
+}
 
 static bool whisper_abort_cb(void *user_data) {
     (void)user_data;

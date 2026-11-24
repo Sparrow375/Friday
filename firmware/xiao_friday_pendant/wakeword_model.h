@@ -9,7 +9,9 @@
 #ifndef WAKEWORD_MODEL_H
 #define WAKEWORD_MODEL_H
 
+#ifdef ARDUINO
 #include <Arduino.h>
+#endif
 #include <math.h>
 #include <stdint.h>
 

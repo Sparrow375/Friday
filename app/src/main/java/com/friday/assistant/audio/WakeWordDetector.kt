@@ -4,26 +4,22 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import ai.onnxruntime.OnnxTensor
-import ai.onnxruntime.OrtEnvironment
-import ai.onnxruntime.OrtSession
 import com.friday.assistant.core.ModelManager
-import java.nio.FloatBuffer
 import java.util.Arrays
-import kotlin.math.exp
-import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
- * High-performance, ultra-low-power Two-Stage VAD-Gated Neural Wake-Word Detector.
+ * Low-power Two-Stage VAD-Gated Neural Wake-Word Detector powered by PhoneticWakeWordNetV2
+ * (compiled natively via wakeword_model.h in libfriday_native.so).
  *
- * Stage 1 (Micro-VAD & Energy Gate):
- *   - Continuous dynamic noise floor tracking with exponential moving average.
- *   - Drops silence and ambient noise (< 0.01% CPU, zero allocations, no ONNX inference).
+ * Stage 1 (DC-Removed Micro-VAD):
+ *   - Computes pure AC RMS (immune to mic DC offset) with adaptive background baseline.
+ *   - Drops silence/ambient frames before neural inference.
  *
- * Stage 2 (Stride-Gated 1D-CNN ONNX Inference):
- *   - Continuously writes incoming 16kHz PCM frames into a pre-allocated 24,000-sample (1.5s) rolling buffer.
- *   - Runs 1D-CNN ONNX inference every 200ms when voice activity is present (0.48ms execution time).
+ * Stage 2 (PhoneticWakeWordNetV2 + Multi-Frame Confirmation):
+ *   - Evaluates 32-Mel DS-Conv + 1D Temporal Motif Conv on the 24,000-sample (1.5s) rolling buffer.
+ *   - Requires 2 consecutive frames >= 0.85 (avg >= 0.88) OR 3-of-4 recent frames >= 0.70 (latest >= 0.74),
+ *     matching the pendant firmware's zero-false-alarm confirmation logic.
  */
 class WakeWordDetector(
     private val context: Context,
@@ -33,13 +29,27 @@ class WakeWordDetector(
 
     companion object {
         private const val TAG = "WakeWordDetector"
-        private const val SAMPLE_RATE = 16000
         private const val WINDOW_SIZE = 24000 // 1.5 seconds at 16kHz
-        private const val CONFIDENCE_THRESHOLD = 0.70f
-        private const val BARGE_IN_CONFIDENCE_THRESHOLD = 0.78f
-        private const val BARGE_IN_GRACE_MS = 350L
-        private const val MIN_SPEECH_RMS = 60f
+        private const val MIN_SPEECH_RMS = 95f
+        private const val MAX_BG_RMS = 300f
+        private const val VAD_MULTIPLIER = 1.30f
+        private const val WAKE_STRONG_FRAME = 0.85f
+        private const val WAKE_STRONG_AVG = 0.88f
+        private const val WAKE_SUSTAINED_FRAME = 0.70f
+        private const val WAKE_SUSTAINED_LATEST = 0.74f
+        private const val BARGE_IN_GRACE_MS = 450L
+        private const val TRIGGER_COOLDOWN_MS = 3500L
+
+        init {
+            try {
+                System.loadLibrary("friday_native")
+            } catch (e: UnsatisfiedLinkError) {
+                Log.e(TAG, "Failed to load friday_native for WakeWordDetector", e)
+            }
+        }
     }
+
+    private external fun predictWakeWordNative(ringBuffer: ShortArray, headIdx: Int): Float
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -52,172 +62,151 @@ class WakeWordDetector(
     @Volatile
     private var listeningStartMs = 0L
 
-    private var ortEnv: OrtEnvironment? = null
-    private var ortSession: OrtSession? = null
-    private var inputTensorName: String = "input_audio"
+    @Volatile
+    private var cooldownUntilMs = 0L
 
-    // Pre-allocated buffers — ZERO garbage collection in audio hot loop
+    // Pre-allocated buffers — ZERO heap allocations in audio hot loop
     private val ringBuffer = ShortArray(WINDOW_SIZE)
     private var ringWriteIndex = 0
-    private val floatBuffer = FloatBuffer.allocate(WINDOW_SIZE)
-    private val tensorShape = longArrayOf(1L, 1L, WINDOW_SIZE.toLong())
+    private var samplesCollected = 0
 
-    // Dynamic noise floor & VAD tracking
-    private var noiseFloor = 80f
-    private var silentFrames = 0
-    private var strideCounter = 0
+    // Adaptive AC noise floor & VAD hangover
+    private var backgroundRms = 60f
+    private var speechActiveFrames = 0
 
-    init {
-        loadModel()
-    }
+    // Multi-frame confirmation history
+    private var prevConfidence = 0f
+    private val wakeHistory = FloatArray(4)
+    private var wakeHistoryIdx = 0
 
-    private fun loadModel() {
-        try {
-            ortEnv = OrtEnvironment.getEnvironment()
-            val modelBytes = modelManager.getWakeWordModelBytes()
-            if (modelBytes != null) {
-                ortSession = ortEnv?.createSession(modelBytes, OrtSession.SessionOptions())
-                inputTensorName = ortSession?.inputNames?.firstOrNull() ?: "input_audio"
-                Log.i(TAG, "Neural 1D-CNN wake-word model loaded successfully (input: $inputTensorName, shape: [1, 1, $WINDOW_SIZE], size: ${modelBytes.size} bytes)")
-            } else {
-                Log.w(TAG, "wakeword.onnx model bytes not found in assets or storage")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error initializing ONNX runtime for wake-word", e)
-        }
-    }
-
-    fun isModelLoaded(): Boolean = ortSession != null
+    fun isModelLoaded(): Boolean = true
 
     fun setBargeInMode(active: Boolean) {
         isBargeInMode = active
     }
 
+    private fun resetWakeHistory() {
+        prevConfidence = 0f
+        Arrays.fill(wakeHistory, 0f)
+        wakeHistoryIdx = 0
+    }
+
     fun startListening() {
         isListeningEnabled = true
         listeningStartMs = System.currentTimeMillis()
-        strideCounter = 0
         ringWriteIndex = 0
-        silentFrames = 0
+        samplesCollected = 0
+        speechActiveFrames = 0
+        backgroundRms = 60f
+        resetWakeHistory()
         Arrays.fill(ringBuffer, 0.toShort())
-        Log.i(TAG, "Two-stage low-power wake-word detection started (modelLoaded=${isModelLoaded()}, bargeIn=$isBargeInMode)")
+        Log.i(TAG, "PhoneticWakeWordNetV2 wake-word detection started (bargeIn=$isBargeInMode)")
     }
 
     fun stopListening() {
         isListeningEnabled = false
-        strideCounter = 0
         ringWriteIndex = 0
-        silentFrames = 0
+        samplesCollected = 0
+        speechActiveFrames = 0
+        resetWakeHistory()
         Arrays.fill(ringBuffer, 0.toShort())
-        Log.i(TAG, "Two-stage low-power wake-word detection stopped")
+        Log.i(TAG, "PhoneticWakeWordNetV2 wake-word detection stopped")
     }
 
     fun shutdown() {
         stopListening()
-        try {
-            ortSession?.close()
-            ortEnv?.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing ONNX session", e)
-        }
-        ortSession = null
-        ortEnv = null
     }
 
     /**
      * Called 10 times per second with 100ms frames (1600 samples) from AudioCaptureManager.
-     * ZERO heap allocations.
      */
     override fun onAudioFrame(pcmData: ShortArray, length: Int) {
         if (!isListeningEnabled || length <= 0) return
 
-        // 1. Always write incoming PCM samples to the continuous rolling ring buffer
+        val now = System.currentTimeMillis()
+        if (now < cooldownUntilMs) {
+            resetWakeHistory()
+            return
+        }
+
+        // 1. Write incoming PCM samples into circular ring buffer and compute DC-removed AC RMS
+        var sumRaw = 0L
         for (i in 0 until length) {
-            ringBuffer[ringWriteIndex] = pcmData[i]
+            val s = pcmData[i]
+            sumRaw += s
+            ringBuffer[ringWriteIndex] = s
             ringWriteIndex = (ringWriteIndex + 1) % WINDOW_SIZE
         }
+        samplesCollected += length
+        val frameMean = sumRaw.toFloat() / length.toFloat()
 
-        // 2. Stage 1: Fast O(N) integer VAD calculation
-        var sumSquares = 0L
+        var sumSqAc = 0.0
         for (i in 0 until length) {
-            val sample = pcmData[i].toLong()
-            sumSquares += sample * sample
+            val ac = pcmData[i] - frameMean
+            sumSqAc += (ac * ac).toDouble()
         }
-        val currentRms = sqrt((sumSquares / length).toDouble()).toFloat()
+        val currentRms = sqrt(sumSqAc / length.toDouble()).toFloat()
 
-        // 3. Adaptive Noise Floor Tracking
-        if (currentRms < noiseFloor * 1.25f || currentRms < MIN_SPEECH_RMS) {
-            // Silence / Ambient noise: adapt baseline noise floor
-            noiseFloor = 0.95f * noiseFloor + 0.05f * currentRms
-            silentFrames++
-            // If in prolonged silence (>500ms), drop frame without running ONNX inference (<0.01% CPU)
-            if (silentFrames > 5) {
-                return
-            }
+        // Wait until rolling buffer has full 1.5s context before inference
+        if (samplesCollected < WINDOW_SIZE) {
+            backgroundRms = (backgroundRms * 0.92f + currentRms * 0.08f).coerceAtMost(MAX_BG_RMS)
+            return
+        }
+
+        // 2. Adaptive AC VAD gating
+        val speechThreshold = (backgroundRms * VAD_MULTIPLIER + 15f).coerceAtLeast(MIN_SPEECH_RMS)
+        if (currentRms >= speechThreshold) {
+            speechActiveFrames = 5 // 500ms hangover (5 * 100ms)
+        } else if (speechActiveFrames > 0) {
+            speechActiveFrames--
         } else {
-            silentFrames = 0
+            backgroundRms = (backgroundRms * 0.985f + currentRms * 0.015f).coerceIn(25f, MAX_BG_RMS)
+            resetWakeHistory()
+            return
         }
 
-        // 4. Stage 2: Stride-Gated Neural Inference (runs every 200ms when speech is active)
-        strideCounter++
-        if (strideCounter % 2 == 0) {
-            evaluateWakeWord()
+        if (isBargeInMode && (now - listeningStartMs) < BARGE_IN_GRACE_MS) {
+            return
         }
+
+        // 3. Stage 2: Native PhoneticWakeWordNetV2 evaluation + multi-frame confirmation
+        evaluateWakeWord(now)
     }
 
     @Synchronized
-    private fun evaluateWakeWord() {
-        val session = ortSession ?: return
-        val env = ortEnv ?: return
-
+    private fun evaluateWakeWord(nowMs: Long) {
         try {
-            // Unroll continuous circular buffer into linear FloatBuffer (normalized -1.0 to 1.0)
-            floatBuffer.clear()
-            val startIdx = ringWriteIndex
-            for (i in 0 until WINDOW_SIZE) {
-                val idx = (startIdx + i) % WINDOW_SIZE
-                floatBuffer.put(ringBuffer[idx] / 32768.0f)
-            }
-            floatBuffer.flip()
+            val confidence = predictWakeWordNative(ringBuffer, ringWriteIndex)
 
-            // Run ONNX forward pass (0.48ms latency)
-            val tensor = OnnxTensor.createTensor(env, floatBuffer, tensorShape)
-            val output = session.run(mapOf(inputTensorName to tensor))
-            tensor.close()
+            wakeHistory[wakeHistoryIdx] = confidence
+            wakeHistoryIdx = (wakeHistoryIdx + 1) and 0x03
 
-            val rawResult = output.get(0).value
-            output.close()
-
-            val logits = when (rawResult) {
-                is Array<*> -> (rawResult[0] as? FloatArray)
-                is FloatArray -> rawResult
-                else -> null
-            } ?: return
-
-            val negLogit = logits[0]
-            val posLogit = logits[1]
-            val maxLogit = max(negLogit, posLogit)
-            val expNeg = exp(negLogit - maxLogit)
-            val expPos = exp(posLogit - maxLogit)
-            val confidence = expPos / (expNeg + expPos)
-
-            val activeThreshold = if (isBargeInMode) BARGE_IN_CONFIDENCE_THRESHOLD else CONFIDENCE_THRESHOLD
-            if (isBargeInMode && (System.currentTimeMillis() - listeningStartMs) < BARGE_IN_GRACE_MS) {
-                return
+            var moderateHits = 0
+            for (h in wakeHistory) {
+                if (h >= WAKE_SUSTAINED_FRAME) moderateHits++
             }
 
-            if (confidence >= activeThreshold) {
-                Log.i(TAG, "Wake-word 'Friday' DETECTED! (confidence: ${(confidence * 100).toInt()}%, bargeIn=$isBargeInMode)")
-                // Clear buffer and pause detection to avoid repeated triggers
+            val twoFrameAvg = 0.5f * (confidence + prevConfidence)
+            val strongConfirmed = confidence >= WAKE_STRONG_FRAME &&
+                prevConfidence >= WAKE_STRONG_FRAME &&
+                twoFrameAvg >= WAKE_STRONG_AVG
+            val sustainedConfirmed = moderateHits >= 3 && confidence >= WAKE_SUSTAINED_LATEST
+            prevConfidence = confidence
+
+            if (strongConfirmed || sustainedConfirmed) {
+                Log.i(TAG, "PhoneticWakeWordNetV2 'Friday' CONFIRMED! (score=$confidence, avg=$twoFrameAvg, hits=$moderateHits, bargeIn=$isBargeInMode)")
+                cooldownUntilMs = nowMs + TRIGGER_COOLDOWN_MS
+                speechActiveFrames = 0
+                resetWakeHistory()
                 ringWriteIndex = 0
+                samplesCollected = 0
                 Arrays.fill(ringBuffer, 0.toShort())
-                silentFrames = 10
                 mainHandler.post {
                     onWakeWordDetected()
                 }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error running wake-word ONNX inference", e)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Error running native PhoneticWakeWordNetV2 inference", e)
         }
     }
 }

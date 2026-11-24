@@ -308,8 +308,10 @@ void command_write_callback(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* 
   if (len == 0 || data == NULL) return;
 
   if (len == 1 && data[0] == 0x10) {
-    wakeCooldownUntil = millis() + 450; // Brief 450ms acoustic guard, then allow instant barge-in
-    Serial.println(F("[Pendant BLE] TTS speaking started on phone -> barge-in armed"));
+    resetWakeHistory();
+    speechActiveFrames = 0;
+    wakeCooldownUntil = millis() + 650; // Brief 650ms acoustic guard, then allow voice barge-in on long answers
+    Serial.println(F("[Pendant BLE] Long TTS speaking on phone -> barge-in armed"));
     return;
   }
 

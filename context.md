@@ -822,3 +822,11 @@ The project uses a clean package namespace `com.friday.assistant`:
               - Replaced `DevicePolicyManager.lockNow()` (which disables fingerprint unlock) with `AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN` via `AutomationBridge.lockScreen()` (refusing `lockNow()` fallback on API 28+ so biometrics are never locked out) and added `shouldDismissOverlay` on `QueryResult` to dismiss the overlay immediately upon locking.
             - **Verification**: All 4 JUnit unit tests (`SportsScoreToolTest`, `StreamImaAdpcmDecoderTest`) and `./gradlew assembleDebug` passed (`BUILD SUCCESSFUL`); `scripts/compile_pendant.py` compiled with 0 errors.
 
+          * **Post-Task False Re-Trigger Fix: Native `PhoneticWakeWordNetV2` on Phone & Long-Answer Barge-In Gating (November 2026 - Part 27)**:
+            - **Root Cause**: Testing `app/src/main/assets/wakeword.onnx` in Python confirmed the legacy phone 1D-CNN model scored `0.9999` on loud noise and `0.9998` on pure tones. Arming phone-mic barge-in for short 1-second tool confirmations (e.g., `"Launching Google"`) caused TTS/ambient audio to trigger `WakeWordDetector` right after task completion.
+            - **Fixes**:
+              - Made `firmware/xiao_friday_pendant/wakeword_model.h` pure portable C++ (`#ifdef ARDUINO` around `<Arduino.h>`) and included it directly in `app/src/main/cpp/CMakeLists.txt` + `friday_jni.cpp` (`WakeWordDetector_predictWakeWordNative`, mutex-guarded).
+              - Replaced `wakeword.onnx` in `WakeWordDetector.kt` with native `PhoneticWakeWordNetV2`, DC-removed AC VAD gating (`MIN_SPEECH_RMS = 95f`), 2-frame/3-of-4 multi-frame confirmation, and `3500ms` trigger cooldown.
+              - Gated both phone barge-in and BLE `0x10` cooldown reset in `FridayService.kt` (`shouldArmBargeInForSpeech`) to substantial responses (`>= 45` chars or streaming LLM output), preserving the full `3500ms` pendant cooldown after fast tool actions; updated `0x10` handler in `xiao_friday_pendant.ino` to reset wake history and VAD state with a `650ms` guard.
+            - **Verification**: `./gradlew testDebugUnitTest assembleDebug` (`BUILD SUCCESSFUL` across Kotlin + `arm64-v8a`/`x86_64` CMake Release) and `scripts/compile_pendant.py` (`Return code: 0`) succeeded cleanly.
+

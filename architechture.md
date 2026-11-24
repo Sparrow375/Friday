@@ -135,6 +135,9 @@ The Android application is organized under package namespace `com.friday.assista
   - JNI bridge to `whisper.cpp` capable of offline transcription of raw audio buffers received from the BLE pendant.
   - Configured with hallucination suppression parameters (`suppress_blank = true`, `suppress_nst = true`, `no_context = true`, `single_segment = true`, `temperature = 0.0f`).
   - Gated by audio RMS energy check (`rms >= 0.003f`, `maxPeak >= 0.015f`) to eliminate transcription of silence/noise.
+- **`WakeWordDetector.kt` (Phone Barge-In & Optional Idle KWS)**:
+  - Runs the same zero-false-alarm `PhoneticWakeWordNetV2` (`wakeword_model.h`) natively via `friday_jni.cpp` (`predictWakeWordNative`) with DC-removed AC VAD and multi-frame confirmation (`2` consecutive `>= 0.85` or `3-of-4 >= 0.70`).
+  - During `SPEAKING` of substantial responses (`>= 45` chars or streaming LLM), runs in barge-in mode alongside `AcousticEchoCanceler`.
 - **`SpeakerVerifier.kt`**:
   - ONNX ECAPA-TDNN embedding extractor to authenticate the user's voiceprint.
 

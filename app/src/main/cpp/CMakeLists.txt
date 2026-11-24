@@ -60,6 +60,7 @@ target_include_directories(friday_native PRIVATE
     ${llamacpp_new_SOURCE_DIR}
     ${llamacpp_new_SOURCE_DIR}/include
     ${llamacpp_new_SOURCE_DIR}/ggml/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../../firmware/xiao_friday_pendant
 )
 
 # Link native libraries.

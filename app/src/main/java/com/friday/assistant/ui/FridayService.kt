@@ -293,16 +293,15 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                     stopWakeWordListening()
                 }
             } else if (newState == PipelineState.SPEAKING) {
-                // Arm phone-mic barge-in listener during active TTS (zero idle battery cost)
+                // Only arm voice barge-in for long answers (not 1-second tool confirmations like "Launching Google")
                 val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
                 val bargeInEnabled = prefs.getBoolean("barge_in_enabled", true)
-                if (bargeInEnabled) {
+                if (bargeInEnabled && shouldArmBargeInForSpeech) {
                     startWakeWordListening(forBargeIn = true)
+                    bleWearableManager?.sendControlByte(0x10)
                 } else {
                     stopWakeWordListening()
                 }
-                // Tell BLE pendant to clear wake cooldown for instant voice barge-in
-                bleWearableManager?.sendControlByte(0x10)
             } else {
                 stopWakeWordListening()
             }
@@ -372,6 +371,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
     private var currentQueryJob: kotlinx.coroutines.Job? = null
     private var queryGenerationId: Long = 0L
+    private var shouldArmBargeInForSpeech: Boolean = false
 
     private fun launchAgentQuery(query: String) {
         currentQueryJob?.cancel()
@@ -567,6 +567,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         }
 
         val result = if (isFirst) {
+            shouldArmBargeInForSpeech = true // Streaming LLM responses are multi-sentence answers
             transitionToState(PipelineState.SPEAKING, responseText = fullResponseText)
             requestAudioFocus(exclusive = false)
             tts?.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, params, "${UTTERANCE_ID}_0")
@@ -592,13 +593,15 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             return
         }
 
-        transitionToState(PipelineState.SPEAKING, responseText = response)
-        requestAudioFocus(exclusive = false)
         val textToSpeak = cleanTextForTts(response)
         if (textToSpeak.isBlank()) {
             transitionToState(PipelineState.IDLE, responseText = response)
             return
         }
+        // Only arm barge-in on substantial responses (>= 45 chars), skipping short 1s tool confirmations
+        shouldArmBargeInForSpeech = textToSpeak.length >= 45
+        transitionToState(PipelineState.SPEAKING, responseText = response)
+        requestAudioFocus(exclusive = false)
         val params = Bundle().apply {
             putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
         }
