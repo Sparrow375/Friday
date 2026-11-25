@@ -107,6 +107,8 @@
 - [x] 96. Upgrade model to translation-invariant `PhoneticWakeWordNetV2` (32 Mel -> DS-Conv blocks -> Temporal Motif 1D Conv + Global Max/Avg Pool -> MLP) and train on RTX 5060 Ti GPU <!-- id: 95 -->
 - [x] 97. Upgrade firmware trigger & VAD logic in `xiao_friday_pendant.ino` (DC-removed AC RMS, multi-frame consecutive confirmation replacing single-hit `0.92` spike trigger, music-resilient VAD baseline) <!-- id: 96 -->
 - [x] 98. Benchmark strictly on held-out unseen streams, compile firmware (`compile_pendant.py`), update `context.md` & `architechture.md`, commit and push to git <!-- id: 97 -->
+- [x] 99. Inspect V1 hardware bench kit (`XIAO nRF52840 Plus/Sense Plus`, `PL432224 3.87V 1.08Wh` LiPo, 3-pin SPDT switch) and create complete wiring, RF/mic orientation, and cardboard necklace assembly blueprint (`hardware/pendant_v1_blueprint.md`) <!-- id: 98 -->
+- [ ] 100. Optional: Apply low-power & stealth LED firmware optimization (`delay(4)` sleep yield + disable continuous connected Blue LED) before tomorrow's all-day college test <!-- id: 99 -->
 
 ## Latency Optimization, Sports Scores, Speak Interrupt & Biometric Screen Lock
 

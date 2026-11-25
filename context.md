@@ -806,6 +806,10 @@ The project uses a clean package namespace `com.friday.assistant`:
               - **100% Unseen JFK Speech (`119` windows) & Unseen TTS Voices (`109` clips)**: `0` firmware triggers (single isolated `0.8869` JFK frame rejected by multi-frame confirmation; TTS max `0.0759`).
             - **Build Verification**: Pendant Arduino compilation (`compile_pendant.py`) succeeded with 0 errors (`146,782` bytes text, `144,428` bytes bss); Android `./gradlew compileDebugKotlin` succeeded cleanly.
 
+          * **Wearable AI Pendant V1 Cardboard Prototype Blueprint (November 2026 - Part 26)**:
+            - Inspected user's physical bench hardware (`Seeed Studio XIAO nRF52840 Plus / Sense Plus`, `PL432224 3.87V 1.08Wh (~280 mAh)` protected LiPo cell, and 3-pin SPDT slide switch).
+            - Authored complete electrical wiring, USB-C charging switch logic, 2.4 GHz ceramic antenna clearance, PDM mic acoustic port, anti-flip two-point lanyard geometry, and 4-layer cardboard sandwich assembly blueprint at `hardware/pendant_v1_blueprint.md`.
+
           * **End-to-End Latency Optimization, Live Sports Scores, Speak Interrupt & Biometric Screen Lock (November 2026 - Part 26)**:
             - **Latency Optimization & Transcription Accuracy**:
               - **BLE & Pendant Firmware (`xiao_friday_pendant.ino`, `FridayBleWearableManager.kt`)**: Added `requestPHY(BLE_GAP_PHY_2MBPS)` and `requestConnectionParameter(6)` (7.5 ms interval) on connect; reduced end-of-speech silence hangover from `40` frames (`640ms`) to `26` frames (`~416ms`) and BLE stream watchdog from `1200ms` to `900ms`. Replaced stateless per-chunk ADPCM decoding + full-buffer re-decoding with stateful `StreamImaAdpcmDecoder` (zero predictor drift across chunks, zero per-byte `IntArray` allocations, zero duplicate end-of-stream decode). Pre-warms `WhisperEngine` asynchronously when BLE pendant connects.
