@@ -24,6 +24,9 @@ interface FridayDao {
     @Delete
     suspend fun deleteMemory(memory: MemoryEntity)
 
+    @Query("DELETE FROM memories WHERE id = :id")
+    suspend fun deleteMemoryById(id: Long)
+
     @Query("DELETE FROM memories WHERE layer = :layer")
     suspend fun clearMemoriesByLayer(layer: String)
 
@@ -33,11 +36,14 @@ interface FridayDao {
     // ==========================================
     // Notes
     // ==========================================
-    @Query("SELECT * FROM notes ORDER BY timestamp DESC")
+    @Query("SELECT * FROM notes ORDER BY isPinned DESC, timestamp DESC")
     fun getAllNotes(): Flow<List<NoteEntity>>
 
-    @Query("SELECT * FROM notes WHERE content LIKE '%' || :query || '%' OR tags LIKE '%' || :query || '%' ORDER BY timestamp DESC")
+    @Query("SELECT * FROM notes WHERE content LIKE '%' || :query || '%' OR tags LIKE '%' || :query || '%' ORDER BY isPinned DESC, timestamp DESC")
     fun searchNotes(query: String): Flow<List<NoteEntity>>
+
+    @Query("UPDATE notes SET isPinned = :isPinned WHERE id = :id")
+    suspend fun updateNotePinned(id: Long, isPinned: Boolean)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertNote(note: NoteEntity): Long
@@ -71,6 +77,36 @@ interface FridayDao {
 
     @Delete
     suspend fun deleteRoutine(routine: RoutineEntity)
+
+    @Query("DELETE FROM routines WHERE id = :id")
+    suspend fun deleteRoutineById(id: Long)
+
+    @Query("UPDATE routines SET successCount = successCount + 1, lastUsed = :timestamp WHERE id = :id")
+    suspend fun recordRoutineUsage(id: Long, timestamp: Long = System.currentTimeMillis())
+
+    // ==========================================
+    // Reminders
+    // ==========================================
+    @Query("SELECT * FROM reminders ORDER BY isCompleted ASC, triggerAtMs ASC")
+    fun getAllRemindersFlow(): Flow<List<ReminderEntity>>
+
+    @Query("SELECT * FROM reminders WHERE isCompleted = 0 ORDER BY triggerAtMs ASC")
+    fun getActiveRemindersFlow(): Flow<List<ReminderEntity>>
+
+    @Query("SELECT * FROM reminders WHERE isCompleted = 0 ORDER BY triggerAtMs ASC")
+    suspend fun getActiveRemindersSync(): List<ReminderEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertReminder(reminder: ReminderEntity): Long
+
+    @Query("UPDATE reminders SET isCompleted = :completed WHERE id = :id")
+    suspend fun setReminderCompleted(id: Long, completed: Boolean)
+
+    @Query("UPDATE reminders SET isCompleted = 1 WHERE requestCode = :requestCode")
+    suspend fun markReminderCompletedByCode(requestCode: Int)
+
+    @Query("DELETE FROM reminders WHERE id = :id")
+    suspend fun deleteReminderById(id: Long)
 
     // ==========================================
     // Interests (Daily Briefing)

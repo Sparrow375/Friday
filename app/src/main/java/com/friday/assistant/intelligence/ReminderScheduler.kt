@@ -5,18 +5,47 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import com.friday.assistant.core.FridayApplication
 import com.friday.assistant.core.FridayLogger
+import com.friday.assistant.core.db.ReminderEntity
 import com.friday.assistant.ui.ReminderReceiver
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 object ReminderScheduler {
     private const val TAG = "ReminderScheduler"
     private const val PREFS_NAME = "friday_pending_reminders"
     private const val KEY_REMINDERS = "reminders_json"
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     data class ScheduledReminder(
         val requestCode: Int,
         val triggerAtMs: Long,
         val message: String
+    )
+
+    private val WORD_NUMBERS = mapOf(
+        "a" to 1L,
+        "an" to 1L,
+        "one" to 1L,
+        "two" to 2L,
+        "three" to 3L,
+        "four" to 4L,
+        "five" to 5L,
+        "six" to 6L,
+        "seven" to 7L,
+        "eight" to 8L,
+        "nine" to 9L,
+        "ten" to 10L,
+        "fifteen" to 15L,
+        "twenty" to 20L,
+        "thirty" to 30L,
+        "forty" to 40L,
+        "forty five" to 45L,
+        "forty-five" to 45L,
+        "fifty" to 50L
     )
 
     fun schedule(context: Context, delaySeconds: Long, reminderMessage: String): Boolean {
@@ -29,37 +58,23 @@ object ReminderScheduler {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
                 ?: return false
 
-            val requestCode = (System.currentTimeMillis() % 100000000).toInt()
+            val requestCode = ((System.currentTimeMillis() xor reminderMessage.hashCode().toLong()) and 0x7FFFFFFF).toInt()
+            scheduleAlarmInternal(context, alarmManager, requestCode, triggerAtMs, reminderMessage)
 
-            val intent = Intent(context, ReminderReceiver::class.java).apply {
-                action = ReminderReceiver.ACTION_TRIGGER_REMINDER
-                putExtra(ReminderReceiver.EXTRA_REMINDER_TEXT, reminderMessage)
-                putExtra("reminder_code", requestCode)
+            // Persist to Room (with safe fallback when running outside Application in tests)
+            scope.launch {
+                try {
+                    FridayApplication.database.dao().insertReminder(
+                        ReminderEntity(
+                            requestCode = requestCode,
+                            message = reminderMessage,
+                            triggerAtMs = triggerAtMs
+                        )
+                    )
+                } catch (e: Exception) {
+                    FridayLogger.e(TAG, "Failed to insert reminder in Room", e)
+                }
             }
-
-            val pendingIntent = PendingIntent.getBroadcast(
-                context,
-                requestCode,
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    triggerAtMs,
-                    pendingIntent
-                )
-            } else {
-                alarmManager.setExact(
-                    AlarmManager.RTC_WAKEUP,
-                    triggerAtMs,
-                    pendingIntent
-                )
-            }
-
-            // Save to persistent storage to survive device reboots
-            saveReminder(context, ScheduledReminder(requestCode, triggerAtMs, reminderMessage))
 
             val diffSec = (triggerAtMs - System.currentTimeMillis()) / 1000L
             FridayLogger.i(TAG, "Scheduled spoken reminder at ms=$triggerAtMs (~${diffSec}s from now) for: '$reminderMessage'")
@@ -70,16 +85,56 @@ object ReminderScheduler {
         }
     }
 
-    fun parseNaturalDateTime(rawInput: String): Long? {
-        val input = rawInput.trim().lowercase()
-        val now = System.currentTimeMillis()
-        val cal = java.util.Calendar.getInstance()
+    fun cancelReminder(context: Context, reminder: ReminderEntity) {
+        try {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+            val intent = Intent(context, ReminderReceiver::class.java).apply {
+                action = ReminderReceiver.ACTION_TRIGGER_REMINDER
+                putExtra(ReminderReceiver.EXTRA_REMINDER_TEXT, reminder.message)
+                putExtra("reminder_code", reminder.requestCode)
+            }
+            val pi = PendingIntent.getBroadcast(
+                context,
+                reminder.requestCode,
+                intent,
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            )
+            if (pi != null) {
+                alarmManager?.cancel(pi)
+                pi.cancel()
+            }
+        } catch (e: Exception) {
+            FridayLogger.w(TAG, "Error cancelling alarm for reminder ${reminder.id}: ${e.message}")
+        }
+        scope.launch {
+            try {
+                FridayApplication.database.dao().deleteReminderById(reminder.id)
+            } catch (e: Exception) {
+                FridayLogger.e(TAG, "Failed to delete reminder ${reminder.id}", e)
+            }
+        }
+    }
 
-        // 1. Relative "in X [unit]"
-        val relRegex = Regex("(?i)\\b(?:in|after)\\s+(\\d+)\\s*(months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b")
+    fun parseNaturalDateTime(rawInput: String, nowMs: Long = System.currentTimeMillis()): Long? {
+        val input = rawInput.trim().lowercase()
+        val cal = java.util.Calendar.getInstance().apply { timeInMillis = nowMs }
+
+        // 0. Special phrases ("half an hour", "half hour")
+        if (Regex("\\b(?:in\\s+)?half\\s+(?:an\\s+)?hour\\b").containsMatchIn(input)) {
+            return nowMs + 30L * 60_000L
+        }
+
+        // 1. Relative "in/after X [unit]" supporting both digits and word numbers
+        val numberAlternation = WORD_NUMBERS.keys
+            .sortedByDescending { it.length }
+            .joinToString("|") { Regex.escape(it) }
+        val relRegex = Regex(
+            "(?i)\\b(?:in|after)\\s+(\\d+|$numberAlternation)\\s*(months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b"
+        )
         val relMatch = relRegex.find(input)
         if (relMatch != null) {
-            val value = relMatch.groupValues[1].toLong()
+            val rawVal = relMatch.groupValues[1].lowercase()
+            val value = rawVal.toLongOrNull() ?: WORD_NUMBERS[rawVal] ?: 1L
             val unit = relMatch.groupValues[2].lowercase()
             val sec = when {
                 unit.startsWith("month") -> value * 30L * 86400L
@@ -89,7 +144,7 @@ object ReminderScheduler {
                 unit.startsWith("minute") || unit.startsWith("min") -> value * 60L
                 else -> value
             }
-            return now + (sec * 1000L)
+            return nowMs + (sec * 1000L)
         }
 
         // 2. Day calculation (today, tomorrow, day-of-week)
@@ -112,7 +167,7 @@ object ReminderScheduler {
                 "saturday" to java.util.Calendar.SATURDAY
             )
             for ((dayName, dayConst) in daysOfWeek) {
-                if (input.contains(dayName)) {
+                if (Regex("\\b$dayName\\b").containsMatchIn(input)) {
                     val currentDay = cal.get(java.util.Calendar.DAY_OF_WEEK)
                     var daysToAdd = dayConst - currentDay
                     if (daysToAdd <= 0) daysToAdd += 7
@@ -123,13 +178,13 @@ object ReminderScheduler {
             }
         }
 
-        // 3. Time-of-day clock parsing
-        val timeRegex = Regex("(?i)(?:at\\s+)?(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm|a\\.m\\.|p\\.m\\.|o'clock)?\\b")
+        // 3. Time-of-day clock parsing (supports 5:30 pm, 5.30 pm, at 7, 19:00)
+        val timeRegex = Regex("(?i)(?:at\\s+)?(\\d{1,2})(?:[:.](\\d{2}))?\\s*(am|pm|a\\.m\\.|p\\.m\\.|o'clock)?\\b")
         val timeMatch = timeRegex.findAll(input).firstOrNull { match ->
             val hasAmPm = match.groupValues[3].isNotEmpty()
-            val hasColon = match.groupValues[2].isNotEmpty()
+            val hasSeparator = match.groupValues[2].isNotEmpty()
             val startsWithAt = match.value.startsWith("at")
-            hasAmPm || hasColon || startsWithAt
+            hasAmPm || hasSeparator || startsWithAt
         }
 
         var hour = -1
@@ -168,12 +223,12 @@ object ReminderScheduler {
             cal.set(java.util.Calendar.SECOND, 0)
             cal.set(java.util.Calendar.MILLISECOND, 0)
 
-            if (cal.timeInMillis <= now) {
+            if (cal.timeInMillis <= nowMs) {
                 if (!hasDayModifier) {
                     cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
                 } else if (isExplicitToday) {
-                    FridayLogger.w(TAG, "Explicit today reminder was requested for a time in the past (${cal.time}), scheduling 60s from now")
-                    cal.timeInMillis = now + 60000L
+                    FridayLogger.w(TAG, "Explicit today reminder was requested for a past time, scheduling 60s from now")
+                    cal.timeInMillis = nowMs + 60_000L
                 }
             }
             return cal.timeInMillis
@@ -189,70 +244,96 @@ object ReminderScheduler {
     }
 
     fun onReminderTriggered(context: Context, requestCode: Int) {
-        try {
-            val list = getSavedReminders(context).toMutableList()
-            list.removeAll { it.requestCode == requestCode }
-            persistList(context, list)
-        } catch (e: Exception) {
-            FridayLogger.e(TAG, "Error cleaning up triggered reminder", e)
-        }
-    }
-
-    fun rescheduleAll(context: Context) {
-        try {
-            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
-            val list = getSavedReminders(context)
-            val now = System.currentTimeMillis()
-            val remaining = mutableListOf<ScheduledReminder>()
-
-            for (r in list) {
-                if (r.triggerAtMs > now) {
-                    val intent = Intent(context, ReminderReceiver::class.java).apply {
-                        action = ReminderReceiver.ACTION_TRIGGER_REMINDER
-                        putExtra(ReminderReceiver.EXTRA_REMINDER_TEXT, r.message)
-                        putExtra("reminder_code", r.requestCode)
-                    }
-                    val pendingIntent = PendingIntent.getBroadcast(
-                        context,
-                        r.requestCode,
-                        intent,
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                    )
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                        alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, r.triggerAtMs, pendingIntent)
-                    } else {
-                        alarmManager.setExact(AlarmManager.RTC_WAKEUP, r.triggerAtMs, pendingIntent)
-                    }
-                    remaining.add(r)
-                    FridayLogger.i(TAG, "Restored reminder on boot: '${r.message}' at ${r.triggerAtMs}")
-                }
+        scope.launch {
+            try {
+                FridayApplication.database.dao().markReminderCompletedByCode(requestCode)
+            } catch (e: Exception) {
+                FridayLogger.e(TAG, "Error marking reminder completed in Room", e)
             }
-            persistList(context, remaining)
-        } catch (e: Exception) {
-            FridayLogger.e(TAG, "Failed to reschedule reminders on boot", e)
         }
     }
 
-    private fun saveReminder(context: Context, reminder: ScheduledReminder) {
-        val list = getSavedReminders(context).toMutableList()
-        list.add(reminder)
-        persistList(context, list)
-    }
-
-    private fun getSavedReminders(context: Context): List<ScheduledReminder> {
+    fun migrateLegacyPrefsIfAny(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val raw = prefs.getString(KEY_REMINDERS, null) ?: return emptyList()
-        return try {
+        val raw = prefs.getString(KEY_REMINDERS, null) ?: return
+        val legacy: List<ScheduledReminder> = try {
             val type = object : com.google.gson.reflect.TypeToken<List<ScheduledReminder>>() {}.type
             com.google.gson.Gson().fromJson(raw, type) ?: emptyList()
         } catch (e: Exception) {
             emptyList()
         }
+        if (legacy.isNotEmpty()) {
+            scope.launch {
+                val dao = FridayApplication.database.dao()
+                val now = System.currentTimeMillis()
+                legacy.filter { it.triggerAtMs > now }.forEach { item ->
+                    dao.insertReminder(
+                        ReminderEntity(
+                            requestCode = item.requestCode,
+                            message = item.message,
+                            triggerAtMs = item.triggerAtMs
+                        )
+                    )
+                }
+            }
+        }
+        prefs.edit().remove(KEY_REMINDERS).apply()
     }
 
-    private fun persistList(context: Context, list: List<ScheduledReminder>) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val json = com.google.gson.Gson().toJson(list)
-        prefs.edit().putString(KEY_REMINDERS, json).apply()
+    fun rescheduleAll(context: Context) {
+        migrateLegacyPrefsIfAny(context)
+        scope.launch {
+            try {
+                val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return@launch
+                val dao = FridayApplication.database.dao()
+                val active = dao.getActiveRemindersSync()
+                val now = System.currentTimeMillis()
+                for (r in active) {
+                    if (r.triggerAtMs > now) {
+                        scheduleAlarmInternal(context, alarmManager, r.requestCode, r.triggerAtMs, r.message)
+                        FridayLogger.i(TAG, "Restored reminder on boot: '${r.message}' at ${r.triggerAtMs}")
+                    } else {
+                        dao.setReminderCompleted(r.id, true)
+                    }
+                }
+            } catch (e: Exception) {
+                FridayLogger.e(TAG, "Failed to reschedule reminders", e)
+            }
+        }
+    }
+
+    private fun scheduleAlarmInternal(
+        context: Context,
+        alarmManager: AlarmManager,
+        requestCode: Int,
+        triggerAtMs: Long,
+        reminderMessage: String
+    ) {
+        val intent = Intent(context, ReminderReceiver::class.java).apply {
+            action = ReminderReceiver.ACTION_TRIGGER_REMINDER
+            putExtra(ReminderReceiver.EXTRA_REMINDER_TEXT, reminderMessage)
+            putExtra("reminder_code", requestCode)
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val canExact = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()
+        if (canExact) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
+            } else {
+                alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
+            }
+        } else {
+            FridayLogger.w(TAG, "Exact alarm permission denied; falling back to inexact allowWhileIdle alarm")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
+            } else {
+                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAtMs, pendingIntent)
+            }
+        }
     }
 }

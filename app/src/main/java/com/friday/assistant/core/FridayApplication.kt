@@ -12,6 +12,13 @@ import com.friday.assistant.core.native.LlamaEngine
 import com.friday.assistant.core.native.WhisperEngine
 import com.friday.assistant.intelligence.AgentCore
 import com.friday.assistant.intelligence.MemoryManager
+import com.friday.assistant.intelligence.ReminderScheduler
+import com.friday.assistant.intelligence.brief.BriefScheduler
+import com.friday.assistant.intelligence.brief.DefaultInterests
+import com.friday.assistant.intelligence.brief.ProactiveDigestWorker
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class FridayApplication : Application() {
 
@@ -44,6 +51,18 @@ class FridayApplication : Application() {
 
         // Initialize Database
         database = FridayDatabase.getDatabase(this)
+
+        // Background bootstrap for news feed interests, digest, and reminder migration
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                DefaultInterests.seedDefaultInterests(database.dao())
+                ReminderScheduler.migrateLegacyPrefsIfAny(this@FridayApplication)
+            } catch (e: Exception) {
+                Log.w(TAG, "Background bootstrap warning: ${e.message}")
+            }
+        }
+        BriefScheduler.schedulePeriodicCrawl(this)
+        ProactiveDigestWorker.schedule(this)
 
         // Setup Notification Channel
         createNotificationChannel()

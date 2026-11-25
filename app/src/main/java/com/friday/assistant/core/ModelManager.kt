@@ -8,11 +8,8 @@ import java.io.FileOutputStream
 class ModelManager(private val context: Context) {
     companion object {
         private const val TAG = "ModelManager"
-        const val SPEAKER_MODEL_NAME = "speaker_verification.onnx"
-        const val WAKEWORD_MODEL_NAME = "wakeword.onnx"
         const val NLU_MODEL_NAME = "joint_nlu_model.onnx"
         const val NLU_VOCAB_NAME = "vocab.txt"
-        const val SEMANTIC_MODEL_NAME = "all-MiniLM-L6-v2.onnx"
         const val PREFS_NAME = "friday_model_prefs"
         const val KEY_LLM_PATH = "llm_model_path"
         const val KEY_WHISPER_PATH = "whisper_model_path"
@@ -127,26 +124,6 @@ class ModelManager(private val context: Context) {
         return file.absolutePath
     }
 
-    fun getSpeakerModelPath(): String {
-        val file = File(context.filesDir, SPEAKER_MODEL_NAME)
-        if (!file.exists() || file.length() < 5_000_000L) {
-            Log.i(TAG, "Speaker model missing or incomplete (local size: ${file.length()}). Copying.")
-            file.delete()
-            copyModelFromAssets(SPEAKER_MODEL_NAME, file)
-        }
-        return file.absolutePath
-    }
-
-    fun getWakeWordModelPath(): String {
-        val file = File(context.filesDir, WAKEWORD_MODEL_NAME)
-        if (!file.exists() || file.length() < 100_000L) {
-            Log.i(TAG, "Wake-word model missing or incomplete (local size: ${file.length()}). Copying.")
-            file.delete()
-            copyModelFromAssets(WAKEWORD_MODEL_NAME, file)
-        }
-        return file.absolutePath
-    }
-
     fun isLlmLoaded(): Boolean {
         val path = getLlmModelPath()
         val file = File(path)
@@ -156,16 +133,6 @@ class ModelManager(private val context: Context) {
     fun isWhisperLoaded(): Boolean {
         val file = File(context.filesDir, "ggml-tiny-q5_1.bin")
         return file.exists() && file.length() > 10_000_000L
-    }
-
-    fun isSpeakerLoaded(): Boolean {
-        val file = File(context.filesDir, SPEAKER_MODEL_NAME)
-        return file.exists() && file.length() > 5_000_000L
-    }
-
-    fun isWakeWordLoaded(): Boolean {
-        val file = File(context.filesDir, WAKEWORD_MODEL_NAME)
-        return file.exists() && file.length() > 100_000L
     }
 
     fun isNluLoaded(): Boolean {
@@ -180,54 +147,6 @@ class ModelManager(private val context: Context) {
             return assetsList.contains(NLU_MODEL_NAME) && assetsList.contains(NLU_VOCAB_NAME)
         } catch (e: Exception) {
             return false
-        }
-    }
-
-    fun isSemanticModelLoaded(): Boolean {
-        try {
-            val destDir = context.getExternalFilesDir("models") ?: context.filesDir
-            val modelFile = File(destDir, SEMANTIC_MODEL_NAME)
-            if (modelFile.exists()) {
-                return true
-            }
-            val assetsList = context.assets.list("") ?: emptyArray()
-            return assetsList.contains(SEMANTIC_MODEL_NAME)
-        } catch (e: Exception) {
-            return false
-        }
-    }
-
-    fun getSemanticModelPath(): String? {
-        val file = File(context.filesDir, SEMANTIC_MODEL_NAME)
-        val assetSize = getAssetSize(SEMANTIC_MODEL_NAME)
-        if (assetSize > 0) {
-            if (!file.exists() || file.length() != assetSize) {
-                file.delete()
-                copyModelFromAssets(SEMANTIC_MODEL_NAME, file)
-            }
-            return file.absolutePath
-        }
-        val destDir = context.getExternalFilesDir("models") ?: context.filesDir
-        val extFile = File(destDir, SEMANTIC_MODEL_NAME)
-        if (extFile.exists()) {
-            return extFile.absolutePath
-        }
-        return null
-    }
-
-    fun getWakeWordModelBytes(): ByteArray? {
-        return try {
-            val assetsList = context.assets.list("") ?: emptyArray()
-            if (assetsList.contains(WAKEWORD_MODEL_NAME)) {
-                context.assets.open(WAKEWORD_MODEL_NAME).use { it.readBytes() }
-            } else {
-                val destDir = context.getExternalFilesDir("models") ?: context.filesDir
-                val file = File(destDir, WAKEWORD_MODEL_NAME)
-                if (file.exists()) file.readBytes() else null
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error reading $WAKEWORD_MODEL_NAME bytes", e)
-            null
         }
     }
 

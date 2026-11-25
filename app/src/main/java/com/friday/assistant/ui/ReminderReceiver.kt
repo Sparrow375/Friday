@@ -7,11 +7,16 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
-import android.util.Log
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import androidx.core.app.NotificationCompat
 import com.friday.assistant.core.FridayLogger
+import com.friday.assistant.intelligence.ReminderScheduler
 import com.friday.assistant.ui.screens.MainActivity
+import java.util.Locale
 
 class ReminderReceiver : BroadcastReceiver() {
 
@@ -26,39 +31,84 @@ class ReminderReceiver : BroadcastReceiver() {
         val reminderText = intent?.getStringExtra(EXTRA_REMINDER_TEXT) ?: "Time for your reminder!"
         val reminderCode = intent?.getIntExtra("reminder_code", -1) ?: -1
         if (reminderCode != -1) {
-            com.friday.assistant.intelligence.ReminderScheduler.onReminderTriggered(context, reminderCode)
+            ReminderScheduler.onReminderTriggered(context, reminderCode)
         }
         FridayLogger.i(TAG, "Reminder alarm triggered: '$reminderText'")
 
-        // 1. Acquire temporary wake lock to keep CPU awake while speaking
+        // 1. Acquire brief partial wake lock while posting/speaking
         val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
         val wakeLock = pm?.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+            PowerManager.PARTIAL_WAKE_LOCK,
             "Friday:ReminderWakeLock"
         )
-        wakeLock?.acquire(8000L)
+        wakeLock?.acquire(9000L)
 
-        // 2. Post a high-priority heads-up notification
+        // 2. Always post heads-up notification
         postNotification(context, reminderText)
 
-        // 3. Trigger FridayService to speak out the reminder
-        val serviceIntent = Intent(context, FridayService::class.java).apply {
-            action = FridayService.ACTION_SPEAK_REMINDER
-            putExtra(EXTRA_REMINDER_TEXT, reminderText)
+        // 3. Speak via active FridayService if alive, else use goAsync() + short-lived TextToSpeech
+        val activeService = FridayService.instance
+        if (activeService != null) {
+            try {
+                activeService.speakReminder(reminderText)
+            } catch (e: Exception) {
+                FridayLogger.e(TAG, "Active FridayService failed to speak reminder", e)
+            } finally {
+                if (wakeLock?.isHeld == true) wakeLock.release()
+            }
+            return
         }
 
+        val pendingResult = goAsync()
+        val mainHandler = Handler(Looper.getMainLooper())
+        var tts: TextToSpeech? = null
+        val finishCleanup = Runnable {
+            try {
+                tts?.stop()
+                tts?.shutdown()
+            } catch (_: Exception) {
+            }
+            if (wakeLock?.isHeld == true) {
+                try {
+                    wakeLock.release()
+                } catch (_: Exception) {
+                }
+            }
+            try {
+                pendingResult.finish()
+            } catch (_: Exception) {
+            }
+        }
+        // Hard safety timeout so receiver never hangs
+        mainHandler.postDelayed(finishCleanup, 8000L)
+
         try {
-            if (FridayService.instance != null) {
-                FridayService.instance?.speakReminder(reminderText)
-            } else {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(serviceIntent)
+            tts = TextToSpeech(context.applicationContext) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    tts?.language = Locale.getDefault()
+                    tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                        override fun onStart(utteranceId: String?) {}
+                        override fun onDone(utteranceId: String?) {
+                            mainHandler.removeCallbacks(finishCleanup)
+                            mainHandler.post(finishCleanup)
+                        }
+
+                        @Deprecated("Deprecated in Java")
+                        override fun onError(utteranceId: String?) {
+                            mainHandler.removeCallbacks(finishCleanup)
+                            mainHandler.post(finishCleanup)
+                        }
+                    })
+                    tts?.speak("Reminder: $reminderText", TextToSpeech.QUEUE_FLUSH, null, "friday_reminder_${System.currentTimeMillis()}")
                 } else {
-                    context.startService(serviceIntent)
+                    mainHandler.removeCallbacks(finishCleanup)
+                    mainHandler.post(finishCleanup)
                 }
             }
         } catch (e: Exception) {
-            FridayLogger.e(TAG, "Failed to deliver reminder to FridayService", e)
+            FridayLogger.e(TAG, "Short-lived TTS fallback failed", e)
+            mainHandler.removeCallbacks(finishCleanup)
+            finishCleanup.run()
         }
     }
 

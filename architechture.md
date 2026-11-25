@@ -121,11 +121,15 @@ The Android application is organized under package namespace `com.friday.assista
   - Transcript Sanitizer (`cleanAndValidateTranscript`): Strips Whisper hallucination tokens (`[BLANK_AUDIO]`, `(music)`, `Thank you.`), rejects replacement characters (`\uFFFD`, `ï¿½`, `%08`), and requires >= 70% alphanumeric content before routing queries to NLU or web search.
 - **`InstalledAppsCache.kt`**:
   - In-memory 5-minute TTL cache of installed application labels and launch intents, shared between `PostClassificationValidator` and `AppLauncherTool` to eliminate synchronous PackageManager IPC scans.
-- **`OverlayManager.kt` & Compose Overlays**:
-  - WindowManager `TYPE_ACCESSIBILITY_OVERLAY` rendering glowing glassmorphic bubble, interactive typewriter text, source chips, and real-time audio waveforms driven by true microphone RMS volume.
+- **`OverlayManager.kt` & Theme-Reactive HUD (`FridayOverlayContent.kt`, `AudioWaveformComposable.kt`)**:
+  - WindowManager `TYPE_ACCESSIBILITY_OVERLAY` consuming `ThemeStore` / `LocalFridayColors`, rendering orbital brand indicators, pre-allocated `Path` waveforms driven by microphone RMS, and `LinkAnnotation.Url` typewriter responses.
   - Non-intrusive: top-anchored, passes through background touch events unless text input is requested.
-- **`MainActivity.kt`**:
-  - Dashboard featuring live diagnostics for Wearable BLE connectivity, model health checks, and quick toggle controls.
+- **`MainActivity.kt`, `FridayViewModel.kt` & Reactive Screens (`ui/screens/`, `ui/theme/ThemeStore.kt`)**:
+  - Clean 3-tab shell (`Home`, `Assistant`, `Vault`) with pushed `Settings` and `ThemeStudio` destinations backed by `FridayViewModel` (`AndroidViewModel`), Room v3 Flows (`ReminderEntity`, `NoteEntity` with `isPinned`, `RoutineEntity`, `MemoryEntity`, `BriefItemEntity`), `CalendarTool` events, `NotificationService` state flow, and `SportsScoreTool` live cards.
+  - **`ThemeStore`**: Persists curated palettes (`Obsidian Amber` default, `Crimson Graphite`, `Champagne Bronze`, `Monochrome Titanium`, `Warm Paper`) and custom HSL accent/surface styles into `StateFlow` so both the app UI and floating overlay update live.
+- **Persistence & Proactive Scheduling (`core/db/`, `intelligence/brief/`, `ReminderScheduler.kt`, `ReminderReceiver.kt`)**:
+  - Room Database v3 (`MIGRATION_2_3`) storing reminders (`ReminderEntity`) and pinned notes (`isPinned`); exact alarm scheduling guarded by `canScheduleExactAlarms()` and safe `goAsync()` + short-lived `TextToSpeech` fallback in `ReminderReceiver`.
+  - `ProactiveDigestWorker` & lightweight RSS `BriefWorker` delivering morning/evening summaries cleanly without requiring charging locks for non-LLM RSS sync.
 
 ### 4.3 Audio & Speech Recognition Pipeline (`audio/`)
 - **`SpeechToTextHelper.kt`**:
@@ -138,27 +142,23 @@ The Android application is organized under package namespace `com.friday.assista
 - **`WakeWordDetector.kt` (Phone Barge-In & Optional Idle KWS)**:
   - Runs the same zero-false-alarm `PhoneticWakeWordNetV2` (`wakeword_model.h`) natively via `friday_jni.cpp` (`predictWakeWordNative`) with DC-removed AC VAD and multi-frame confirmation (`2` consecutive `>= 0.85` or `3-of-4 >= 0.70`).
   - During `SPEAKING` of substantial responses (`>= 45` chars or streaming LLM), runs in barge-in mode alongside `AcousticEchoCanceler`.
-- **`SpeakerVerifier.kt`**:
-  - ONNX ECAPA-TDNN embedding extractor to authenticate the user's voiceprint.
 
 ### 4.4 Intelligence & Neural Processing (`intelligence/`)
-- **Dual-Stage NLU**:
-  1. **Joint Intent & BIO Neural Slot-Filling Classifier (`NluIntentClassifier.kt`)**:
-     - Single-pass transformer encoder (`joint_nlu_model.onnx`, 21.9 MB INT8 ONNX).
-     - 46 Intent classes + 23 BIO slot tags with sub-6ms CPU latency.
-  2. **Semantic Intent Router (`SemanticIntentRouter.kt`)**:
-     - Cosine similarity matching against `all-MiniLM-L6-v2.onnx` sentence embeddings for zero-shot query generalization.
+- **Single-Pass 12-Layer Joint NLU v2 (`NluIntentClassifier.kt` + `PostClassificationValidator.kt`)**:
+  - Single-pass 12-layer transformer (`BAAI/bge-small-en-v1.5`, `joint_nlu_model.onnx`, 66.58 MB INT8 linear-quantized ONNX) predicting **56 Intent classes + 23 BIO slot tags** (`decodeBioSlots` with orphan `I-X` span promotion).
+- **`RoutineManager.kt`**:
+  - Parses `"create routine <name> that ..."` / `"when i say <phrase> ..."` definitions into `RoutineEntity` multi-step command macros and dispatches steps cleanly through `AgentCore`.
 - **`AgentCore.kt`**:
   - Modular intent routing split across dedicated domain handlers:
-    - Messaging & Calls (WhatsApp autonomous sending, Phone dials).
-    - System Controls (Volume, Brightness, Flashlight/Torch, WiFi, Bluetooth).
-    - Media Controls (Spotify auto-play, YouTube streaming).
-    - Notes & Preferences (Room DB note creation/search/update, personal facts).
-    - Alarms & Timers (Exact alarms, countdown timers).
-    - Search, Sports & Navigation (Google Maps turn-by-turn, `SportsScoreTool` live cricket & football scores, multi-tier web search).
+    - Routines & Reminders (multi-step `RoutineManager`, Room v3 `ReminderScheduler`, Calendar `add_event`/`list_events`).
+    - Messaging & Calls (WhatsApp autonomous sending, Phone dials, `NotificationService` triage).
+    - System Controls (Volume, Torch-before-Brightness, Biometric screen lock, WiFi, Bluetooth, DND, Airplane, Mobile Data).
+    - Media Controls (YouTube Music / YouTube playback, next/previous track, pause).
+    - Notes & Preferences (Room DB note creation/pinning/search/update, semantic memory keys via `PreferenceExtractor`).
+    - Search, Sports & Navigation (Google Maps turn-by-turn, `SportsScoreTool` live cricket & football scores + team follow/unfollow, multi-tier web search).
   - Conversational fallback to local LLM when intent is ambiguous.
-- **`LlamaEngine.kt`**:
-  - Native JNI interface to `llama.cpp`, running quantized `Qwen2.5-0.5B-Instruct` or `1.5B-Instruct` GGUF models on CPU performance cores with `LLAMA_FLASH_ATTN_TYPE_ENABLED` and `ggml_abort_callback` interruption.
+- **`LlamaEngine.kt` & `friday_jni.cpp`**:
+  - Native JNI interface to `llama.cpp`, running quantized `Qwen2.5-0.5B-Instruct` GGUF models on CPU performance cores with `LLAMA_FLASH_ATTN_TYPE_ENABLED`, common-prefix KV reuse (`llama_memory_seq_rm`), and `ggml_abort_callback` interruption.
 
 ### 4.5 Automation & Device Tools (`automation/` & `tools/`)
 - **`FridayAccessibilityService`**:

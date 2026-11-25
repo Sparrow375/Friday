@@ -42,6 +42,37 @@ object PostClassificationValidator {
             return ValidationResult("sports_score", 0.96f, routeToLlm = false)
         }
 
+        // 0b. Deterministic rescues for short system toggles / files / reminders / calendar / notes
+        when {
+            (originalLowerForSports.contains("flashlight") || originalLowerForSports.contains("torch")) &&
+                (originalLowerForSports.contains("brightness") || originalLowerForSports.contains("strength") ||
+                    originalLowerForSports.contains("intensity") || originalLowerForSports.contains("level")) -> {
+                finalIntent = "torch_strength"
+                finalConfidence = maxOf(finalConfidence, 0.94f)
+            }
+            originalLowerForSports.contains("downloads folder") || originalLowerForSports.contains("file manager") -> {
+                finalIntent = "open_files"
+                finalConfidence = maxOf(finalConfidence, 0.92f)
+            }
+            Regex("\\b(dnd|do not disturb)\\b").containsMatchIn(originalLowerForSports) -> {
+                finalIntent = "dnd_toggle"
+                finalConfidence = maxOf(finalConfidence, 0.92f)
+            }
+            Regex("\\b(mobile data|cellular data)\\b").containsMatchIn(originalLowerForSports) -> {
+                finalIntent = "mobile_data_toggle"
+                finalConfidence = maxOf(finalConfidence, 0.92f)
+            }
+            Regex("\\b(airplane mode|flight mode|aeroplane mode)\\b").containsMatchIn(originalLowerForSports) -> {
+                finalIntent = "airplane_mode_toggle"
+                finalConfidence = maxOf(finalConfidence, 0.92f)
+            }
+            originalLowerForSports.contains("list my reminders") || originalLowerForSports.contains("show my reminders") ||
+                originalLowerForSports.contains("what reminders") -> {
+                finalIntent = "reminder_list"
+                finalConfidence = maxOf(finalConfidence, 0.92f)
+            }
+        }
+
         // 1. Play media vs Open app collision check
         if (finalIntent == "play_media" || finalIntent == "play_spotify" || finalIntent == "play_youtube") {
             val queryText = preprocessed.extractedEntities["[QUOTE]"] 

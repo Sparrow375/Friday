@@ -120,3 +120,14 @@
 - [x] 104. Implement Biometric-Friendly Screen Lock (`FridayAccessibilityService.kt`, `AutomationBridge.kt`, `SystemControlsTool.kt`, `QueryResult.kt`, `FridayService.kt`): `GLOBAL_ACTION_LOCK_SCREEN` primary path (refuse `DevicePolicyManager.lockNow()` so biometrics stay enabled) + immediate overlay dismiss
 - [x] 105. Add unit tests, compile Android APK (`./gradlew testDebugUnitTest assembleDebug`) and pendant firmware (`scripts/compile_pendant.py`), update `context.md` & `architechture.md`, commit and push to git
 - [x] 106. Fix post-task false re-trigger bug: upgraded phone-side `WakeWordDetector.kt` from legacy `wakeword.onnx` (which scored 0.9999 on loud noise/TTS) to native C++ `PhoneticWakeWordNetV2` (`wakeword_model.h` via `friday_jni.cpp`) with 2-frame/3-of-4 confirmation, and gated phone/BLE barge-in arming (`0x10`) strictly to substantial responses (`>= 45` chars or LLM stream)
+
+## UI Revamp, Branding, Theme Studio, Backend Fixes & NLU v2 Upgrade
+
+- [x] 107. Prune dead assets & dependencies (`friday_onnx_models.zip`, `friday_onnx_models/`, `wakeword.onnx`, `speaker_verification.onnx`, `DailyBriefScreen.kt`, `SetupWizard.kt`, `SemanticIntentRouter.kt`, unused `mediapipe` entry in `libs.versions.toml`) and clean `ModelManager.kt`
+- [x] 108. Migrate Room DB to v3 (`Entities.kt`, `Dao.kt`, `FridayDatabase.kt`) with `ReminderEntity` (`reminders` table) and `NoteEntity.isPinned` via `MIGRATION_2_3`; refactor `ReminderScheduler.kt` + `ReminderReceiver.kt` (no `startForegroundService` crash, `canScheduleExactAlarms()` guard, natural-time parsing)
+- [x] 109. Fix Manifest/Calendar/Notifications/RSS & JNI KV prefix caching (`AndroidManifest.xml`, `CalendarTool.kt`, `NotificationService.kt`, `BriefScheduler.kt`, `BriefWorker.kt`, `ProactiveDigestWorker.kt`, `friday_jni.cpp`)
+- [x] 110. Implement branding & reactive Theme Studio (`ic_launcher_foreground.xml`, `ic_launcher_background.xml`, `themes.xml`, `strings.xml`, `ThemeStore.kt`, `FridayTheme.kt`, `ThemeStudioScreen.kt`, `FridayOverlayContent.kt`, `AudioWaveformComposable.kt`)
+- [x] 111. Build 3-tab Navigation3 UI (`FridayViewModel.kt`, `FridayBrandComponents.kt`, `HomeDashboardScreen.kt`, `AssistantChatScreen.kt`, `VaultScreen.kt`, `SettingsScreen.kt`, slim `MainActivity.kt`)
+- [x] 112. Train 12-layer Joint NLU v2 (`BAAI/bge-small-en-v1.5`, 56 intents, INT8 ONNX) on RTX 5060 Ti (`scripts/train_joint_nlu_v2.py`, `scripts/eval_nlu_benchmark.py`) and export assets
+- [x] 113. Upgrade NLU runtime, Routines & AgentCore (`WordpieceTokenizer.kt`, `NluIntentClassifier.kt`, `PostClassificationValidator.kt`, `RoutineManager.kt`, `AgentCore.kt`, `FridayService.kt`)
+- [x] 114. Add unit tests, run `testDebugUnitTest assembleDebug`, verify net APK size & all features, update `context.md`, `architechture.md`, `walkthrough.md`, and push to `origin/main`

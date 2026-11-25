@@ -91,6 +91,15 @@ data class CricketScoreItem(
     val description: String
 )
 
+data class SportsScoreCard(
+    val id: String,
+    val sport: String,
+    val title: String,
+    val summary: String,
+    val badge: String, // "LIVE", "FINAL", "NEXT", "FOLLOWING"
+    val isLive: Boolean
+)
+
 data class FootballScoreItem(
     val eventId: String,
     val homeTeam: String,
@@ -512,4 +521,87 @@ class SportsScoreTool(private val context: Context) : Tool {
             formatFootballMatchForSpeech(allMatches.first())
         }
     }
+
+    suspend fun fetchDashboardCards(forceRefresh: Boolean = false): List<SportsScoreCard> {
+        val now = System.currentTimeMillis()
+        if (!forceRefresh && cachedCards.isNotEmpty() && now - lastCardsFetchMs < 120_000L) {
+            return cachedCards
+        }
+        val cricketTeams = SportsPrefs.getCricketTeams(context)
+        val footballTeams = SportsPrefs.getFootballTeams(context)
+        val cards = mutableListOf<SportsScoreCard>()
+
+        coroutineScope {
+            val cricketJob = async {
+                val xml = fetchUrl(CRICINFO_RSS_URL) ?: return@async emptyList<SportsScoreCard>()
+                val matches = parseCricinfoRss(xml)
+                if (matches.isEmpty()) return@async emptyList<SportsScoreCard>()
+                val followed = matches.filter { m ->
+                    cricketTeams.any { team -> matchesTeam("${m.rawTitle} ${m.description}", team) }
+                }
+                val picks = if (followed.isNotEmpty()) followed.take(2) else matches.take(1)
+                picks.mapIndexed { idx, m ->
+                    val speech = formatCricketTitleForSpeech(m.rawTitle)
+                    SportsScoreCard(
+                        id = "cric_$idx",
+                        sport = "Cricket",
+                        title = m.rawTitle.substringBefore("*").trim().take(48),
+                        summary = speech,
+                        badge = if (followed.isNotEmpty()) "LIVE" else "MATCH",
+                        isLive = m.rawTitle.contains("*") || followed.isNotEmpty()
+                    )
+                }
+            }
+
+            val footballJob = async {
+                val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
+                val fmt = SimpleDateFormat("yyyyMMdd", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
+                cal.add(Calendar.DAY_OF_YEAR, -1)
+                val startStr = fmt.format(cal.time)
+                cal.add(Calendar.DAY_OF_YEAR, 2)
+                val dateRange = "$startStr-${fmt.format(cal.time)}"
+                val allMatches = SOCCER_ENDPOINTS.map { base ->
+                    async {
+                        val url = if (base.endsWith("/all/scoreboard")) base else "$base?dates=$dateRange"
+                        val body = fetchUrl(url) ?: return@async emptyList<FootballScoreItem>()
+                        parseEspnSoccerScoreboard(body)
+                    }
+                }.awaitAll().flatten().distinctBy { it.eventId }
+
+                val statePriority = mapOf("in" to 0, "post" to 1, "pre" to 2)
+                val followed = allMatches.filter { m ->
+                    footballTeams.any { t -> matchesTeam("${m.homeTeam} ${m.awayTeam} ${m.homeAbbr} ${m.awayAbbr}", t) }
+                }.sortedBy { statePriority[it.state] ?: 3 }
+
+                val picks = if (followed.isNotEmpty()) followed.take(2) else allMatches.sortedBy { statePriority[it.state] ?: 3 }.take(1)
+                picks.map { m ->
+                    val badge = when (m.state) {
+                        "in" -> "LIVE"
+                        "post" -> "FINAL"
+                        else -> "NEXT"
+                    }
+                    SportsScoreCard(
+                        id = "fb_${m.eventId}",
+                        sport = "Football",
+                        title = "${m.homeAbbr.ifBlank { m.homeTeam }} vs ${m.awayAbbr.ifBlank { m.awayTeam }}",
+                        summary = formatFootballMatchForSpeech(m),
+                        badge = badge,
+                        isLive = m.state == "in"
+                    )
+                }
+            }
+
+            cards.addAll(cricketJob.await())
+            cards.addAll(footballJob.await())
+        }
+
+        if (cards.isNotEmpty()) {
+            cachedCards = cards
+            lastCardsFetchMs = now
+        }
+        return cards
+    }
 }
+
+private var cachedCards: List<SportsScoreCard> = emptyList()
+private var lastCardsFetchMs: Long = 0L

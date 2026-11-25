@@ -46,5 +46,13 @@
   "search_reddit",
   "remember_preference",
   "recall_preference",
-  "unknown"
+  "unknown",
+  "sports_score",
+  "sports_follow",
+  "calendar_list",
+  "calendar_add",
+  "reminder_list",
+  "routine_create",
+  "routine_run",
+  "digest_summary"
 ]

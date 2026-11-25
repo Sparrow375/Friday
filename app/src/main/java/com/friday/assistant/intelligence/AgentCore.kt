@@ -79,14 +79,17 @@ class AgentCore(
     private val llamaEngine = FridayApplication.llamaEngine
     private val promptBuilder = PromptBuilder(memoryManager)
     private val nluClassifier = NluIntentClassifier(context)
-    private val semanticRouter = com.friday.assistant.intelligence.nlu.SemanticIntentRouter(context)
     private val modelManager = com.friday.assistant.core.ModelManager(context)
 
     // Flow to emit streaming output/status events for the UI overlay to show in real time
     private val _agentStatusFlow = MutableSharedFlow<String>(extraBufferCapacity = 10)
     val agentStatusFlow: SharedFlow<String> = _agentStatusFlow.asSharedFlow()
 
-    suspend fun processQuery(userInput: String, onToken: (String) -> Unit = {}): QueryResult {
+    suspend fun processQuery(
+        userInput: String,
+        routineDepth: Int = 0,
+        onToken: (String) -> Unit = {}
+    ): QueryResult {
         com.friday.assistant.core.FridayLogger.i(TAG, "AgentCore processing query: '$userInput'")
 
         // 0. Resolve anaphoric follow-ups ("turn it off" after "turn on torch")
@@ -99,13 +102,15 @@ class AgentCore(
         val preprocessed = InputPreprocessor.preprocess(resolvedInput)
         val cleanQuery = preprocessed.cleanedText.trim().lowercase()
 
-        // 2. Core Intent Classification & Neural Slot Extraction (Joint NLU)
+        // 1b. Check User Voice Routines first (when not already inside a routine execution)
+        if (routineDepth == 0) {
+            handleRoutines(cleanQuery, preprocessed.originalText)?.let { return it }
+        }
+
+        // 2. Core Intent Classification & Neural Slot Extraction (Joint NLU v2)
         val nluResult = withContext(Dispatchers.Default) {
             if (nluClassifier.isModelLoaded()) {
                 nluClassifier.classifyJoint(preprocessed.cleanedText)
-            } else if (semanticRouter.isModelLoaded()) {
-                val res = semanticRouter.routeIntent(preprocessed.cleanedText)
-                JointNluResult(res.first, res.second, emptyMap())
             } else {
                 JointNluResult("unknown", 0f, emptyMap())
             }
@@ -167,6 +172,7 @@ class AgentCore(
                 val finalResponse = sanitizeResponse(response)
                 if (finalResponse.isNotBlank()) {
                     memoryManager.saveConversationTurn(resolvedInput, finalResponse)
+                    PreferenceExtractor.extractAndSavePreferences(resolvedInput, finalResponse, memoryManager)
                     return QueryResult(finalResponse, false)
                 }
             }
@@ -229,23 +235,102 @@ class AgentCore(
         val isShowBriefing = cleanQuery.contains("show briefing") ||
             cleanQuery.contains("open briefing") ||
             cleanQuery.contains("show my briefing") ||
-            cleanQuery.contains("open news") ||
-            cleanQuery.contains("show my feed") ||
-            cleanQuery.contains("open news feed") ||
+            cleanQuery.contains("daily briefing") ||
+            cleanQuery.contains("morning digest") ||
+            cleanQuery.contains("evening summary") ||
+            cleanQuery.contains("catch me up") ||
+            cleanQuery.contains("brief me on today") ||
             cleanQuery.contains("show daily brief") ||
+            matchedIntent == "digest_summary" ||
             matchedIntent == "show_news_briefing"
 
         if (isShowBriefing) {
-            _agentStatusFlow.emit("Opening daily briefing...")
-            return try {
-                val intent = Intent(context, com.friday.assistant.ui.screens.MainActivity::class.java).apply {
-                    putExtra("navigate_to", "briefing")
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                }
-                context.startActivity(intent)
-                fast("Opening daily briefing.")
-            } catch (e: Exception) {
-                QueryResult("Failed to open daily briefing screen.", true)
+            _agentStatusFlow.emit("Preparing your digest...")
+            val dao = FridayApplication.database.dao()
+            val reminders = withContext(Dispatchers.IO) { dao.getActiveRemindersSync() }
+            val events = withContext(Dispatchers.IO) {
+                com.friday.assistant.tools.calendar.CalendarTool.getUpcomingEvents(context, limit = 3, onlyToday = true)
+            }
+            val news = withContext(Dispatchers.IO) { dao.getNewBriefItems(3) }
+
+            val parts = mutableListOf<String>()
+            if (reminders.isNotEmpty()) {
+                parts.add("You have ${reminders.size} upcoming reminder${if (reminders.size > 1) "s" else ""}, starting with ${reminders.first().message}.")
+            }
+            if (events.isNotEmpty()) {
+                parts.add("Today's next calendar event is ${events.first().title}.")
+            }
+            if (news.isNotEmpty()) {
+                parts.add("Top headline from ${news.first().sourceName}: ${news.first().title}.")
+            }
+            val msg = if (parts.isEmpty()) {
+                "Your schedule is clear and no new headlines are cached right now."
+            } else {
+                parts.joinToString(" ")
+            }
+            return fast(msg)
+        }
+
+        val isReminderList = matchedIntent == "reminder_list" ||
+            cleanQuery.contains("list my reminders") ||
+            cleanQuery.contains("list reminders") ||
+            cleanQuery.contains("show my reminders") ||
+            cleanQuery.contains("what reminders do i have") ||
+            cleanQuery.contains("pending reminders")
+        if (isReminderList) {
+            _agentStatusFlow.emit("Checking reminders...")
+            val dao = FridayApplication.database.dao()
+            val active = withContext(Dispatchers.IO) { dao.getActiveRemindersSync() }
+            if (active.isEmpty()) {
+                return fast("You have no pending reminders right now.")
+            }
+            val fmt = java.text.SimpleDateFormat("EEE h:mm a", java.util.Locale.getDefault())
+            val summary = active.take(4).joinToString("; ") { rem ->
+                "${rem.message} at ${fmt.format(java.util.Date(rem.triggerAtMs))}"
+            }
+            return fast("Upcoming reminders: $summary.")
+        }
+
+        val isCalendarList = matchedIntent == "calendar_list" ||
+            cleanQuery.contains("on my calendar") ||
+            cleanQuery.contains("calendar events") ||
+            cleanQuery.contains("todays events") ||
+            cleanQuery.contains("today's events") ||
+            cleanQuery.contains("my schedule today")
+        if (isCalendarList) {
+            val calTool = ToolRegistry.get("calendar_control")
+            if (calTool != null) {
+                _agentStatusFlow.emit("Checking calendar...")
+                val res = calTool.execute(JsonObject().apply { addProperty("action", "list_events") })
+                return toolResult(res)
+            }
+        }
+
+        val isCalendarAdd = matchedIntent == "calendar_add" ||
+            cleanQuery.contains("to my calendar") ||
+            cleanQuery.contains("schedule calendar event") ||
+            cleanQuery.contains("create calendar event")
+        if (isCalendarAdd) {
+            val calTool = ToolRegistry.get("calendar_control")
+            if (calTool != null) {
+                val timeMs = ReminderScheduler.parseNaturalDateTime(preprocessed.originalText)
+                    ?: (System.currentTimeMillis() + 3600_000L)
+                val title = nluSlots["NOTE_CONTENT"] ?: preprocessed.originalText
+                    .replace(Regex("(?i)^(?:add|schedule|create|put)\\s+(?:a\\s+)?(?:calendar\\s+event|meeting|event)?\\s*"), "")
+                    .replace(Regex("(?i)\\s+(?:to|on)\\s+(?:my\\s+)?calendar.*$"), "")
+                    .replace(Regex("(?i)\\s+(?:tomorrow|today|tonight|at|on|in)\\s+.*$"), "")
+                    .trim()
+                    .ifEmpty { "Scheduled Event" }
+                val iso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault())
+                    .format(java.util.Date(timeMs))
+                _agentStatusFlow.emit("Adding calendar event...")
+                val res = calTool.execute(JsonObject().apply {
+                    addProperty("action", "add_event")
+                    addProperty("title", title)
+                    addProperty("start_time", iso)
+                    addProperty("duration", 60)
+                })
+                return toolResult(res)
             }
         }
 
@@ -631,32 +716,7 @@ class AgentCore(
             }
         }
 
-        val isBrightnessQuery = cleanQuery.contains("brightness") || cleanQuery.contains("dim") ||
-            cleanQuery.contains("brighter") || cleanQuery.contains("dimmer") ||
-            matchedIntent == "brightness_up" || matchedIntent == "brightness_down"
-        if (isBrightnessQuery) {
-            val actionVal = nluSlots["VALUE"] ?: when {
-                cleanQuery.contains("max") || cleanQuery.contains("full") || cleanQuery.contains("maximum") || cleanQuery.contains("100%") || cleanQuery.contains("brightest") || cleanQuery.contains("highest") -> "100%"
-                cleanQuery.contains("low") || cleanQuery.contains("minimum") || cleanQuery.contains("lowest") || cleanQuery.contains("darkest") || cleanQuery.contains("0%") || cleanQuery.contains("10%") -> "10%"
-                cleanQuery.contains("medium") || cleanQuery.contains("half") || cleanQuery.contains("50%") -> "50%"
-                else -> {
-                    val pctMatch = PCT_REGEX.find(cleanQuery) ?: BRIGHT_NUM_REGEX.find(cleanQuery)
-                    if (pctMatch != null) "${pctMatch.groupValues[1]}%"
-                    else if (cleanQuery.contains("down") || cleanQuery.contains("decrease") || cleanQuery.contains("lower") || cleanQuery.contains("dimmer") || cleanQuery.contains("less") || matchedIntent == "brightness_down") "down"
-                    else "up"
-                }
-            }
-            _agentStatusFlow.emit("Adjusting brightness...")
-            val tool = ToolRegistry.get("system_control")
-            if (tool != null) {
-                val result = tool.execute(JsonObject().apply {
-                    addProperty("action", "set_brightness")
-                    addProperty("value", actionVal)
-                })
-                return if (result.success) fast(result.data, "brightness", actionVal) else QueryResult("Failed to adjust brightness.", true)
-            }
-        }
-
+        // Check Torch / Flashlight BEFORE screen brightness so "flashlight brightness" routes to torch strength!
         val isTorchQuery = cleanQuery.contains("flashlight") || cleanQuery.contains("torch") || matchedIntent == "torch_toggle" || matchedIntent == "torch_strength"
         if (isTorchQuery) {
             val isOff = cleanQuery.contains("off") || cleanQuery.contains("disable") || cleanQuery.contains("stop") || cleanQuery.contains("deactivate")
@@ -699,6 +759,32 @@ class AgentCore(
                     })
                     return if (result.success) fast(result.data, "torch", "on") else QueryResult("Failed to toggle flashlight.", true)
                 }
+            }
+        }
+
+        val isBrightnessQuery = cleanQuery.contains("brightness") || cleanQuery.contains("dim") ||
+            cleanQuery.contains("brighter") || cleanQuery.contains("dimmer") ||
+            matchedIntent == "brightness_up" || matchedIntent == "brightness_down"
+        if (isBrightnessQuery) {
+            val actionVal = nluSlots["VALUE"] ?: when {
+                cleanQuery.contains("max") || cleanQuery.contains("full") || cleanQuery.contains("maximum") || cleanQuery.contains("100%") || cleanQuery.contains("brightest") || cleanQuery.contains("highest") -> "100%"
+                cleanQuery.contains("low") || cleanQuery.contains("minimum") || cleanQuery.contains("lowest") || cleanQuery.contains("darkest") || cleanQuery.contains("0%") || cleanQuery.contains("10%") -> "10%"
+                cleanQuery.contains("medium") || cleanQuery.contains("half") || cleanQuery.contains("50%") -> "50%"
+                else -> {
+                    val pctMatch = PCT_REGEX.find(cleanQuery) ?: BRIGHT_NUM_REGEX.find(cleanQuery)
+                    if (pctMatch != null) "${pctMatch.groupValues[1]}%"
+                    else if (cleanQuery.contains("down") || cleanQuery.contains("decrease") || cleanQuery.contains("lower") || cleanQuery.contains("dimmer") || cleanQuery.contains("less") || matchedIntent == "brightness_down") "down"
+                    else "up"
+                }
+            }
+            _agentStatusFlow.emit("Adjusting brightness...")
+            val tool = ToolRegistry.get("system_control")
+            if (tool != null) {
+                val result = tool.execute(JsonObject().apply {
+                    addProperty("action", "set_brightness")
+                    addProperty("value", actionVal)
+                })
+                return if (result.success) fast(result.data, "brightness", actionVal) else QueryResult("Failed to adjust brightness.", true)
             }
         }
 
@@ -863,14 +949,14 @@ class AgentCore(
                 return toolResult(result)
             }
         }
-        if (cleanQuery.contains("next track") || cleanQuery.contains("skip") || matchedIntent == "next_track") {
+        if (cleanQuery.contains("next track") || cleanQuery.contains("next song") || cleanQuery.contains("skip") || matchedIntent == "next_track") {
             val tool = ToolRegistry.get("media_control")
             if (tool != null) {
                 val result = tool.execute(JsonObject().apply { addProperty("action", "next") })
                 return toolResult(result)
             }
         }
-        if (cleanQuery.contains("previous track") || (cleanQuery.contains("go back") && cleanQuery.contains("song")) || matchedIntent == "previous_track") {
+        if (cleanQuery.contains("previous track") || cleanQuery.contains("previous song") || cleanQuery.contains("last song") || (cleanQuery.contains("go back") && cleanQuery.contains("song")) || matchedIntent == "previous_track") {
             val tool = ToolRegistry.get("media_control")
             if (tool != null) {
                 val result = tool.execute(JsonObject().apply { addProperty("action", "previous") })
@@ -1027,10 +1113,25 @@ class AgentCore(
             }
         }
 
-        val isFollowTeam = Regex("(?i)(?:remember(?: that)? )?(?:i follow|my favorite (?:cricket |football |soccer )?team is)\\s+(.+)").find(preprocessed.originalText)
-        if (isFollowTeam != null) {
-            val teamName = isFollowTeam.groupValues[1].replace(Regex("[.!?]$"), "").trim()
-            if (teamName.isNotEmpty()) {
+        val isFollowTeam = matchedIntent == "sports_follow" ||
+            Regex("(?i)(?:remember(?: that)? )?(?:i follow|follow|track|my favorite (?:cricket |football |soccer )?team is)\\s+(.+)").containsMatchIn(preprocessed.originalText)
+        if (isFollowTeam) {
+            val unfollowMatch = Regex("(?i)(?:unfollow|stop following)\\s+(.+)").find(preprocessed.originalText)
+            if (unfollowMatch != null) {
+                val teamName = unfollowMatch.groupValues[1].replace(Regex("[.!?]$"), "").trim()
+                if (teamName.isNotEmpty()) {
+                    com.friday.assistant.tools.search.SportsPrefs.removeTeam(context, teamName)
+                    return fast("Stopped following $teamName.")
+                }
+            }
+            val followMatch = Regex("(?i)(?:remember(?: that)? )?(?:i follow|my favorite (?:cricket |football |soccer )?team is|follow|track)\\s+(.+)").find(preprocessed.originalText)
+            val rawTeam = nluSlots["QUERY"] ?: followMatch?.groupValues?.get(1)
+            val teamName = rawTeam
+                ?.replace(Regex("(?i)\\s+(?:scores?|to my followed teams)$"), "")
+                ?.replace(Regex("[.!?]$"), "")
+                ?.trim()
+                .orEmpty()
+            if (teamName.isNotEmpty() && !cleanQuery.contains("follow up")) {
                 val isFoot = cleanQuery.contains("football") || cleanQuery.contains("soccer")
                 val isCric = cleanQuery.contains("cricket")
                 val hint = when {
@@ -1055,9 +1156,10 @@ class AgentCore(
                     val factMatch = Regex("(?i)(?:remember that|store the fact that|keep in mind that|note that)\\s+(.+)").find(preprocessed.originalText)
                     factMatch?.groupValues?.get(1)?.trim() ?: preprocessed.originalText
                 }
+                val semanticKey = derivePreferenceKey(fact)
                 _agentStatusFlow.emit("Saving preference...")
                 val result = rememberTool.execute(JsonObject().apply {
-                    addProperty("key", "preference")
+                    addProperty("key", semanticKey)
                     addProperty("value", fact)
                     addProperty("text", fact)
                 })
@@ -1065,12 +1167,25 @@ class AgentCore(
             }
         }
 
+        val isProfileQuery = cleanQuery == "who am i" ||
+            cleanQuery.contains("tell me about myself") ||
+            cleanQuery.contains("what do you remember about me") ||
+            cleanQuery.contains("what have i told you") ||
+            cleanQuery.contains("my saved preferences") ||
+            cleanQuery.contains("recall what you know")
+        if (isProfileQuery) {
+            _agentStatusFlow.emit("Recalling your profile...")
+            val summary = memoryManager.getPreferencesSummary()
+            return if (summary.startsWith("No user preferences")) {
+                fast("I don't have any saved personal preferences yet. Tell me something to remember.")
+            } else {
+                fast(summary)
+            }
+        }
+
         val isRecall = matchedIntent == "recall_preference" && confidence > 0.6f ||
-                cleanQuery.contains("what do you remember about me") ||
-                cleanQuery.contains("what have i told you") ||
-                cleanQuery.contains("my saved preferences") ||
-                cleanQuery.contains("recall what you know") ||
                 cleanQuery.startsWith("what is my ") || cleanQuery.startsWith("whats my ") ||
+                cleanQuery.startsWith("tell me my ") ||
                 cleanQuery.startsWith("what is ") || cleanQuery.startsWith("whats ")
         if (isRecall) {
             val recallTool = ToolRegistry.get("recall_preference") ?: ToolRegistry.get("recall")
@@ -1143,6 +1258,29 @@ class AgentCore(
             }
         }
 
+        val isOpenFiles = matchedIntent == "open_files" ||
+                cleanQuery.contains("open my files") || cleanQuery.contains("open file manager") ||
+                cleanQuery.contains("show downloads") || cleanQuery.contains("browse documents") ||
+                cleanQuery.contains("show my photos") || cleanQuery.contains("browse my files")
+        if (isOpenFiles) {
+            _agentStatusFlow.emit("Opening file manager...")
+            return try {
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    type = "resource/folder"
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(intent)
+                fast("Opening file manager.")
+            } catch (e: Exception) {
+                val tool = ToolRegistry.get("app_launcher")
+                if (tool != null) {
+                    val result = tool.execute(JsonObject().apply { addProperty("app_name", "files") })
+                    if (result.success) return fast(result.data)
+                }
+                QueryResult("Could not open file manager.", true)
+            }
+        }
+
         val isLaunchApp = (matchedIntent == "open_app" && confidence > 0.7f ||
                 cleanQuery.contains("open ") || cleanQuery.contains("launch ") ||
                 cleanQuery.contains("go to ") || cleanQuery.contains("open up ") || cleanQuery.contains("show ")) &&
@@ -1163,29 +1301,6 @@ class AgentCore(
                     })
                     if (result.success) return fast(result.data)
                 }
-            }
-        }
-
-        val isOpenFiles = matchedIntent == "open_files" && confidence > 0.7f ||
-                cleanQuery.contains("open my files") || cleanQuery.contains("open file manager") ||
-                cleanQuery.contains("show downloads") || cleanQuery.contains("browse documents") ||
-                cleanQuery.contains("show my photos") || cleanQuery.contains("browse my files")
-        if (isOpenFiles) {
-            _agentStatusFlow.emit("Opening file manager...")
-            return try {
-                val intent = Intent(Intent.ACTION_VIEW).apply {
-                    type = "resource/folder"
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                context.startActivity(intent)
-                fast("Opening file manager.")
-            } catch (e: Exception) {
-                val tool = ToolRegistry.get("app_launcher")
-                if (tool != null) {
-                    val result = tool.execute(JsonObject().apply { addProperty("app_name", "files") })
-                    if (result.success) return fast(result.data)
-                }
-                QueryResult("Could not open file manager.", true)
             }
         }
 
@@ -1246,6 +1361,54 @@ class AgentCore(
         }
 
         return null
+    }
+
+    private suspend fun handleRoutines(cleanQuery: String, originalQuery: String): QueryResult? {
+        val parsedCreate = RoutineManager.parseRoutineCommand(originalQuery)
+        if (parsedCreate != null) {
+            val dao = FridayApplication.database.dao()
+            val json = RoutineManager.serializeSteps(parsedCreate.steps)
+            withContext(Dispatchers.IO) {
+                dao.insertRoutine(
+                    com.friday.assistant.core.db.RoutineEntity(
+                        triggerPhrase = parsedCreate.triggerPhrase,
+                        actionSequenceJson = json
+                    )
+                )
+            }
+            return fast("Saved routine '${parsedCreate.triggerPhrase}' with ${parsedCreate.steps.size} steps.")
+        }
+
+        val dao = FridayApplication.database.dao()
+        val matched = withContext(Dispatchers.IO) { RoutineManager.findMatchingRoutine(cleanQuery, dao) }
+            ?: return null
+        val steps = RoutineManager.parseStepList(matched.actionSequenceJson)
+        if (steps.isEmpty()) return null
+
+        _agentStatusFlow.emit("Running ${matched.triggerPhrase} routine...")
+        val results = mutableListOf<String>()
+        var shouldDismiss = false
+        for (step in steps) {
+            val res = processQuery(step, routineDepth = 1)
+            results.add(res.message)
+            if (res.shouldDismissOverlay) shouldDismiss = true
+        }
+        withContext(Dispatchers.IO) { dao.recordRoutineUsage(matched.id) }
+        return QueryResult(results.joinToString(" "), isFastTool = true, shouldDismissOverlay = shouldDismiss)
+    }
+
+    internal fun derivePreferenceKey(fact: String): String {
+        val lower = fact.lowercase()
+        val beforeIs = Regex("(?i)^(?:my\\s+)?([a-z0-9' ]{2,28})\\s+(?:is|are)\\s+").find(lower)
+        if (beforeIs != null) {
+            val slug = beforeIs.groupValues[1].trim().replace(Regex("[^a-z0-9]+"), "_").trim('_')
+            if (slug.isNotEmpty()) return slug
+        }
+        val words = lower.replace(Regex("[^a-z0-9 ]"), " ")
+            .split(Regex("\\s+"))
+            .filter { it.length > 2 && it !in setOf("the", "that", "prefer", "like", "love", "remember", "fact") }
+            .take(3)
+        return if (words.isNotEmpty()) words.joinToString("_") else "preference_${fact.hashCode().toUInt()}"
     }
 
     internal fun isSportsScoreQuery(cleanQuery: String): Boolean {

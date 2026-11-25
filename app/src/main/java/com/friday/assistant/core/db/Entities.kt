@@ -27,7 +27,24 @@ data class NoteEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val content: String,
     val timestamp: Long = System.currentTimeMillis(),
-    val tags: String = "" // comma-separated tags
+    val tags: String = "", // comma-separated tags
+    val isPinned: Boolean = false
+)
+
+@Entity(
+    tableName = "reminders",
+    indices = [
+        Index(value = ["triggerAtMs"]),
+        Index(value = ["requestCode"])
+    ]
+)
+data class ReminderEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val requestCode: Int,
+    val message: String,
+    val triggerAtMs: Long,
+    val isCompleted: Boolean = false,
+    val createdAtMs: Long = System.currentTimeMillis()
 )
 
 @Entity(

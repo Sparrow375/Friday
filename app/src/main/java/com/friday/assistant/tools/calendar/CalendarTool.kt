@@ -1,14 +1,17 @@
 package com.friday.assistant.tools.calendar
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.database.Cursor
 import android.net.Uri
 import android.provider.AlarmClock
 import android.provider.CalendarContract
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.friday.assistant.tools.Tool
 import com.friday.assistant.tools.ToolResult
 import com.google.gson.JsonObject
@@ -19,11 +22,14 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
-class CalendarTool(private val context: Context) : Tool {
+data class CalendarEventItem(
+    val id: Long,
+    val title: String,
+    val startMs: Long,
+    val description: String
+)
 
-    companion object {
-        private const val TAG = "CalendarTool"
-    }
+class CalendarTool(private val context: Context) : Tool {
 
     override val name: String = "calendar_control"
 
@@ -145,42 +151,86 @@ class CalendarTool(private val context: Context) : Tool {
 
     @SuppressLint("Range")
     private fun listEvents(): ToolResult {
-        val contentResolver = context.contentResolver
-        val uri = CalendarContract.Events.CONTENT_URI
-        val projection = arrayOf(
-            CalendarContract.Events._ID,
-            CalendarContract.Events.TITLE,
-            CalendarContract.Events.DTSTART,
-            CalendarContract.Events.DESCRIPTION
-        )
-
-        val now = System.currentTimeMillis()
-        val selection = "${CalendarContract.Events.DTSTART} >= ?"
-        val selectionArgs = arrayOf(now.toString())
-        
-        var cursor: Cursor? = null
+        if (!hasCalendarReadPermission(context)) {
+            return ToolResult(false, "Calendar read permission has not been granted yet. Please grant Calendar permission in Settings or Home.")
+        }
+        val events = getUpcomingEvents(context, limit = 5, onlyToday = false)
+        if (events.isEmpty()) {
+            return ToolResult(true, "No upcoming calendar events found")
+        }
+        val sdf = SimpleDateFormat("MMM d, yyyy HH:mm", Locale.getDefault())
         val result = StringBuilder("Upcoming calendar events:\n")
-        try {
-            cursor = contentResolver.query(uri, projection, selection, selectionArgs, "${CalendarContract.Events.DTSTART} ASC LIMIT 5")
-            if (cursor != null && cursor.moveToFirst()) {
-                val sdf = SimpleDateFormat("MMM d, yyyy HH:mm", Locale.getDefault())
-                do {
-                    val title = cursor.getString(cursor.getColumnIndex(CalendarContract.Events.TITLE))
-                    val dtstart = cursor.getLong(cursor.getColumnIndex(CalendarContract.Events.DTSTART))
-                    val desc = cursor.getString(cursor.getColumnIndex(CalendarContract.Events.DESCRIPTION)) ?: ""
-                    val dateStr = sdf.format(Date(dtstart))
-                    
-                    result.append("- $title on $dateStr" + (if (desc.isNotEmpty()) " ($desc)" else "") + "\n")
-                } while (cursor.moveToNext())
-                return ToolResult(true, result.toString())
+        events.forEach { ev ->
+            val dateStr = sdf.format(Date(ev.startMs))
+            result.append("- ${ev.title} on $dateStr" + (if (ev.description.isNotEmpty()) " (${ev.description})" else "") + "\n")
+        }
+        return ToolResult(true, result.toString())
+    }
+
+    companion object {
+        private const val TAG = "CalendarTool"
+
+        fun hasCalendarReadPermission(context: Context): Boolean {
+            return ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED
+        }
+
+        @SuppressLint("Range")
+        fun getUpcomingEvents(context: Context, limit: Int = 5, onlyToday: Boolean = false): List<CalendarEventItem> {
+            if (!hasCalendarReadPermission(context)) return emptyList()
+            val contentResolver = context.contentResolver
+            val uri = CalendarContract.Events.CONTENT_URI
+            val projection = arrayOf(
+                CalendarContract.Events._ID,
+                CalendarContract.Events.TITLE,
+                CalendarContract.Events.DTSTART,
+                CalendarContract.Events.DESCRIPTION
+            )
+
+            val now = System.currentTimeMillis()
+            val endOfToday = Calendar.getInstance().apply {
+                timeInMillis = now
+                set(Calendar.HOUR_OF_DAY, 23)
+                set(Calendar.MINUTE, 59)
+                set(Calendar.SECOND, 59)
+                set(Calendar.MILLISECOND, 999)
+            }.timeInMillis
+
+            val selection = if (onlyToday) {
+                "${CalendarContract.Events.DTSTART} >= ? AND ${CalendarContract.Events.DTSTART} <= ?"
             } else {
-                return ToolResult(true, "No upcoming calendar events found")
+                "${CalendarContract.Events.DTSTART} >= ?"
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error listing calendar events", e)
-            return ToolResult(false, "Failed to query calendar: ${e.message}")
-        } finally {
-            cursor?.close()
+            val selectionArgs = if (onlyToday) {
+                arrayOf(now.toString(), endOfToday.toString())
+            } else {
+                arrayOf(now.toString())
+            }
+
+            val items = mutableListOf<CalendarEventItem>()
+            var cursor: Cursor? = null
+            try {
+                cursor = contentResolver.query(
+                    uri,
+                    projection,
+                    selection,
+                    selectionArgs,
+                    "${CalendarContract.Events.DTSTART} ASC LIMIT $limit"
+                )
+                if (cursor != null && cursor.moveToFirst()) {
+                    do {
+                        val id = cursor.getLong(cursor.getColumnIndex(CalendarContract.Events._ID))
+                        val title = cursor.getString(cursor.getColumnIndex(CalendarContract.Events.TITLE)) ?: "Untitled Event"
+                        val dtstart = cursor.getLong(cursor.getColumnIndex(CalendarContract.Events.DTSTART))
+                        val desc = cursor.getString(cursor.getColumnIndex(CalendarContract.Events.DESCRIPTION)) ?: ""
+                        items.add(CalendarEventItem(id = id, title = title, startMs = dtstart, description = desc))
+                    } while (cursor.moveToNext())
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error querying calendar events", e)
+            } finally {
+                cursor?.close()
+            }
+            return items
         }
     }
 

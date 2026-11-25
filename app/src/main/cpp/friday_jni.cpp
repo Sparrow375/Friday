@@ -335,11 +335,8 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
     }
     LOGI("Tokenization complete. Prompt tokens count: %d", (int)prompt_tokens.size());
 
-    // Reset KV cache to prevent stale context / desync on back-to-back prompts
+    // Incremental KV prefix reuse: keep matching leading tokens (e.g., static ChatML system prompt)
     llama_memory_t kv = llama_get_memory(state->ctx);
-    llama_memory_clear(kv, true);
-    state->history_tokens.clear();
-
     const int n_ctx_max = llama_n_ctx(state->ctx);
     const int n_prompt = (int)prompt_tokens.size();
     if (n_prompt >= n_ctx_max - 16) {
@@ -347,8 +344,27 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
         return env->NewStringUTF("Error: Prompt exceeds context window");
     }
 
-    // Evaluate prompt tokens in batches of up to 512
-    for (int i = 0; i < n_prompt; i += 512) {
+    size_t common_prefix = 0;
+    const size_t max_shared = (n_prompt > 1) ? static_cast<size_t>(n_prompt - 1) : 0;
+    while (common_prefix < state->history_tokens.size() &&
+           common_prefix < max_shared &&
+           state->history_tokens[common_prefix] == prompt_tokens[common_prefix]) {
+        common_prefix++;
+    }
+
+    if (common_prefix > 0) {
+        if (!llama_memory_seq_rm(kv, 0, static_cast<llama_pos>(common_prefix), -1)) {
+            llama_memory_clear(kv, true);
+            common_prefix = 0;
+        }
+    } else {
+        llama_memory_clear(kv, true);
+    }
+
+    LOGI("Llama KV prefix cache: reused=%zu / prompt=%d tokens", common_prefix, n_prompt);
+
+    // Evaluate only uncached suffix prompt tokens in batches of up to 512
+    for (int i = static_cast<int>(common_prefix); i < n_prompt; i += 512) {
         int n_eval = std::min(n_prompt - i, 512);
         llama_batch batch = llama_batch_init(n_eval, 0, 1);
         batch.n_tokens = n_eval;
@@ -365,9 +381,11 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlama(
         if (decode_res != 0) {
             LOGE("Llama prompt decode failed with status %d", decode_res);
             llama_memory_clear(kv, true);
+            state->history_tokens.clear();
             return env->NewStringUTF("Error: Decode failed");
         }
     }
+    state->history_tokens = prompt_tokens;
 
     // Setup sampler
     struct llama_sampler * smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
@@ -502,11 +520,8 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
         return env->NewStringUTF("Error: Tokenization failed");
     }
 
-    // Reset KV cache to prevent stale context / desync on back-to-back prompts
+    // Incremental KV prefix reuse: keep matching leading tokens (e.g., static ChatML system prompt)
     llama_memory_t kv = llama_get_memory(state->ctx);
-    llama_memory_clear(kv, true);
-    state->history_tokens.clear();
-
     const int n_ctx_max = llama_n_ctx(state->ctx);
     const int n_prompt = (int)prompt_tokens.size();
     if (n_prompt >= n_ctx_max - 16) {
@@ -514,8 +529,27 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
         return env->NewStringUTF("Error: Prompt exceeds context window");
     }
 
-    // Evaluate prompt tokens in batches of up to 512
-    for (int i = 0; i < n_prompt; i += 512) {
+    size_t common_prefix = 0;
+    const size_t max_shared = (n_prompt > 1) ? static_cast<size_t>(n_prompt - 1) : 0;
+    while (common_prefix < state->history_tokens.size() &&
+           common_prefix < max_shared &&
+           state->history_tokens[common_prefix] == prompt_tokens[common_prefix]) {
+        common_prefix++;
+    }
+
+    if (common_prefix > 0) {
+        if (!llama_memory_seq_rm(kv, 0, static_cast<llama_pos>(common_prefix), -1)) {
+            llama_memory_clear(kv, true);
+            common_prefix = 0;
+        }
+    } else {
+        llama_memory_clear(kv, true);
+    }
+
+    LOGI("Llama stream KV prefix cache: reused=%zu / prompt=%d tokens", common_prefix, n_prompt);
+
+    // Evaluate only uncached suffix prompt tokens in batches of up to 512
+    for (int i = static_cast<int>(common_prefix); i < n_prompt; i += 512) {
         int n_eval = std::min(n_prompt - i, 512);
         llama_batch batch = llama_batch_init(n_eval, 0, 1);
         batch.n_tokens = n_eval;
@@ -532,9 +566,11 @@ Java_com_friday_assistant_core_native_LlamaEngine_generateLlamaStream(
         if (decode_res != 0) {
             LOGE("Llama prompt decode failed with status %d", decode_res);
             llama_memory_clear(kv, true);
+            state->history_tokens.clear();
             return env->NewStringUTF("Error: Decode failed");
         }
     }
+    state->history_tokens = prompt_tokens;
 
     // Setup sampler
     struct llama_sampler * smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
