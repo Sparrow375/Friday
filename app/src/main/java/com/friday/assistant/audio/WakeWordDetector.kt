@@ -30,13 +30,13 @@ class WakeWordDetector(
     companion object {
         private const val TAG = "WakeWordDetector"
         private const val WINDOW_SIZE = 24000 // 1.5 seconds at 16kHz
-        private const val MIN_SPEECH_RMS = 95f
+        private const val MIN_SPEECH_RMS = 110f
         private const val MAX_BG_RMS = 300f
-        private const val VAD_MULTIPLIER = 1.30f
-        private const val WAKE_STRONG_FRAME = 0.85f
-        private const val WAKE_STRONG_AVG = 0.88f
-        private const val WAKE_SUSTAINED_FRAME = 0.70f
-        private const val WAKE_SUSTAINED_LATEST = 0.74f
+        private const val VAD_MULTIPLIER = 1.35f
+        private const val WAKE_STRONG_FRAME = 0.90f
+        private const val WAKE_STRONG_AVG = 0.92f
+        private const val WAKE_SUSTAINED_FRAME = 0.82f
+        private const val WAKE_SUSTAINED_LATEST = 0.85f
         private const val BARGE_IN_GRACE_MS = 450L
         private const val TRIGGER_COOLDOWN_MS = 3500L
 
@@ -76,6 +76,7 @@ class WakeWordDetector(
 
     // Multi-frame confirmation history
     private var prevConfidence = 0f
+    private var prevPrevConfidence = 0f
     private val wakeHistory = FloatArray(4)
     private var wakeHistoryIdx = 0
 
@@ -87,6 +88,7 @@ class WakeWordDetector(
 
     private fun resetWakeHistory() {
         prevConfidence = 0f
+        prevPrevConfidence = 0f
         Arrays.fill(wakeHistory, 0f)
         wakeHistoryIdx = 0
     }
@@ -156,7 +158,7 @@ class WakeWordDetector(
         // 2. Adaptive AC VAD gating
         val speechThreshold = (backgroundRms * VAD_MULTIPLIER + 15f).coerceAtLeast(MIN_SPEECH_RMS)
         if (currentRms >= speechThreshold) {
-            speechActiveFrames = 5 // 500ms hangover (5 * 100ms)
+            speechActiveFrames = 3 // 300ms hangover (3 * 100ms)
         } else if (speechActiveFrames > 0) {
             speechActiveFrames--
         } else {
@@ -181,20 +183,18 @@ class WakeWordDetector(
             wakeHistory[wakeHistoryIdx] = confidence
             wakeHistoryIdx = (wakeHistoryIdx + 1) and 0x03
 
-            var moderateHits = 0
-            for (h in wakeHistory) {
-                if (h >= WAKE_SUSTAINED_FRAME) moderateHits++
-            }
-
             val twoFrameAvg = 0.5f * (confidence + prevConfidence)
             val strongConfirmed = confidence >= WAKE_STRONG_FRAME &&
                 prevConfidence >= WAKE_STRONG_FRAME &&
                 twoFrameAvg >= WAKE_STRONG_AVG
-            val sustainedConfirmed = moderateHits >= 3 && confidence >= WAKE_SUSTAINED_LATEST
+            val sustainedConfirmed = confidence >= WAKE_SUSTAINED_LATEST &&
+                prevConfidence >= WAKE_SUSTAINED_FRAME &&
+                prevPrevConfidence >= WAKE_SUSTAINED_FRAME
+            prevPrevConfidence = prevConfidence
             prevConfidence = confidence
 
             if (strongConfirmed || sustainedConfirmed) {
-                Log.i(TAG, "PhoneticWakeWordNetV2 'Friday' CONFIRMED! (score=$confidence, avg=$twoFrameAvg, hits=$moderateHits, bargeIn=$isBargeInMode)")
+                Log.i(TAG, "PhoneticWakeWordNetV2 'Friday' CONFIRMED! (score=$confidence, avg=$twoFrameAvg, bargeIn=$isBargeInMode)")
                 cooldownUntilMs = nowMs + TRIGGER_COOLDOWN_MS
                 speechActiveFrames = 0
                 resetWakeHistory()

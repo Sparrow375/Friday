@@ -61,15 +61,17 @@ PendantState currentState = STATE_IDLE;
 
 // VAD & Wake-word calibrated parameters (pure AC RMS after DC removal)
 float backgroundRms = 60.0f;
-const float VAD_MULTIPLIER = 1.30f;
-const float MIN_SPEECH_RMS = 95.0f;            // True AC RMS floor: captures soft pendant speech (80-480 AC RMS)
-const float MAX_BG_RMS = 300.0f;               // Caps threshold <= 405 AC RMS so loud music doesn't starve voice detection
-const float WAKE_STRONG_FRAME = 0.85f;         // 2 consecutive frames >= 0.85 (avg >= 0.88) -> 160ms fast trigger
-const float WAKE_STRONG_AVG   = 0.88f;
-const float WAKE_SUSTAINED_FRAME = 0.70f;      // OR 3-of-4 recent frames >= 0.70 (latest >= 0.74) -> 240ms robust trigger
+const float VAD_MULTIPLIER = 1.35f;
+const float MIN_SPEECH_RMS = 110.0f;           // True AC RMS floor: rejects mild ambient noise while capturing "Friday" cleanly
+const float MAX_BG_RMS = 300.0f;               // Caps threshold so loud music doesn't starve voice detection
+const float WAKE_STRONG_FRAME = 0.90f;         // 2 consecutive frames >= 0.90 (avg >= 0.92) -> 160ms fast trigger
+const float WAKE_STRONG_AVG   = 0.92f;
+const float WAKE_SUSTAINED_FRAME = 0.82f;      // OR 3 consecutive frames >= 0.82 (latest >= 0.85) -> 240ms sustained trigger
+const float WAKE_SUSTAINED_LATEST = 0.85f;
 unsigned long wakeTriggerTimestamp = 0;
 unsigned long wakeCooldownUntil = 0;           // Cooldown to prevent recursive re-triggering
 static float prevWakeConfidence = 0.0f;
+static float prevPrevWakeConfidence = 0.0f;
 static float wakeHistory[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 static int wakeHistoryIdx = 0;
 bool streamAudioOverBle = true;                // Stream compressed voice command to phone
@@ -197,6 +199,7 @@ void onPDMdata() {
 // Helper to reset multi-frame wake-word history
 static inline void resetWakeHistory() {
   prevWakeConfidence = 0.0f;
+  prevPrevWakeConfidence = 0.0f;
   for (int i = 0; i < 4; i++) wakeHistory[i] = 0.0f;
   wakeHistoryIdx = 0;
 }
@@ -236,10 +239,9 @@ bool checkWakeWord(float currentRms) {
   if (speechThreshold < MIN_SPEECH_RMS) speechThreshold = MIN_SPEECH_RMS;
 
   // Hysteresis Voice Activity Detection:
-  // Once voice/sound crosses threshold, maintain speech window for 32 frames (~500ms)
+  // Once voice/sound crosses threshold, maintain speech window for 20 frames (~320ms)
   if (currentRms >= speechThreshold) {
-    speechActiveFrames = 32;
-    // Track background slowly down if currentRms is steady-ish lower? No, adapt only during quiet gaps or very slowly
+    speechActiveFrames = 20;
   } else {
     if (speechActiveFrames > 0) {
       speechActiveFrames--;
@@ -264,11 +266,6 @@ bool checkWakeWord(float currentRms) {
     wakeHistory[wakeHistoryIdx] = confidence;
     wakeHistoryIdx = (wakeHistoryIdx + 1) & 0x03;
 
-    int moderateHits = 0;
-    for (int i = 0; i < 4; i++) {
-      if (wakeHistory[i] >= WAKE_SUSTAINED_FRAME) moderateHits++;
-    }
-
     // Live feedback in Serial Monitor
     Serial.print(F("[VAD Active] AC_RMS: "));
     Serial.print((int)currentRms);
@@ -282,15 +279,18 @@ bool checkWakeWord(float currentRms) {
     Serial.print(prevWakeConfidence, 3);
     Serial.println(F(")"));
 
-    // Multi-frame verification eliminates single-frame 80ms false spikes completely!
+    // Strict multi-frame verification eliminates single/noisy false spikes while preserving 100% of "Friday" triggers:
+    // Path 1 (Fast 160ms): 2 consecutive frames >= 0.90 AND avg >= 0.92
+    // Path 2 (Sustained 240ms): 3 consecutive frames >= 0.82 AND latest >= 0.85
     bool isTrigger = false;
     float twoFrameAvg = 0.5f * (confidence + prevWakeConfidence);
     if (confidence >= WAKE_STRONG_FRAME && prevWakeConfidence >= WAKE_STRONG_FRAME && twoFrameAvg >= WAKE_STRONG_AVG) {
-      isTrigger = true; // Fast 160ms double confirmation
-    } else if (moderateHits >= 3 && confidence >= 0.74f) {
-      isTrigger = true; // Sustained 240ms confirmation (handles softer utterances over music)
+      isTrigger = true;
+    } else if (confidence >= WAKE_SUSTAINED_LATEST && prevWakeConfidence >= WAKE_SUSTAINED_FRAME && prevPrevWakeConfidence >= WAKE_SUSTAINED_FRAME) {
+      isTrigger = true;
     }
 
+    prevPrevWakeConfidence = prevWakeConfidence;
     prevWakeConfidence = confidence;
 
     if (isTrigger) {

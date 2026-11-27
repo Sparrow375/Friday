@@ -98,7 +98,11 @@ object InputPreprocessor {
             entities["[TIME]"] = entities["[TIME_1]"]!!
         }
 
-        Log.d(TAG, "Preprocessed: Cleaned='$workingText', Entities=$entities")
+        try {
+            Log.d(TAG, "Preprocessed: Cleaned='$workingText', Entities=$entities")
+        } catch (_: Throwable) {
+            // Safe fallback in pure-JVM unit tests without Android Log framework stubs
+        }
         return PreprocessedInput(workingText, originalText, entities)
     }
 }

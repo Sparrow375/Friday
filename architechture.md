@@ -62,15 +62,15 @@ graph TD
    - Captures raw 16kHz 16-bit PCM mono audio stream directly from PDM hardware peripheral using DMA.
 2. **Stage 0: DC-Removed Micro-VAD Energy Gating & Boot Calibration**:
    - Dynamic AC Noise Floor Calibration: `onPDMdata()` subtracts per-frame DC offset before computing Root-Mean-Square (RMS), eliminating static mic/ADC biases (-548 to +211 ADC counts).
-   - Adaptive speech threshold (`speechThreshold = backgroundRms * 1.30f + 15.0f`, minimum floor `MIN_SPEECH_RMS = 95.0f`, background ceiling `MAX_BG_RMS = 300.0f`) ensures soft speech triggers cleanly in silence while preventing loud room music from starving normal-volume speech.
+   - Adaptive speech threshold (`speechThreshold = backgroundRms * 1.35f + 15.0f`, minimum floor `MIN_SPEECH_RMS = 110.0f`, background ceiling `MAX_BG_RMS = 300.0f`) ensures soft speech triggers cleanly in silence while preventing loud room music from starving normal-volume speech.
 3. **Stage 1: TinyML Wake-Word Engine ("Friday" via `wakeword_model.h`)**:
    - Runs a 25,489-parameter Translation-Invariant Depthwise Separable CNN + 1D Temporal Motif Conv (`PhoneticWakeWordNetV2`) on a 1.5-second (24,000 samples @ 16kHz) rolling circular buffer (~143 KB total sketch Flash, ~141 KB total static BSS RAM).
    - **Per-Window DC Removal & 4-Layer Phonetic Defense Architecture**:
-     - **DC Subtraction (`meanRaw`) & AC Peak Gate (`acMaxAbs < 240.0f`)**: Strips window DC mean prior to AC peak normalization and FFT, ensuring uniform behavior across sessions and preventing DC offsets from bypassing the silence gate.
+     - **DC Subtraction (`meanRaw`) & AC Peak Gate (`acMaxAbs < 300.0f`)**: Strips window DC mean prior to AC peak normalization and FFT, ensuring uniform behavior across sessions and preventing DC offsets or low ambient rustle from bypassing the silence gate.
      - **32 Mel Filterbank Channels & 4 DS-Conv Blocks (`1->16->32->48->48`)**: Resolves formant trajectories F1 (300-800 Hz) and F2 (800-2200 Hz) into 8 chronological time slices.
      - **1D Temporal Motif Conv (`Conv1d(48, 64, kernel_size=5)`) + Global Max/Avg Dual-Pooling (`128 -> 32 -> 1`)**: Detects the ordered phoneme progression /f/ -> /r/ -> /aI/ -> /d/ -> /eI/ anywhere inside the 1.5s sliding window (`97.4% - 100.0%` recall across ±400ms shifts), achieving `0` triggers on unseen loud music (562 windows), unseen TV/cough (306 windows), unseen JFK speech (119 windows), and unseen TTS voices (109 clips).
      - **Layer 3 (Spectral Variance Pre-Filter)**: Instantly rejects stationary room noise and hiss (`variance < 0.052f`).
-   - **Multi-Frame Temporal Verification** (no single-frame instant triggers): Fires only on 2 consecutive 80ms frames `>= 0.85` (avg `>= 0.88`, ~160ms) OR 3-of-4 frames `>= 0.70` (latest `>= 0.74`, ~240ms), eliminating isolated 80ms transient glitches.
+   - **Multi-Frame Temporal Verification** (no single-frame instant triggers): Fires only on 2 consecutive 80ms frames `>= 0.90` (`avg >= 0.92`, ~160ms) OR 3 consecutive frames `>= 0.82` (`latest >= 0.85`, ~240ms), eliminating isolated spikes and noisy mild-room triggers.
    - Enforces a 4.0s cooldown after wake-word detection or audio streaming to prevent recursive self-triggering loops.
 4. **Stage 2: BLE GATT Server (`bluefruit.h` via `Bluefruit52Lib`)**:
    - Built on the Nordic SoftDevice S140 stack bundled directly with Seeed nRF52 Boards, configured with `Bluefruit.configPrphBandwidth(BANDWIDTH_MAX)` to support MTU 247.
@@ -141,23 +141,24 @@ The Android application is organized under package namespace `com.friday.assista
   - Configured with hallucination suppression parameters (`suppress_blank = true`, `suppress_nst = true`, `no_context = true`, `single_segment = true`, `temperature = 0.0f`).
   - Gated by audio RMS energy check (`rms >= 0.003f`, `maxPeak >= 0.015f`) to eliminate transcription of silence/noise.
 - **`WakeWordDetector.kt` (Phone Barge-In & Optional Idle KWS)**:
-  - Runs the same zero-false-alarm `PhoneticWakeWordNetV2` (`wakeword_model.h`) natively via `friday_jni.cpp` (`predictWakeWordNative`) with DC-removed AC VAD and multi-frame confirmation (`2` consecutive `>= 0.85` or `3-of-4 >= 0.70`).
+  - Runs the same zero-false-alarm `PhoneticWakeWordNetV2` (`wakeword_model.h`) natively via `friday_jni.cpp` (`predictWakeWordNative`) with DC-removed AC VAD (`MIN_SPEECH_RMS = 110f`, `VAD_MULTIPLIER = 1.35f`) and multi-frame confirmation (`2` consecutive `>= 0.90` with `avg >= 0.92`, OR `3` consecutive `>= 0.82` with `latest >= 0.85`).
   - During `SPEAKING` of substantial responses (`>= 45` chars or streaming LLM), runs in barge-in mode alongside `AcousticEchoCanceler`.
 
 ### 4.4 Intelligence & Neural Processing (`intelligence/`)
 - **Single-Pass 12-Layer Joint NLU v2 (`NluIntentClassifier.kt` + `PostClassificationValidator.kt`)**:
   - Single-pass 12-layer transformer (`BAAI/bge-small-en-v1.5`, `joint_nlu_model.onnx`, 66.58 MB INT8 linear-quantized ONNX) predicting **56 Intent classes + 23 BIO slot tags** (`decodeBioSlots` with orphan `I-X` span promotion).
+  - `PostClassificationValidator.validateRules(...)` applies deterministic keyword rescues (`set_reminder`, `reminder_list`, `set_alarm`, `set_timer`, `take_screenshot`, `volume_up/down`, `torch_toggle`, `brightness_down`, system toggles) and enforces the **Strict Web Search Lock** (blocks `search_google`/`web_search` unless `\bsearch\b` was spoken).
 - **`RoutineManager.kt`**:
   - Parses `"create routine <name> that ..."` / `"when i say <phrase> ..."` definitions into `RoutineEntity` multi-step command macros and dispatches steps cleanly through `AgentCore`.
 - **`AgentCore.kt`**:
-  - Modular intent routing split across dedicated domain handlers:
+  - Evaluates deterministic domain handlers *before* LLM or search fallback (even when NLU confidence `< 0.60f`), preventing device/reminder commands from leaking into fallback handlers:
     - Routines & Reminders (multi-step `RoutineManager`, Room v3 `ReminderScheduler`, Calendar `add_event`/`list_events`).
-    - Messaging & Calls (WhatsApp autonomous sending, Phone dials, `NotificationService` triage).
-    - System Controls (Volume, Torch-before-Brightness, Biometric screen lock, WiFi, Bluetooth, DND, Airplane, Mobile Data).
+    - Messaging & Calls (WhatsApp autonomous sending, Phone dials, `NotificationService` triage; excludes plain `"open whatsapp"` from message collision).
+    - System Controls (Volume incl. `"turn up/down the music"`, Torch-before-Brightness, Biometric screen lock, WiFi, Bluetooth, DND, Airplane, Mobile Data).
     - Media Controls (YouTube Music / YouTube playback, next/previous track, pause).
     - Notes & Preferences (Room DB note creation/pinning/search/update, semantic memory keys via `PreferenceExtractor`).
-    - Search, Sports & Navigation (Google Maps turn-by-turn, `SportsScoreTool` live cricket & football scores + team follow/unfollow, multi-tier web search).
-  - Conversational fallback to local LLM when intent is ambiguous.
+    - Search, Sports & Navigation (Google Maps turn-by-turn, `SportsScoreTool` live cricket & football scores + team follow/unfollow, and web/Google search **strictly locked to queries containing `\bsearch\b`**).
+  - Conversational fallback to local LLM when intent is unmatched, with clear non-searching prompt when LLM is unavailable and `'search'` was not spoken.
 - **`LlamaEngine.kt` & `friday_jni.cpp`**:
   - Native JNI interface to `llama.cpp`, running quantized `Qwen2.5-0.5B-Instruct` GGUF models on CPU performance cores with `LLAMA_FLASH_ATTN_TYPE_ENABLED`, common-prefix KV reuse (`llama_memory_seq_rm`), and `ggml_abort_callback` interruption.
 

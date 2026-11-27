@@ -131,22 +131,20 @@ class AgentCore(
             "Joint NLU result: matchedIntent=$matchedIntent, confidence=$confidence, slots=$nluSlots, routeToLlm=$routeToLlm"
         )
 
-        // 4. Direct Command Execution (bypassed if routeToLlm is true, EXCEPT for web/google searches & live sports scores)
+        // 4. Always evaluate deterministic/validated command handlers FIRST, even when NLU confidence is borderline.
+        //    Individual handlers gate pure-NLU matches on confidence while letting explicit keyword commands succeed.
+        //    Web search is strictly locked to explicit queries containing the word 'search'.
+        val hasExplicitSearchKeyword = Regex("\\bsearch\\b").containsMatchIn(cleanQuery)
         val isSportsQuery = matchedIntent == "sports_score" || isSportsScoreQuery(cleanQuery)
-        val isExplicitSearch = !isSportsQuery && (matchedIntent == "search_google" || matchedIntent == "web_search" ||
-            cleanQuery.contains("google") || cleanQuery.startsWith("search ") || cleanQuery.startsWith("search on google") ||
-            cleanQuery.startsWith("look up ") || cleanQuery.contains("search the web"))
-        if (!routeToLlm || isExplicitSearch || isSportsQuery) {
-            if (isSportsQuery) {
-                handleSportsScores(preprocessed.originalText)?.let { return it }
-            }
-            handleBriefingAndAlarms(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
-            handleMessagingAndCalls(cleanQuery, matchedIntent, preprocessed, nluSlots)?.let { return it }
-            handleSystemControls(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
-            handleMedia(cleanQuery, matchedIntent, preprocessed, nluSlots)?.let { return it }
-            handleNotesAndPreferences(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
-            handleAppsAndNavigation(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
+        if (isSportsQuery) {
+            handleSportsScores(preprocessed.originalText)?.let { return it }
         }
+        handleBriefingAndAlarms(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
+        handleMessagingAndCalls(cleanQuery, matchedIntent, preprocessed, nluSlots)?.let { return it }
+        handleSystemControls(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
+        handleMedia(cleanQuery, matchedIntent, preprocessed, nluSlots)?.let { return it }
+        handleNotesAndPreferences(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
+        handleAppsAndNavigation(cleanQuery, matchedIntent, preprocessed, nluSlots, confidence)?.let { return it }
 
         // 5. Fallback: LLM Chat Brain (Free of Tool Calling Loop)
         val sharedPrefs = context.getSharedPreferences("friday_model_prefs", Context.MODE_PRIVATE)
@@ -178,25 +176,34 @@ class AgentCore(
             }
         }
 
-        // 6. Online search fallback: Query web search and speak the extracted answer
-        _agentStatusFlow.emit("Searching the web...")
-        val searchTool = ToolRegistry.get("web_search")
-        if (searchTool != null) {
-            val cleanSearch = cleanQuery
-                .replace(Regex("(?i)^(?:google|search on google for|search on google|search google for|search google|search for|search|look up)\\s+"), "")
-                .replace(Regex("(?i)\\s+on\\s+google$"), "")
-                .replace(Regex("(?i)\\s+google$"), "")
-                .trim()
-            val q = if (cleanSearch.isNotEmpty()) cleanSearch else resolvedInput
-            val result = searchTool.execute(JsonObject().apply {
-                addProperty("query", q)
-            })
-            if (result.success && result.data.isNotBlank()) {
-                return fast(result.data)
+        // 6. Locked Web Search Fallback: ONLY run web_search when the user explicitly said 'search'
+        if (hasExplicitSearchKeyword) {
+            _agentStatusFlow.emit("Searching the web...")
+            val searchTool = ToolRegistry.get("web_search")
+            if (searchTool != null) {
+                val cleanSearch = cleanQuery
+                    .replace(Regex("(?i)^(?:google|search on google for|search on google|search google for|search google|search for|search)\\s+"), "")
+                    .replace(Regex("(?i)\\s+on\\s+google$"), "")
+                    .replace(Regex("(?i)\\s+google$"), "")
+                    .trim()
+                val q = if (cleanSearch.isNotEmpty()) cleanSearch else resolvedInput
+                val result = searchTool.execute(JsonObject().apply {
+                    addProperty("query", q)
+                })
+                if (result.success && result.data.isNotBlank()) {
+                    return fast(result.data)
+                }
             }
         }
 
-        return QueryResult("I couldn't find an answer online, and the offline brain (Qwen GGUF) is not loaded. You can enable or download it in the Friday dashboard.", false)
+        return QueryResult(
+            if (useLlm && !modelManager.isLlmLoaded()) {
+                "I couldn't match a device command for that. Say 'search ...' to search the web, or download the local AI brain in Settings."
+            } else {
+                "I didn't recognize that command. Say 'search ...' if you want me to search the web."
+            },
+            false
+        )
     }
 
     private suspend fun handleBriefingAndAlarms(
@@ -271,7 +278,8 @@ class AgentCore(
             return fast(msg)
         }
 
-        val isReminderList = matchedIntent == "reminder_list" ||
+        val isReminderList = (matchedIntent == "reminder_list" && confidence > 0.6f) ||
+            Regex("\\b(list|show|what|check|any|pending)\\b.*\\breminders?\\b").containsMatchIn(cleanQuery) ||
             cleanQuery.contains("list my reminders") ||
             cleanQuery.contains("list reminders") ||
             cleanQuery.contains("show my reminders") ||
@@ -344,7 +352,8 @@ class AgentCore(
             return fast("It's ${fmt.format(java.util.Date())}.")
         }
 
-        val isSetAlarm = matchedIntent == "set_alarm" && confidence > 0.7f ||
+        val isSetAlarm = (matchedIntent == "set_alarm" && confidence > 0.7f) ||
+                Regex("\\b(alarm|wake me up)\\b").containsMatchIn(cleanQuery) ||
                 ALARM_FOR_REGEX.containsMatchIn(cleanQuery) ||
                 ALARM_WAKE_REGEX.containsMatchIn(cleanQuery)
         if (isSetAlarm) {
@@ -382,7 +391,8 @@ class AgentCore(
             }
         }
 
-        val isSetTimer = matchedIntent == "set_timer" && confidence > 0.7f ||
+        val isSetTimer = (matchedIntent == "set_timer" && confidence > 0.7f) ||
+                Regex("\\b(timer|countdown)\\b").containsMatchIn(cleanQuery) ||
                 TIMER_FOR_REGEX.containsMatchIn(cleanQuery) ||
                 TIMER_COUNTDOWN_REGEX.containsMatchIn(cleanQuery)
         if (isSetTimer) {
@@ -418,9 +428,11 @@ class AgentCore(
             }
         }
 
-        // Timed Spoken Reminders (e.g. "remind me to pay the bill tomorrow", "remind me to buy groceries tomorrow at 7pm", "remind me in 10 minutes to drink water")
-        val isReminderQuery = matchedIntent == "set_reminder" ||
-            cleanQuery.contains("remind me") || cleanQuery.contains("set a reminder") || cleanQuery.startsWith("remind ")
+        // Timed Spoken Reminders (catches any 'remind'/'reminder' phrasing deterministically)
+        val isReminderQuery = (matchedIntent == "set_reminder" && confidence > 0.6f) ||
+            Regex("\\b(remind|reminder|reminders)\\b").containsMatchIn(cleanQuery) ||
+            cleanQuery.contains("don't let me forget") ||
+            cleanQuery.contains("dont let me forget")
         if (isReminderQuery) {
             val rawTime = nluSlots["TIME"]?.trim()
             val timeText = if (!rawTime.isNullOrBlank() && rawTime.length > 1 && !rawTime.matches(Regex("^[.,!?:;\"'\\-_/\\\\]+$"))) {
@@ -440,9 +452,11 @@ class AgentCore(
                 return text
                     .replace(Regex("(?i)^(?:friday|hey friday)[,\\s]*"), "")
                     .replace(Regex("(?i)\\b(?:please|can you|could you)\\b"), "")
+                    .replace(Regex("(?i)(?:set|add|create|make|schedule|put)\\s+(?:a|an)?\\s*reminders?\\s*(?:to|of|about|for)?\\s*"), "")
+                    .replace(Regex("(?i)(?:don'?t let me forget)\\s*(?:to|about)?\\s*"), "")
                     .replace(Regex("(?i)remind me (?:to|of|about)?\\s*"), "")
-                    .replace(Regex("(?i)set a reminder (?:to|of|about|for)?\\s*"), "")
-                    .replace(Regex("(?i)remind\\s+"), "")
+                    .replace(Regex("(?i)\\breminders?\\s*(?:to|of|about|for)?\\s*"), "")
+                    .replace(Regex("(?i)\\bremind\\s+(?:to|of|about)?\\s*"), "")
                     .replace(Regex("(?i)\\bin\\s+\\d+\\s*(?:months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b"), "")
                     .replace(Regex("(?i)\\bfor\\s+\\d+\\s*(?:months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b"), "")
                     .replace(Regex("(?i)\\bafter\\s+\\d+\\s*(?:months?|weeks?|days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\\b"), "")
@@ -510,11 +524,13 @@ class AgentCore(
             !cleanQuery.contains("call log") &&
             !cleanQuery.contains("recent calls") &&
             !cleanQuery.contains("missed calls")
-        val hasMsgVerb = cleanQuery.contains(Regex("\\b(message|text|whatsapp|sms|saying|send)\\b"))
+        val hasMsgVerb = cleanQuery.contains(Regex("\\b(message|text|sms|saying|send)\\b"))
 
-        // 1. WhatsApp & Messaging FIRST (prevents calling collision!)
-        val isWhatsAppQuery = matchedIntent == "send_whatsapp" || hasMsgVerb ||
-            cleanQuery.contains("whatsapp") || cleanQuery.startsWith("send message") || cleanQuery.startsWith("text ")
+        // 1. WhatsApp & Messaging FIRST (skip plain "open whatsapp" / "launch whatsapp" without message verb)
+        val isOpenCommand = cleanQuery.startsWith("open ") || cleanQuery.startsWith("launch ") || cleanQuery.startsWith("start ")
+        val isWhatsAppQuery = (matchedIntent == "send_whatsapp" && !isOpenCommand) || hasMsgVerb ||
+            (cleanQuery.contains("whatsapp") && !isOpenCommand) ||
+            cleanQuery.startsWith("send message") || cleanQuery.startsWith("text ")
         if (isWhatsAppQuery && !hasExplicitCallVerb) {
             var recipient = (nluSlots["CONTACT"] ?: preprocessed.extractedEntities["[CONTACT]"] ?: "")
                 .replace(Regex("[\\[\\]]"), "").trim()
@@ -690,7 +706,13 @@ class AgentCore(
             }
         }
 
-        val isVolumeQuery = cleanQuery.contains("volume") || cleanQuery.contains("sound") || cleanQuery.contains("audio") || cleanQuery.contains("mute") || cleanQuery.contains("unmute") || cleanQuery.contains("louder") || cleanQuery.contains("quieter") || matchedIntent == "volume_up" || matchedIntent == "volume_down"
+        val isVolumeQuery = cleanQuery.contains("volume") || cleanQuery.contains("sound") || cleanQuery.contains("audio") ||
+            cleanQuery.contains("mute") || cleanQuery.contains("unmute") ||
+            cleanQuery.contains("louder") || cleanQuery.contains("quieter") ||
+            Regex("\\bturn\\s+(?:the\\s+)?(?:music|volume|sound|audio)\\s+(?:up|down)\\b").containsMatchIn(cleanQuery) ||
+            Regex("\\bturn\\s+(?:up|down)\\s+(?:the\\s+)?(?:music|volume|sound|audio)\\b").containsMatchIn(cleanQuery) ||
+            (matchedIntent == "volume_up" && confidence > 0.6f) ||
+            (matchedIntent == "volume_down" && confidence > 0.6f)
         if (isVolumeQuery) {
             val actionVal = nluSlots["VALUE"] ?: when {
                 cleanQuery.contains("unmute") -> "50%"
@@ -1283,8 +1305,9 @@ class AgentCore(
 
         val isLaunchApp = (matchedIntent == "open_app" && confidence > 0.7f ||
                 cleanQuery.contains("open ") || cleanQuery.contains("launch ") ||
-                cleanQuery.contains("go to ") || cleanQuery.contains("open up ") || cleanQuery.contains("show ")) &&
+                cleanQuery.contains("go to ") || cleanQuery.contains("open up ")) &&
             !cleanQuery.contains("play ") && !cleanQuery.contains("listen to") &&
+            !Regex("\\bsearch\\b").containsMatchIn(cleanQuery) &&
             matchedIntent != "play_media" && matchedIntent != "play_spotify" && matchedIntent != "play_youtube"
         if (isLaunchApp) {
             var appName = nluSlots["APP"] ?: EntityExtractor.extractLaunchAppName(preprocessed.originalText)
@@ -1299,12 +1322,15 @@ class AgentCore(
                     val result = tool.execute(JsonObject().apply {
                         addProperty("app_name", appName)
                     })
-                    if (result.success) return fast(result.data)
+                    if (result.success || cleanQuery.startsWith("open ") || cleanQuery.startsWith("launch ") || matchedIntent == "open_app") {
+                        return fast(result.data)
+                    }
                 }
             }
         }
 
-        val isSearchReddit = matchedIntent == "search_reddit" && confidence > 0.6f ||
+        val hasSearchKeyword = Regex("\\bsearch\\b").containsMatchIn(cleanQuery)
+        val isSearchReddit = (hasSearchKeyword && cleanQuery.contains("reddit")) ||
                 cleanQuery.contains("on reddit") || cleanQuery.contains("reddit search")
         if (isSearchReddit) {
             var searchPhrase = nluSlots["QUERY"]
@@ -1327,27 +1353,24 @@ class AgentCore(
             }
         }
 
-        val isSearchGoogle = matchedIntent == "search_google" || (matchedIntent == "web_search" && confidence > 0.6f) ||
-                cleanQuery.startsWith("google ") || cleanQuery.contains("search google") ||
-                cleanQuery.contains("search on google") || cleanQuery.startsWith("search on google") ||
-                cleanQuery.contains("search the web for") || cleanQuery.contains("on google") ||
-                cleanQuery.startsWith("search for ") || cleanQuery.startsWith("search ") ||
-                cleanQuery.startsWith("look up ") ||
-                (cleanQuery.contains("look this up") && !cleanQuery.contains("reddit"))
+        // Strict Search Lock: ONLY trigger web/Google search when explicit 'search' keyword was spoken
+        val isSearchGoogle = hasSearchKeyword && (
+                matchedIntent == "search_google" || matchedIntent == "web_search" ||
+                cleanQuery.contains("search google") || cleanQuery.contains("search on google") ||
+                cleanQuery.contains("search the web") || cleanQuery.contains("search for ") ||
+                cleanQuery.startsWith("search ") || Regex("\\bsearch\\b").containsMatchIn(cleanQuery)
+            )
         if (isSearchGoogle) {
             var searchPhrase = nluSlots["QUERY"]
             if (searchPhrase.isNullOrBlank()) {
                 searchPhrase = cleanQuery
-                    .replace(Regex("(?i)^(?:google|search on google for|search on google|search google for|search google|search for|search|look up)\\s+"), "")
+                    .replace(Regex("(?i)^(?:google|search on google for|search on google|search google for|search google|search the web for|search for|search)\\s+"), "")
                     .replace(Regex("(?i)\\s+on\\s+google$"), "")
                     .replace(Regex("(?i)\\s+google$"), "")
                     .trim()
             }
             if (searchPhrase.isEmpty()) searchPhrase = preprocessed.originalText
             _agentStatusFlow.emit("Searching Google...")
-            // Explicit search commands open Google directly in the browser —
-            // DO NOT call WebSearchTool here, as it returns irrelevant Wikipedia
-            // definitions instead of opening the actual search page.
             return try {
                 val intent = Intent(Intent.ACTION_VIEW).apply {
                     data = Uri.parse("https://www.google.com/search?q=" + java.net.URLEncoder.encode(searchPhrase, "UTF-8"))

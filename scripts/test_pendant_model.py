@@ -46,16 +46,14 @@ def eval_stream(model, chunks):
     single_75 = int(np.sum(arr >= 0.75))
     single_85 = int(np.sum(arr >= 0.85))
     consec2_85 = int(np.sum((arr[1:] >= 0.85) & (arr[:-1] >= 0.85))) if len(arr) > 1 else 0
-    # Firmware rule: 2 consec >= 0.85 with avg >= 0.88 OR 3-of-4 >= 0.70 with cur >= 0.74
+    # Firmware rule: 2 consec >= 0.90 (avg >= 0.92) OR 3 consec >= 0.82 (latest >= 0.85)
     fw_triggers = 0
     for i in range(len(arr)):
         trig = False
-        if i >= 1 and arr[i] >= 0.85 and arr[i - 1] >= 0.85 and 0.5 * (arr[i] + arr[i - 1]) >= 0.88:
+        if i >= 1 and arr[i] >= 0.90 and arr[i - 1] >= 0.90 and 0.5 * (arr[i] + arr[i - 1]) >= 0.92:
             trig = True
-        elif i >= 3:
-            hits = sum(1 for k in range(i - 3, i + 1) if arr[k] >= 0.70)
-            if hits >= 3 and arr[i] >= 0.74:
-                trig = True
+        elif i >= 2 and arr[i] >= 0.85 and arr[i - 1] >= 0.82 and arr[i - 2] >= 0.82:
+            trig = True
         if trig:
             fw_triggers += 1
     return {

@@ -468,7 +468,7 @@ static inline float predictWakeWordScoreCircular(const short* circBuffer, int he
         if (val > acMaxAbs) acMaxAbs = val;
     }
 
-    if (acMaxAbs < 240.0f) {
+    if (acMaxAbs < 300.0f) {
         return 0.0f;
     }
 
@@ -491,7 +491,7 @@ static inline float predictWakeWordScore(const short* audio24k) {
         if (val > acMaxAbs) acMaxAbs = val;
     }
 
-    if (acMaxAbs < 240.0f) {
+    if (acMaxAbs < 300.0f) {
         return 0.0f;
     }
 
@@ -501,7 +501,7 @@ static inline float predictWakeWordScore(const short* audio24k) {
     return forwardCnn();
 }
 
-static inline bool isWakeWordDetected(const short* audio24k, float threshold = 0.70f) {
+static inline bool isWakeWordDetected(const short* audio24k, float threshold = 0.85f) {
     return predictWakeWordScore(audio24k) >= threshold;
 }
 

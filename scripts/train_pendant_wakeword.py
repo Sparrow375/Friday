@@ -96,7 +96,7 @@ def extract_log_mel_spectrogram(samples_float, check_gates=False):
 
     # AC Peak normalization invariant to speaker distance / whispering / shouting
     peak = float(np.max(np.abs(samples_ac)))
-    if check_gates and peak < (240.0 / 32768.0):
+    if check_gates and peak < (300.0 / 32768.0):
         return None
     if peak > (300.0 / 32768.0):
         samples_ac = (samples_ac / peak) * 0.5

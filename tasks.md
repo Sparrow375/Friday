@@ -140,3 +140,11 @@
 - [x] 117. Fix `FridayService.kt` & `FridayBleWearableManager.kt` pendant audio gating & race conditions (synchronous `isPendantWakeActive`, DC-removed AC RMS gate calibrated for chest mic, `preprocessPendantAudio` boost up to 12x, partial-transcript fallback protection, wake timeout extension on chunks, and non-destructive `0x02` stream state handling)
 - [x] 118. Verify firmware compilation (`python scripts/compile_pendant.py`) and Android unit tests + debug APK (`.\gradlew.bat testDebugUnitTest assembleDebug --no-daemon`)
 - [x] 119. Update `context.md` (and `architechture.md` if protocol timings changed), commit, and push to `origin main`
+
+## Wake-Word Threshold Hardening, Web Search Lock & Smart NLU Routing
+
+- [x] 120. Benchmark sliding-window wake-word score distributions across all 179 user `'Friday'` recordings and negative streams (`STRICT_A`: `2 consec >= 0.90 avg >= 0.92` OR `3 consec >= 0.82 cur >= 0.85` preserves `179/179 (100.0%)` true recall)
+- [x] 121. Raise wake-word acceptance bar across firmware (`xiao_friday_pendant.ino`, `wakeword_model.h`), phone barge-in (`WakeWordDetector.kt`), and benchmark scripts (`train_pendant_wakeword.py`, `test_pendant_model.py`) with `300.0f` AC peak gate and `110.0f` AC RMS floor
+- [x] 122. Lock web search strictly to explicit `\bsearch\b` queries in `PostClassificationValidator.kt` and `AgentCore.kt`, preventing accidental fallback web scraping & gibberish TTS
+- [x] 123. Unblock deterministic domain routing in `AgentCore.kt` (execute handlers before LLM/search even on low NLU confidence), rescue all `remind`/`reminder`/`alarm`/`timer`/`volume`/`brightness`/`torch`/`screenshot` phrasings, and avoid `open <app>` / `whatsapp` collisions
+- [x] 124. Add routing & validation unit tests, run `test_pendant_model.py`, `compile_pendant.py`, `testDebugUnitTest assembleDebug`, update docs, commit, and push to `origin main`
