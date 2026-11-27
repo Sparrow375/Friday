@@ -108,6 +108,12 @@ class FridayBleWearableManager private constructor(private val context: Context)
     private val _lastAudioDurationMs = MutableStateFlow(0)
     val lastAudioDurationMs: StateFlow<Int> = _lastAudioDurationMs.asStateFlow()
 
+    private val _batteryPercent = MutableStateFlow<Int?>(null)
+    val batteryPercent: StateFlow<Int?> = _batteryPercent.asStateFlow()
+
+    private val _batteryMillivolts = MutableStateFlow<Int?>(null)
+    val batteryMillivolts: StateFlow<Int?> = _batteryMillivolts.asStateFlow()
+
     // Callbacks for Friday Service
     var onWakeWordDetected: (() -> Unit)? = null
     var onAudioStreamStarted: (() -> Unit)? = null
@@ -304,6 +310,8 @@ class FridayBleWearableManager private constructor(private val context: Context)
         activeGatt = null
         _connectionState.value = ConnectionState.DISCONNECTED
         _deviceName.value = null
+        _batteryPercent.value = null
+        _batteryMillivolts.value = null
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
@@ -318,6 +326,8 @@ class FridayBleWearableManager private constructor(private val context: Context)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 FridayLogger.w(TAG, "Disconnected from Friday-Wearable GATT server.")
                 _connectionState.value = ConnectionState.DISCONNECTED
+                _batteryPercent.value = null
+                _batteryMillivolts.value = null
                 activeGatt?.close()
                 activeGatt = null
 
@@ -585,6 +595,17 @@ class FridayBleWearableManager private constructor(private val context: Context)
                         // Audio End: 0x03 -> Finalize and dispatch!
                         FridayLogger.i(TAG, "Wearable signaled end-of-audio sentinel (0x03)")
                         finalizeAudioStream()
+                    }
+
+                    0x04 -> {
+                        // Battery Telemetry: 0x04 | percent (1B) | mv_hi | mv_lo
+                        if (value.size >= 4) {
+                            val pct = (value[1].toInt() and 0xFF).coerceIn(0, 100)
+                            val mv = ((value[2].toInt() and 0xFF) shl 8) or (value[3].toInt() and 0xFF)
+                            _batteryPercent.value = pct
+                            _batteryMillivolts.value = mv
+                            FridayLogger.d(TAG, "Wearable battery telemetry: $pct% (${mv}mV)")
+                        }
                     }
                 }
             }

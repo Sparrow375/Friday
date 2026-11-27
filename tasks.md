@@ -108,7 +108,8 @@
 - [x] 97. Upgrade firmware trigger & VAD logic in `xiao_friday_pendant.ino` (DC-removed AC RMS, multi-frame consecutive confirmation replacing single-hit `0.92` spike trigger, music-resilient VAD baseline) <!-- id: 96 -->
 - [x] 98. Benchmark strictly on held-out unseen streams, compile firmware (`compile_pendant.py`), update `context.md` & `architechture.md`, commit and push to git <!-- id: 97 -->
 - [x] 99. Inspect V1 hardware bench kit (`XIAO nRF52840 Plus/Sense Plus`, `PL432224 3.87V 1.08Wh` LiPo, 3-pin SPDT switch) and create complete wiring, RF/mic orientation, and cardboard necklace assembly blueprint (`hardware/pendant_v1_blueprint.md`) <!-- id: 98 -->
-- [ ] 100. Optional: Apply low-power & stealth LED firmware optimization (`delay(4)` sleep yield + disable continuous connected Blue LED) before tomorrow's all-day college test <!-- id: 99 -->
+- [x] 100. Apply low-power & stealth LED firmware optimization (`delay(2)` idle yield + disable continuous connected Blue LED) before tomorrow's all-day college test <!-- id: 99 -->
+- [x] 101. Add BLE wearable battery level sensing (`VBAT_ENABLE` / `PIN_VBAT` -> `0x04` GATT telemetry) and display percentage + low-battery indicator on Android Dashboard & Settings <!-- id: 100 -->
 
 ## Latency Optimization, Sports Scores, Speak Interrupt & Biometric Screen Lock
 

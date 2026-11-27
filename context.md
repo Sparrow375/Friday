@@ -852,3 +852,11 @@ The project uses a clean package namespace `com.friday.assistant`:
               - Fixed orphan `I-X` tag decoding via `decodeBioSlots`, fixed hardcoded `"preference"` overwrite key in `AgentCore`, wired `PreferenceExtractor` and `RoutineManager`, fixed torch-before-brightness and files-before-app ordering, and fixed `"who am i"` preference summary.
             - **Verification**: All **12** JUnit unit tests (`StreamImaAdpcmDecoderTest`, `SportsScoreToolTest`, `NluDecoderAndTokenizerTest`, `RoutineAndReminderTest`, `ThemeStoreTest`) passed with 0 failures; `.\gradlew.bat testDebugUnitTest assembleDebug --no-daemon` succeeded (`BUILD SUCCESSFUL` in 22s); `app-debug.apk` shrunk to `175,931,565` bytes (`167.8 MB`).
 
+          * **Wearable Battery Level Telemetry, Stealth/Low-Power Mode & Side-Wall Cardboard Case Assembly (November 2026 - Part 29)**:
+            - **On-Chip Battery Voltage Sensing & BLE Telemetry (`firmware/xiao_friday_pendant/xiao_friday_pendant.ino`)**:
+              - Configured `VBAT_ENABLE` (`P0.14`, kept `HIGH` idle to eliminate `~2.3 uA` divider drain) and `PIN_VBAT` (`32`, 12-bit ADC @ `AR_DEFAULT` 3.6V with `1510/510` resistor ratio, averaged across 8 reads).
+              - Added piecewise LiPo discharge lookup (`3350–4180 mV` -> `0–100%`) and transmitted `0x04 | pct | mv_hi | mv_lo` over `COMMAND_CHAR_UUID` (`2.5s` after BLE connect and every `30s` in `STATE_IDLE`), plus Serial `[Heartbeat]` battery readout.
+              - Enabled **College Stealth + Low-Power Mode**: turned off steady connected `LED_BLUE` (`HIGH` = off), switched disconnected indicator to `80ms / 2.5s` pulse, and added `delay(2)` idle yield between PDM frames.
+            - **Android Battery Telemetry Display (`FridayBleWearableManager.kt`, `FridayViewModel.kt`, `HomeDashboardScreen.kt`, `SettingsScreen.kt`)**:
+              - Added `batteryPercent` and `batteryMillivolts` StateFlows (reset on disconnect), parsed `0x04` packets, rendered live `"Pendant • XX%"` telemetry + `"Charge Pendant (XX%)"` low-battery pill (`<= 20%`) on `HomeDashboardScreen`, and exact `% (V)` readout in `SettingsScreen`.
+

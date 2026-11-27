@@ -139,6 +139,8 @@ class FridayViewModel(application: Application) : AndroidViewModel(application) 
     val notificationListenerConnected: StateFlow<Boolean> = NotificationService.isConnectedFlow
     val bleConnectionState: StateFlow<FridayBleWearableManager.ConnectionState> = bleManager.connectionState
     val bleDeviceName: StateFlow<String?> = bleManager.deviceName
+    val bleBatteryPercent: StateFlow<Int?> = bleManager.batteryPercent
+    val bleBatteryMillivolts: StateFlow<Int?> = bleManager.batteryMillivolts
 
     // Dashboard Live Data
     private val _sportsCards = MutableStateFlow<List<SportsScoreCard>>(emptyList())

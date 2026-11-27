@@ -94,6 +94,7 @@ fun HomeDashboardScreen(
     val notificationConnected by viewModel.notificationListenerConnected.collectAsState()
     val newsDigest by viewModel.newsDigest.collectAsState()
     val bleState by viewModel.bleConnectionState.collectAsState()
+    val bleBattery by viewModel.bleBatteryPercent.collectAsState()
     val perms by viewModel.permissions.collectAsState()
 
     val greeting = remember {
@@ -183,13 +184,22 @@ fun HomeDashboardScreen(
             )
             StatusPill(
                 label = when (bleState) {
-                    FridayBleWearableManager.ConnectionState.CONNECTED -> "Pendant Linked"
+                    FridayBleWearableManager.ConnectionState.CONNECTED -> {
+                        val bat = bleBattery
+                        if (bat != null) "Pendant • $bat%" else "Pendant Linked"
+                    }
                     FridayBleWearableManager.ConnectionState.SCANNING,
                     FridayBleWearableManager.ConnectionState.CONNECTING -> "Scanning BLE"
                     FridayBleWearableManager.ConnectionState.DISCONNECTED -> "Pendant Idle"
                 },
-                active = bleState == FridayBleWearableManager.ConnectionState.CONNECTED
+                active = bleState == FridayBleWearableManager.ConnectionState.CONNECTED && (bleBattery == null || bleBattery!! > 20)
             )
+            if (bleState == FridayBleWearableManager.ConnectionState.CONNECTED && bleBattery != null && bleBattery!! <= 20) {
+                StatusPill(
+                    label = "Charge Pendant (${bleBattery}%)",
+                    active = false
+                )
+            }
             StatusPill(
                 label = "${reminders.size} Reminders",
                 active = reminders.isNotEmpty()

@@ -39,6 +39,17 @@ int speechActiveFrames = 0;
 unsigned long lastInferenceTime = 0;
 unsigned long lastHeartbeatTime = 0;
 unsigned long lastHeartbeatFrames = 0;
+unsigned long lastBatteryNotifyTime = 0;
+unsigned long nextBatteryNotifyDue = 0;
+uint8_t cachedBatteryPercent = 100;
+uint16_t cachedBatteryMv = 4200;
+
+#ifndef VBAT_ENABLE
+  #define VBAT_ENABLE 14
+#endif
+#ifndef PIN_VBAT
+  #define PIN_VBAT 32
+#endif
 
 // State management
 enum PendantState {
@@ -358,6 +369,51 @@ void startAdv(void) {
   Bluefruit.Advertising.start(0);             // 0 = advertise forever
 }
 
+// ==================== Battery Sensing (VBAT_ENABLE P0.14 / PIN_VBAT P0.31) ====================
+uint16_t readBatteryMillivolts() {
+  digitalWrite(VBAT_ENABLE, LOW); // Enable onboard divider briefly
+  delay(2);
+  uint32_t adcSum = 0;
+  for (int i = 0; i < 8; i++) {
+    adcSum += analogRead(PIN_VBAT);
+  }
+  digitalWrite(VBAT_ENABLE, HIGH); // Disable immediately to prevent ~2.3 uA leakage
+
+  float avgAdc = (float)adcSum / 8.0f;
+  // AR_DEFAULT = 3.6V full scale at 12-bit (4096), onboard divider 1510k / 510k
+  float mv = avgAdc * (3600.0f / 4096.0f) * (1510.0f / 510.0f);
+  if (mv < 2500.0f) mv = 2500.0f;
+  if (mv > 4500.0f) mv = 4500.0f;
+  return (uint16_t)(mv + 0.5f);
+}
+
+uint8_t batteryMillivoltsToPercent(uint16_t mv) {
+  static const uint16_t VOLT_LUT[9] = { 3350, 3500, 3650, 3730, 3800, 3880, 3980, 4080, 4180 };
+  static const uint8_t  PCT_LUT[9]  = {    0,    4,   12,   25,   45,   62,   78,   90,  100 };
+  if (mv <= VOLT_LUT[0]) return 0;
+  if (mv >= VOLT_LUT[8]) return 100;
+  for (int i = 1; i < 9; i++) {
+    if (mv <= VOLT_LUT[i]) {
+      float frac = (float)(mv - VOLT_LUT[i - 1]) / (float)(VOLT_LUT[i] - VOLT_LUT[i - 1]);
+      return (uint8_t)(PCT_LUT[i - 1] + frac * (PCT_LUT[i] - PCT_LUT[i - 1]) + 0.5f);
+    }
+  }
+  return 100;
+}
+
+void updateAndNotifyBattery(bool sendBle) {
+  cachedBatteryMv = readBatteryMillivolts();
+  cachedBatteryPercent = batteryMillivoltsToPercent(cachedBatteryMv);
+  if (sendBle && Bluefruit.connected() && currentState == STATE_IDLE) {
+    uint8_t batPacket[4];
+    batPacket[0] = 0x04;
+    batPacket[1] = cachedBatteryPercent;
+    batPacket[2] = (cachedBatteryMv >> 8) & 0xFF;
+    batPacket[3] = cachedBatteryMv & 0xFF;
+    commandCharacteristic.notify(batPacket, sizeof(batPacket));
+  }
+}
+
 void connect_callback(uint16_t conn_handle) {
   BLEConnection* conn = Bluefruit.Connection(conn_handle);
   char central_name[32] = { 0 };
@@ -373,7 +429,8 @@ void connect_callback(uint16_t conn_handle) {
     Serial.print(conn->getMtu());
     Serial.println(F(")"));
   }
-  digitalWrite(LED_BLUE, LOW); // Steady blue
+  digitalWrite(LED_BLUE, HIGH); // Stealth OFF when connected to save ~3mA in class
+  nextBatteryNotifyDue = millis() + 2500; // Wait briefly for Android CCCD subscription
 }
 
 void disconnect_callback(uint16_t conn_handle, uint8_t reason) {
@@ -386,6 +443,14 @@ void disconnect_callback(uint16_t conn_handle, uint8_t reason) {
 // ==================== Setup ====================
 void setup() {
   Serial.begin(115200);
+
+  // Battery ADC & divider control
+  pinMode(VBAT_ENABLE, OUTPUT);
+  digitalWrite(VBAT_ENABLE, HIGH); // Disabled by default to prevent drain
+  pinMode(PIN_VBAT, INPUT);
+  analogReference(AR_DEFAULT);
+  analogReadResolution(12);
+  updateAndNotifyBattery(false);
 
   // User LEDs (Active LOW)
   pinMode(LED_RED, OUTPUT);
@@ -451,7 +516,18 @@ void setup() {
 
 // ==================== Main Loop ====================
 void loop() {
-  // 1. Top-Level Heartbeat every 1.5 seconds with exact FPS calculation
+  // 1. Periodic Battery Telemetry (2.5s after connect, then every 30s in IDLE)
+  if (Bluefruit.connected() && currentState == STATE_IDLE) {
+    unsigned long now = millis();
+    bool initialDue = (nextBatteryNotifyDue != 0 && now >= nextBatteryNotifyDue);
+    if (initialDue || (now - lastBatteryNotifyTime >= 30000UL)) {
+      nextBatteryNotifyDue = 0;
+      lastBatteryNotifyTime = now;
+      updateAndNotifyBattery(true);
+    }
+  }
+
+  // 2. Top-Level Heartbeat every 1.5 seconds with exact FPS & battery telemetry
   if (millis() - lastHeartbeatTime >= 1500) {
     unsigned long now = millis();
     unsigned long elapsedMs = now - lastHeartbeatTime;
@@ -471,24 +547,33 @@ void loop() {
     Serial.print((int)lastCalculatedRms);
     Serial.print(F(" | BG: "));
     Serial.print((int)backgroundRms);
-    Serial.print(F(" | BLE: "));
+    Serial.print(F(" | Bat: "));
+    Serial.print(cachedBatteryPercent);
+    Serial.print(F("% ("));
+    Serial.print(cachedBatteryMv);
+    Serial.print(F("mV) | BLE: "));
     Serial.println(Bluefruit.connected() ? F("Connected") : F("Advertising"));
   }
 
-  // 2. LED indication based on connection status
-  if (Bluefruit.connected()) {
-    // Steady Blue = BLE Connected
-    digitalWrite(LED_BLUE, LOW);
-  } else {
-    // Pulse Blue = Advertising / Searching for phone
-    static unsigned long lastBlink = 0;
-    if (millis() - lastBlink > 1000) {
-      lastBlink = millis();
-      digitalWrite(LED_BLUE, !digitalRead(LED_BLUE));
+  // 3. Stealth LED indication based on connection status
+  if (currentState == STATE_IDLE) {
+    if (Bluefruit.connected()) {
+      // Stealth OFF when linked to phone (saves ~3mA + discreet in class)
+      digitalWrite(LED_BLUE, HIGH);
+    } else {
+      // Brief 80ms pulse every 2.5s when Advertising / Disconnected
+      unsigned long phase = millis() % 2500UL;
+      digitalWrite(LED_BLUE, (phase < 80UL) ? LOW : HIGH);
     }
   }
 
-  // 3. Handle incoming audio frames
+  // 4. Handle incoming audio frames
+  if (!newAudioReady) {
+    if (currentState == STATE_IDLE) {
+      delay(2); // Yield CPU to FreeRTOS System ON sleep between 16ms PDM frames
+    }
+    return;
+  }
   if (newAudioReady) {
     newAudioReady = false;
 
@@ -670,7 +755,7 @@ void loop() {
         }
 
         digitalWrite(LED_RED, HIGH);
-        digitalWrite(LED_BLUE, LOW);
+        digitalWrite(LED_BLUE, HIGH);
       }
     }
   }

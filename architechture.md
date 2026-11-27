@@ -83,6 +83,7 @@ graph TD
      - `0x01`: Audio Header (`totalChunks`, `totalBytes`, `sampleRate = 16000`) with 5x retry.
      - `0x02`: Audio Chunk (`chunkIndex` + IMA-ADPCM compressed payload). Dynamically adapts chunk size based on negotiated MTU: full 128-byte ADPCM payload (256 samples) when MTU >= 134; 16-byte ADPCM payload (32 samples = 19B packet) when MTU < 134, completely eliminating packet truncation.
      - `0x03`: Audio End transmission sentinel with 20x retry.
+     - `0x04`: Battery Telemetry (`percent`, `millivolts` BE) sampled via `VBAT_ENABLE` (`P0.14`) and `PIN_VBAT` (`32`), reported on connect and every 30s in IDLE.
      - `0x10` write (Phone -> Pendant): Signals TTS playback started on phone, arming immediate voice barge-in cooldown (`450ms`).
      - Text write: Phone echoes recognized speech back to chip for USB Serial output.
 5. **Stage 3: Fast Audio Compression (IMA-ADPCM)**:

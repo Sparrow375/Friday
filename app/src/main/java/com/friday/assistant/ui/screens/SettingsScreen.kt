@@ -95,6 +95,8 @@ fun SettingsScreen(
     val models by viewModel.models.collectAsState()
     val bleState by viewModel.bleConnectionState.collectAsState()
     val bleDevice by viewModel.bleDeviceName.collectAsState()
+    val bleBattery by viewModel.bleBatteryPercent.collectAsState()
+    val bleBatteryMv by viewModel.bleBatteryMillivolts.collectAsState()
     val cricketTeams by viewModel.cricketTeams.collectAsState()
     val footballTeams by viewModel.footballTeams.collectAsState()
     val themeConfig by ThemeStore.configFlow.collectAsState()
@@ -218,7 +220,18 @@ fun SettingsScreen(
             SettingToggleRow(
                 title = "BLE Pendant Wearable",
                 subtitle = when (bleState) {
-                    FridayBleWearableManager.ConnectionState.CONNECTED -> "Connected to ${bleDevice ?: "Friday-Pendant"}"
+                    FridayBleWearableManager.ConnectionState.CONNECTED -> {
+                        val base = "Connected to ${bleDevice ?: "Friday-Pendant"}"
+                        val bat = bleBattery
+                        val mv = bleBatteryMv
+                        if (bat != null && mv != null) {
+                            val volts = String.format("%.2fV", mv / 1000f)
+                            val warn = if (bat <= 20) " • Charge soon!" else ""
+                            "$base • Battery: $bat% ($volts)$warn"
+                        } else if (bat != null) {
+                            "$base • Battery: $bat%"
+                        } else base
+                    }
                     FridayBleWearableManager.ConnectionState.SCANNING -> "Scanning for XIAO nRF52840 pendant..."
                     FridayBleWearableManager.ConnectionState.CONNECTING -> "Establishing GATT link..."
                     FridayBleWearableManager.ConnectionState.DISCONNECTED -> "Disconnected"
