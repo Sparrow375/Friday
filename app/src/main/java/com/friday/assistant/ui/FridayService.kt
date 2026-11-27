@@ -150,6 +150,10 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             onMicClick = { toggleListening() },
             onClose = {
                 com.friday.assistant.core.FridayLogger.i(TAG, "Overlay close clicked - dismissing overlay and stopping speech/listening")
+                if (isContinuousDictationActive) {
+                    serviceScope.launch { finalizeContinuousDictation(speakConfirmation = false) }
+                    return@OverlayManager
+                }
                 try {
                     tts?.stop()
                 } catch (e: Exception) {
@@ -186,6 +190,9 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             }
             onCommandAudioReceived = { audioSamples ->
                 onWearableAudioCommandReceived(audioSamples)
+            }
+            onDictationSegmentReady = { segment ->
+                enqueueDictationTranscription(segment)
             }
             onCommandTextReceived = { text ->
                 onWearableTextCommandReceived(text)
@@ -412,6 +419,10 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     }
 
     private fun toggleListening() {
+        if (isContinuousDictationActive) {
+            serviceScope.launch { finalizeContinuousDictation(speakConfirmation = true) }
+            return
+        }
         if (pipelineState.value == PipelineState.LISTENING) {
             transitionToState(PipelineState.IDLE)
         } else {
@@ -437,38 +448,50 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             return
         }
 
+        if (isContinuousDictationActive) {
+            if (Regex("\\b(stop|done|finish|end|save)\\b").containsMatchIn(cleanQuery.lowercase())) {
+                finalizeContinuousDictation(speakConfirmation = true)
+            } else {
+                appendDictationSnippet(cleanQuery)
+                resumeContinuousDictationOnPendant()
+            }
+            return
+        }
+
         var responseAccumulator = ""
         var ttsBuffer = ""
         var isFirstChunk = true
         var lastUiUpdateMs = 0L
 
-        val queryResult = agentCore.processQuery(cleanQuery) { token ->
-            serviceScope.launch {
-                if (genId != queryGenerationId) return@launch
-                if (pipelineState.value != PipelineState.THINKING && pipelineState.value != PipelineState.SPEAKING) {
-                    transitionToState(PipelineState.THINKING, statusMessage = "Thinking...", transcriptText = query)
-                }
-                responseAccumulator += token
-                ttsBuffer += token
+        val queryResult = withContext(Dispatchers.Default) {
+            agentCore.processQuery(cleanQuery) { token ->
+                serviceScope.launch {
+                    if (genId != queryGenerationId) return@launch
+                    if (pipelineState.value != PipelineState.THINKING && pipelineState.value != PipelineState.SPEAKING) {
+                        transitionToState(PipelineState.THINKING, statusMessage = "Thinking...", transcriptText = query)
+                    }
+                    responseAccumulator += token
+                    ttsBuffer += token
 
-                val nowMs = System.currentTimeMillis()
-                if (nowMs - lastUiUpdateMs >= 50L) {
-                    overlayManager?.updateState(
-                        state = pipelineState.value,
-                        text = if (isFirstChunk) "Thinking..." else "Speaking...",
-                        resp = responseAccumulator,
-                        trans = query
-                    )
-                    lastUiUpdateMs = nowMs
-                }
+                    val nowMs = System.currentTimeMillis()
+                    if (nowMs - lastUiUpdateMs >= 50L) {
+                        overlayManager?.updateState(
+                            state = pipelineState.value,
+                            text = if (isFirstChunk) "Thinking..." else "Speaking...",
+                            resp = responseAccumulator,
+                            trans = query
+                        )
+                        lastUiUpdateMs = nowMs
+                    }
 
-                val boundaryIndex = findPunctuationBoundary(ttsBuffer)
-                if (boundaryIndex != -1) {
-                    val chunk = ttsBuffer.substring(0, boundaryIndex + 1).trim()
-                    ttsBuffer = ttsBuffer.substring(boundaryIndex + 1)
-                    if (chunk.isNotEmpty()) {
-                        speakStreamChunk(chunk, isFirstChunk, responseAccumulator)
-                        isFirstChunk = false
+                    val boundaryIndex = findPunctuationBoundary(ttsBuffer)
+                    if (boundaryIndex != -1) {
+                        val chunk = ttsBuffer.substring(0, boundaryIndex + 1).trim()
+                        ttsBuffer = ttsBuffer.substring(boundaryIndex + 1)
+                        if (chunk.isNotEmpty()) {
+                            speakStreamChunk(chunk, isFirstChunk, responseAccumulator)
+                            isFirstChunk = false
+                        }
                     }
                 }
             }
@@ -476,6 +499,11 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         if (genId != queryGenerationId) {
             com.friday.assistant.core.FridayLogger.i(TAG, "Discarding stale query result (genId=$genId != current=$queryGenerationId)")
+            return
+        }
+
+        if (queryResult.shouldStartDictation) {
+            startContinuousDictation()
             return
         }
 
@@ -765,16 +793,186 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     private var lastPartialTranscribeChunk = 0
     private var lastPartialTranscript = ""
 
+    // Continuous Listen / Lecture Dictation state ("Friday, listen" ... "Friday, stop")
+    @Volatile
+    private var isContinuousDictationActive = false
+    private val dictationTranscriptParts = java.util.Collections.synchronizedList(mutableListOf<String>())
+    private val dictationJobMutex = kotlinx.coroutines.sync.Mutex()
+    private var lastDictationJob: kotlinx.coroutines.Job? = null
+
+    private fun currentDictationPreview(): String {
+        val full = synchronized(dictationTranscriptParts) {
+            dictationTranscriptParts.joinToString(" ")
+        }.trim()
+        if (full.isEmpty()) return "Recording speech... Say 'Friday, stop' when finished."
+        return if (full.length > 240) "...${full.takeLast(240)}" else full
+    }
+
+    private fun appendDictationSnippet(snippet: String) {
+        val clean = snippet.trim()
+        if (clean.isEmpty()) return
+        synchronized(dictationTranscriptParts) {
+            dictationTranscriptParts.add(clean)
+        }
+        val preview = currentDictationPreview()
+        serviceScope.launch {
+            if (isContinuousDictationActive) {
+                overlayManager?.updateState(
+                    PipelineState.LISTENING,
+                    "Listening (Dictation)",
+                    trans = preview
+                )
+            }
+        }
+    }
+
+    private fun startContinuousDictation() {
+        val bleConnected = bleWearableManager?.connectionState?.value ==
+            com.friday.assistant.ble.FridayBleWearableManager.ConnectionState.CONNECTED
+        isContinuousDictationActive = true
+        isPendantWakeActive = false
+        pendantWakeTimeoutJob?.cancel()
+        dictationTranscriptParts.clear()
+
+        overlayManager?.show()
+        transitionToState(
+            PipelineState.LISTENING,
+            statusMessage = "Listening (Dictation)",
+            transcriptText = "Recording speech... Say 'Friday, stop' when finished."
+        )
+
+        if (bleConnected) {
+            bleWearableManager?.setContinuousDictationMode(true)
+            bleWearableManager?.sendControlByte(0x11)
+        } else {
+            // Phone fallback if pendant isn't connected
+            speechToTextHelper.startListening()
+        }
+        com.friday.assistant.core.FridayLogger.i(TAG, "Continuous dictation mode started (bleConnected=$bleConnected)")
+    }
+
+    private fun resumeContinuousDictationOnPendant() {
+        if (!isContinuousDictationActive) return
+        isPendantWakeActive = false
+        pendantWakeTimeoutJob?.cancel()
+        bleWearableManager?.setContinuousDictationMode(true)
+        bleWearableManager?.sendControlByte(0x11)
+        transitionToState(
+            PipelineState.LISTENING,
+            statusMessage = "Listening (Dictation)",
+            transcriptText = currentDictationPreview()
+        )
+    }
+
+    private fun enqueueDictationTranscription(audioSamples: FloatArray) {
+        if (!isContinuousDictationActive || audioSamples.isEmpty()) return
+
+        lastDictationJob = serviceScope.launch(Dispatchers.Default) {
+            dictationJobMutex.lock()
+            try {
+                if (!isContinuousDictationActive) return@launch
+                var sum = 0.0
+                for (s in audioSamples) sum += s
+                val mean = (sum / audioSamples.size).toFloat()
+                var maxPeak = 0.0f
+                for (s in audioSamples) {
+                    val abs = kotlin.math.abs(s - mean)
+                    if (abs > maxPeak) maxPeak = abs
+                }
+                if (maxPeak < 0.008f) return@launch
+
+                val whisperEngine = FridayApplication.whisperEngine
+                if (!whisperEngine.isModelLoaded()) {
+                    val whisperPath = modelManager.getWhisperModelPath()
+                    if (java.io.File(whisperPath).exists()) {
+                        whisperEngine.loadModel(whisperPath)
+                    }
+                }
+                if (!whisperEngine.isModelLoaded()) return@launch
+
+                val prepared = preprocessPendantAudio(audioSamples)
+                val raw = whisperEngine.transcribe(prepared, buildWhisperInitialPrompt()).trim()
+                val clean = cleanAndValidateTranscript(raw, isPartial = false)
+                if (clean.isNotBlank()) {
+                    com.friday.assistant.core.FridayLogger.i(TAG, "[Dictation chunk] '$clean'")
+                    appendDictationSnippet(clean)
+                }
+            } finally {
+                dictationJobMutex.unlock()
+            }
+        }
+    }
+
+    private suspend fun finalizeContinuousDictation(speakConfirmation: Boolean) {
+        com.friday.assistant.core.FridayLogger.i(TAG, "Finalizing continuous dictation mode...")
+        bleWearableManager?.sendControlByte(0x12)
+        bleWearableManager?.setContinuousDictationMode(false)
+        pendantWakeTimeoutJob?.cancel()
+        isPendantWakeActive = false
+
+        // Wait briefly for any in-flight Whisper segment to finish before disabling flag
+        lastDictationJob?.let { job ->
+            try {
+                kotlinx.coroutines.withTimeoutOrNull(3000L) { job.join() }
+            } catch (_: Exception) {}
+        }
+        isContinuousDictationActive = false
+
+        val fullTranscript = synchronized(dictationTranscriptParts) {
+            dictationTranscriptParts.joinToString(" ")
+        }.replace(Regex("\\s+"), " ").trim()
+        dictationTranscriptParts.clear()
+
+        if (fullTranscript.isBlank()) {
+            val emptyMsg = "Stopped listening. No speech was captured to save."
+            if (speakConfirmation) {
+                speakResponse(emptyMsg)
+            } else {
+                overlayManager?.dismiss()
+                transitionToState(PipelineState.IDLE)
+            }
+            return
+        }
+
+        withContext(Dispatchers.IO) {
+            try {
+                FridayApplication.database.dao().insertNote(
+                    com.friday.assistant.core.db.NoteEntity(
+                        content = fullTranscript,
+                        tags = "dictation,transcript"
+                    )
+                )
+            } catch (e: Exception) {
+                com.friday.assistant.core.FridayLogger.e(TAG, "Failed saving continuous dictation note", e)
+            }
+        }
+        val words = fullTranscript.split(Regex("\\s+")).size
+        val summary = "Saved transcription ($words words) to your notes."
+        com.friday.assistant.core.FridayLogger.i(TAG, "Saved dictation note ($words words): ${fullTranscript.take(120)}")
+        if (speakConfirmation) {
+            overlayManager?.updateState(PipelineState.THINKING, "Saved Note", trans = fullTranscript.takeLast(140), resp = summary)
+            speakResponse(summary)
+        } else {
+            overlayManager?.dismiss()
+            transitionToState(PipelineState.IDLE, responseText = summary)
+        }
+    }
+
     private fun schedulePendantWakeTimeout(timeoutMs: Long = 9500L) {
         pendantWakeTimeoutJob?.cancel()
         pendantWakeTimeoutJob = serviceScope.launch {
             kotlinx.coroutines.delay(timeoutMs)
             if (isPendantWakeActive && pipelineState.value == PipelineState.LISTENING) {
-                com.friday.assistant.core.FridayLogger.i(TAG, "Pendant wake timed out after ${timeoutMs}ms without command completion — dismissing overlay")
                 isPendantWakeActive = false
                 lastPartialTranscript = ""
-                transitionToState(PipelineState.IDLE)
-                overlayManager?.dismiss()
+                if (isContinuousDictationActive) {
+                    com.friday.assistant.core.FridayLogger.i(TAG, "Wake inside dictation timed out without 'stop' — resuming continuous listen")
+                    resumeContinuousDictationOnPendant()
+                } else {
+                    com.friday.assistant.core.FridayLogger.i(TAG, "Pendant wake timed out after ${timeoutMs}ms without command completion — dismissing overlay")
+                    transitionToState(PipelineState.IDLE)
+                    overlayManager?.dismiss()
+                }
             }
         }
     }
@@ -790,26 +988,32 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         }
         lastWearableWakeTriggerMs = now
 
-        com.friday.assistant.core.FridayLogger.i(TAG, "Wearable wake-word ('Friday') confirmed by pendant — activating assistant (was ${pipelineState.value})")
+        com.friday.assistant.core.FridayLogger.i(TAG, "Wearable wake-word ('Friday') confirmed by pendant — activating assistant (was ${pipelineState.value}, dictating=$isContinuousDictationActive)")
 
         // Set state synchronously before BLE stream headers/chunks arrive on subsequent mainHandler posts
-        if (pipelineState.value != PipelineState.IDLE) {
+        if (!isContinuousDictationActive && pipelineState.value != PipelineState.IDLE) {
             interruptActivePipeline("wearable_wake")
         }
         isPendantWakeActive = true
         lastPartialTranscript = ""
         schedulePendantWakeTimeout(9500L)
-        requestAudioFocus(exclusive = false)
+        if (!isContinuousDictationActive) {
+            requestAudioFocus(exclusive = false)
+        }
         overlayManager?.show()
-        transitionToState(PipelineState.LISTENING, statusMessage = "Listening to Pendant...", transcriptText = "Say command into pendant...")
+        transitionToState(
+            PipelineState.LISTENING,
+            statusMessage = if (isContinuousDictationActive) "Listening (Say 'stop' to finish)" else "Listening to Pendant...",
+            transcriptText = if (isContinuousDictationActive) currentDictationPreview() else "Say command into pendant..."
+        )
     }
 
     private fun onWearableAudioStreamStarted() {
         val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
         if (!prefs.getBoolean("assistant_enabled", true)) return
 
-        // Drop rogue or unauthenticated audio streams — overlay only opens for confirmed wake words
-        if (!isPendantWakeActive) {
+        // Drop rogue or unauthenticated audio streams — overlay only opens for confirmed wake words or dictation
+        if (!isPendantWakeActive && !isContinuousDictationActive) {
             com.friday.assistant.core.FridayLogger.w(TAG, "Dropping rogue wearable audio stream — wake word was not activated")
             return
         }
@@ -818,14 +1022,17 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         lastPartialTranscribeChunk = 0
         lastPartialTranscript = ""
         partialWhisperJob?.cancel()
-        schedulePendantWakeTimeout(9500L)
+        if (!isContinuousDictationActive) {
+            schedulePendantWakeTimeout(9500L)
+        }
     }
 
     private fun onWearableAudioChunkReceived(chunkIdx: Int, chunkSamples: FloatArray) {
-        if (!isPendantWakeActive || pipelineState.value != PipelineState.LISTENING) return
+        val activeForWaveform = (isPendantWakeActive || isContinuousDictationActive) && pipelineState.value == PipelineState.LISTENING
+        if (!activeForWaveform) return
 
-        // Extend safety timeout periodically while genuine pendant audio is still streaming
-        if (chunkIdx == 0 || chunkIdx % 40 == 0) {
+        // Extend safety timeout periodically while genuine pendant command audio is streaming
+        if (isPendantWakeActive && (chunkIdx == 0 || chunkIdx % 40 == 0)) {
             schedulePendantWakeTimeout(9500L)
         }
 
@@ -841,6 +1048,10 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         val rms = kotlin.math.sqrt(sumSq / chunkSamples.size.coerceAtLeast(1))
         val normalizedAmp = (rms * 14.0f).coerceIn(0.08f, 1.0f)
         overlayManager?.updateAmplitude(normalizedAmp)
+
+        // When in continuous dictation without an active wake-command ("Friday, stop"),
+        // FridayBleWearableManager handles chunked 4.5s Whisper segmentation directly via onDictationSegmentReady.
+        if (isContinuousDictationActive && !isPendantWakeActive) return
 
         streamingAudioBuffer.add(chunkSamples)
 
@@ -901,8 +1112,12 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         serviceScope.launch {
             if (audioSamples.isEmpty()) {
                 com.friday.assistant.core.FridayLogger.w(TAG, "Received empty pendant audio buffer")
-                transitionToState(PipelineState.IDLE)
-                overlayManager?.dismiss()
+                if (isContinuousDictationActive) {
+                    resumeContinuousDictationOnPendant()
+                } else {
+                    transitionToState(PipelineState.IDLE)
+                    overlayManager?.dismiss()
+                }
                 return@launch
             }
 
@@ -927,8 +1142,12 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             // Only drop for low energy if partial Whisper has not already recognized valid speech
             if (partialFallback.isBlank() && (rms < 0.0014f || maxPeak < 0.009f)) {
                 com.friday.assistant.core.FridayLogger.i(TAG, "Dropping pendant audio due to low energy/silence (AC_RMS: $rms, AC_Peak: $maxPeak)")
-                transitionToState(PipelineState.IDLE)
-                overlayManager?.dismiss()
+                if (isContinuousDictationActive) {
+                    resumeContinuousDictationOnPendant()
+                } else {
+                    transitionToState(PipelineState.IDLE)
+                    overlayManager?.dismiss()
+                }
                 return@launch
             }
 
@@ -976,15 +1195,19 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 launchAgentQuery(correctedTranscribed)
             } else {
                 com.friday.assistant.core.FridayLogger.w(TAG, "Pendant transcription was invalid or hallucinated: '$rawTranscribed'")
-                overlayManager?.updateState(
-                    PipelineState.IDLE,
-                    "Could not understand",
-                    trans = "",
-                    resp = ""
-                )
-                kotlinx.coroutines.delay(1200L)
-                transitionToState(PipelineState.IDLE)
-                overlayManager?.dismiss()
+                if (isContinuousDictationActive) {
+                    resumeContinuousDictationOnPendant()
+                } else {
+                    overlayManager?.updateState(
+                        PipelineState.IDLE,
+                        "Could not understand",
+                        trans = "",
+                        resp = ""
+                    )
+                    kotlinx.coroutines.delay(1200L)
+                    transitionToState(PipelineState.IDLE)
+                    overlayManager?.dismiss()
+                }
             }
         }
     }

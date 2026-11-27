@@ -148,3 +148,11 @@
 - [x] 122. Lock web search strictly to explicit `\bsearch\b` queries in `PostClassificationValidator.kt` and `AgentCore.kt`, preventing accidental fallback web scraping & gibberish TTS
 - [x] 123. Unblock deterministic domain routing in `AgentCore.kt` (execute handlers before LLM/search even on low NLU confidence), rescue all `remind`/`reminder`/`alarm`/`timer`/`volume`/`brightness`/`torch`/`screenshot` phrasings, and avoid `open <app>` / `whatsapp` collisions
 - [x] 124. Add routing & validation unit tests, run `test_pendant_model.py`, `compile_pendant.py`, `testDebugUnitTest assembleDebug`, update docs, commit, and push to `origin main`
+
+## Smart NLU v3, Delete/Schedule/YouTube Routing, Continuous Dictation & Latency Fix
+
+- [x] 125. Fix Main-Thread `CountDownLatch` deadlock & latency in `FridayService.kt` (`Dispatchers.Default` query execution), `AutomationBridge.kt` (direct main-thread fast path), `ScreenshotTool.kt` (non-blocking `delay`, `<350ms` turnaround), `MediaControlTool.kt` (instant `search_youtube` without 5s scrape), and `xiao_friday_pendant.ino` (`416ms` end-of-speech hangover)
+- [x] 126. Implement delete commands for notes & reminders (`Dao.kt`, `NotesTool.kt`, `ReminderScheduler.kt`, `AgentCore.kt`), `schedule` calendar phrasing (`CalendarTool.kt`, `AgentCore.kt`), and `search ... on youtube` routing (`EntityExtractor.kt`, `PostClassificationValidator.kt`, `MediaControlTool.kt`)
+- [x] 127. Implement hands-free Continuous Listen / Dictation Mode (`"Friday, listen"` / `"listen to this"` -> `0x11`/`0x12`/`STATE_CONTINUOUS_LISTEN` continuous ADPCM streaming -> incremental Whisper chunking -> saves full transcript to Notes on `"Friday, stop"` or UI stop) across `xiao_friday_pendant.ino`, `FridayBleWearableManager.kt`, and `FridayService.kt`
+- [x] 128. Audit & upgrade `scripts/train_joint_nlu_v2.py` and `scripts/manual_commands_dataset.json` (59 intents adding `reminder_delete`, `dictation_start`, `dictation_stop`; rich reminder/schedule/YouTube/delete/unknown data), retrain `JointTransformerNluV2` on RTX 5060 Ti GPU, export INT8 `joint_nlu_model.onnx`, update `labels.txt` & `NluIntentClassifier.kt`
+- [x] 129. Add unit tests for new routing rules, run `eval_nlu_benchmark.py`, `compile_pendant.py`, `testDebugUnitTest assembleDebug`, update `context.md` & `architechture.md`, commit, and push to `origin main`

@@ -92,6 +92,10 @@ INTENT_LABELS = [
     "routine_create",
     "routine_run",
     "digest_summary",
+    # 3 New NLU v3 intents
+    "reminder_delete",
+    "dictation_start",
+    "dictation_stop",
 ]
 
 SLOT_LABELS = [
@@ -146,7 +150,8 @@ MEDIA_QUERIES = [
     "sunflower", "taylor swift", "coldplay", "linkin park", "lo-fi beats", "lofi beats",
     "rock music", "how to bake a cake", "cats", "workout playlist", "jazz music",
     "space documentary", "relaxing piano", "ed sheeran", "eminem", "hans zimmer",
-    "top hits", "coding music", "bohemian rhapsody", "arijit singh", "interstellar theme"
+    "top hits", "coding music", "bohemian rhapsody", "arijit singh", "interstellar theme",
+    "python tutorial", "cooking recipes", "guitar lesson", "machine learning basics", "pasta recipe"
 ]
 
 ALARM_TIMES = [
@@ -183,7 +188,13 @@ SPORTS_TEAMS = [
 
 CALENDAR_TITLES = [
     "team sync", "dentist appointment", "lunch with alex", "project review",
-    "doctor visit", "gym session", "standup meeting", "flight check in"
+    "doctor visit", "gym session", "standup meeting", "flight check in",
+    "cooking", "study session", "physics class", "dinner with family"
+]
+
+REMINDER_TOPICS = [
+    "physics class", "dentist appointment", "project deadline", "mothers day",
+    "assignment submission", "team meeting", "morning workout", "grocery list"
 ]
 
 ROUTINE_NAMES = [
@@ -210,7 +221,8 @@ UNKNOWN_QUERIES = [
     "explain quantum computing simply", "how do i cook spaghetti carbonara",
     "write a python function to check prime numbers", "who wrote hamlet",
     "how far is the moon from earth", "what is the difference between ai and ml",
-    "who is the president of the united states", "what is the speed of light",
+    "who is the president of the united states", "who is the president of france",
+    "what is the speed of light", "how is the weather", "whats the weather today",
     "can you write a poem about the ocean", "solve 25 multiplied by 4",
     "why is the sky blue", "how does an airplane fly", "what is the meaning of life",
     "give me 5 tips for better sleep", "how to learn rust programming",
@@ -218,7 +230,9 @@ UNKNOWN_QUERIES = [
     "what is the tallest mountain in the world", "whats the capital of india",
     "capital of japan", "why do we dream", "hello", "good morning", "thanks friday",
     "how are you doing today", "who created you", "what can you do for me",
-    "convert 50 usd to inr", "what is 15 percent of 240", "define entropy"
+    "convert 50 usd to inr", "what is 15 percent of 240", "define entropy",
+    "what does photosynthesis mean", "explain black holes simply", "who won the oscar",
+    "recipe for chocolate pancakes", "tell me an interesting fact"
 ]
 
 
@@ -358,11 +372,14 @@ def build_intent_buckets(samples_per_round: int = 100) -> Dict[str, List[Dict[st
         ]:
             buckets["navigate_to"].append(make_sample(s, "navigate_to"))
 
-        # set_alarm / set_timer / set_reminder / reminder_list
+        # set_alarm / set_timer / set_reminder / reminder_list / reminder_delete
         al = annotate(random.choice(ALARM_TIMES).split(), "TIME")
+        al_label = random.choice(["workout", "morning", "wake up", "gym", "medication"])
         for s in [
             lit("set alarm for") + al, lit("wake me up at") + al,
             lit("alarm for") + al, lit("set an alarm at") + al,
+            lit(f"set alarm called {al_label} at") + al,
+            lit(f"set an alarm named {al_label} for") + al,
         ]:
             buckets["set_alarm"].append(make_sample(s, "set_alarm"))
 
@@ -374,6 +391,7 @@ def build_intent_buckets(samples_per_round: int = 100) -> Dict[str, List[Dict[st
             buckets["set_timer"].append(make_sample(s, "set_timer"))
 
         rtask = annotate(random.choice(REMINDER_TASKS).split(), "NOTE_CONTENT")
+        rtopic = annotate(random.choice(REMINDER_TOPICS).split(), "NOTE_CONTENT")
         rtime = annotate(random.choice(REMINDER_TIMES).split(), "TIME")
         for s in [
             lit("remind me to") + rtask + rtime,
@@ -381,6 +399,16 @@ def build_intent_buckets(samples_per_round: int = 100) -> Dict[str, List[Dict[st
             lit("set a reminder to") + rtask + rtime,
             lit("set a reminder for") + rtime + lit("to") + rtask,
             lit("can you remind me to") + rtask + rtime,
+            lit("remind me to") + rtask,
+            lit("remind to") + rtask,
+            lit("add a reminder to") + rtask,
+            lit("create a reminder to") + rtask,
+            lit("create a reminder for") + rtime,
+            lit("make a reminder to") + rtask,
+            lit("reminder for") + rtopic + lit("at 8 pm"),
+            lit("remind me about") + rtopic,
+            lit("dont let me forget to") + rtask,
+            lit("add reminder") + rtask + rtime,
         ]:
             buckets["set_reminder"].append(make_sample(s, "set_reminder"))
 
@@ -390,6 +418,19 @@ def build_intent_buckets(samples_per_round: int = 100) -> Dict[str, List[Dict[st
             lit("what did i set reminders for"), lit("show pending reminders"),
         ]:
             buckets["reminder_list"].append(make_sample(s, "reminder_list"))
+
+        rem_id = str(random.randint(1, 15))
+        rem_kw = annotate(random.choice(REMINDER_TASKS).split(), "QUERY")
+        for s in [
+            lit("delete all reminders"), lit("clear all reminders"), lit("clear my reminders"),
+            lit("remove all reminders"), lit("cancel all reminders"), lit("delete every reminder"),
+            lit("delete reminder") + annotate([rem_id], "NOTE_ID"),
+            lit("remove reminder") + annotate([rem_id], "NOTE_ID"),
+            lit("delete reminder to") + rem_kw,
+            lit("cancel my reminder for") + rem_kw,
+            lit("delete the last reminder"),
+        ]:
+            buckets["reminder_delete"].append(make_sample(s, "reminder_delete"))
 
         # WhatsApp & Phone
         name = annotate(random.choice(NAMES).split(), "CONTACT")
@@ -430,7 +471,12 @@ def build_intent_buckets(samples_per_round: int = 100) -> Dict[str, List[Dict[st
             buckets["play_spotify"].append(make_sample(s, "play_spotify"))
 
         for s in [
-            lit("search") + mq + lit("on youtube"), lit("play") + mq + lit("on youtube"),
+            lit("search") + mq + lit("on youtube"),
+            lit("search for") + mq + lit("on youtube"),
+            lit("search youtube for") + mq,
+            lit("find") + mq + lit("on youtube"),
+            lit("look up") + mq + lit("on youtube"),
+            lit("play") + mq + lit("on youtube"),
             lit("watch") + mq + lit("on youtube"),
         ]:
             buckets["play_youtube"].append(make_sample(s, "play_youtube"))
@@ -540,7 +586,13 @@ def build_intent_buckets(samples_per_round: int = 100) -> Dict[str, List[Dict[st
             buckets["notes_search"].append(make_sample(s, "notes_search"))
 
         nid = str(random.randint(1, 20))
-        for s in [lit("delete note") + annotate([nid], "NOTE_ID"), lit("remove note number") + annotate([nid], "NOTE_ID")]:
+        n_kw = annotate(random.choice(["groceries", "rent", "passport", "meeting", "milk", "cooking"]).split(), "QUERY")
+        for s in [
+            lit("delete note") + annotate([nid], "NOTE_ID"),
+            lit("remove note number") + annotate([nid], "NOTE_ID"),
+            lit("delete all notes"), lit("clear all notes"), lit("remove every note"),
+            lit("delete my last note"), lit("delete the note about") + n_kw,
+        ]:
             buckets["notes_delete"].append(make_sample(s, "notes_delete"))
 
         nup = annotate(random.choice(["buy milk", "meeting at 5 pm", "pick up groceries"]).split(), "NOTE_CONTENT")
@@ -550,16 +602,16 @@ def build_intent_buckets(samples_per_round: int = 100) -> Dict[str, List[Dict[st
         ]:
             buckets["notes_update"].append(make_sample(s, "notes_update"))
 
-        # Web / Google / Reddit Search
+        # Web / Google / Reddit Search (always anchored on explicit 'search' keyword!)
         sq = annotate(random.choice(SEARCH_TOPICS).split(), "QUERY")
         for s in [
-            lit("search the web for") + sq, lit("browse the web for") + sq, lit("find online") + sq,
+            lit("search the web for") + sq, lit("search online for") + sq, lit("web search") + sq,
         ]:
             buckets["web_search"].append(make_sample(s, "web_search"))
 
         for s in [
-            lit("search") + sq, lit("google") + sq, lit("look up") + sq,
-            lit("search on google for") + sq, lit("google search") + sq,
+            lit("search") + sq, lit("search for") + sq,
+            lit("search on google for") + sq, lit("search google for") + sq,
         ]:
             buckets["search_google"].append(make_sample(s, "search_google"))
 
@@ -611,6 +663,8 @@ def build_intent_buckets(samples_per_round: int = 100) -> Dict[str, List[Dict[st
         for s in [
             lit("whats on my calendar"), lit("show todays events"), lit("list calendar events"),
             lit("do i have any meetings today"), lit("whats my schedule today"),
+            lit("whats on my schedule today"), lit("what is on my schedule today"),
+            lit("show my schedule"), lit("check my schedule for today"),
             lit("upcoming events on calendar"), lit("am i free this afternoon"),
         ]:
             buckets["calendar_list"].append(make_sample(s, "calendar_list"))
@@ -620,6 +674,9 @@ def build_intent_buckets(samples_per_round: int = 100) -> Dict[str, List[Dict[st
         ctime = annotate(random.choice(REMINDER_TIMES).split(), "TIME")
         for s in [
             lit("add") + ctitle + lit("to my calendar") + ctime,
+            lit("add") + ctitle + lit("to my schedule") + ctime,
+            lit("add") + ctitle + lit("to my schedule today"),
+            lit("put") + ctitle + lit("on my schedule") + ctime,
             lit("schedule calendar event") + ctitle + ctime,
             lit("create meeting") + ctitle + ctime,
             lit("put") + ctitle + lit("on calendar for") + ctime,
@@ -650,6 +707,22 @@ def build_intent_buckets(samples_per_round: int = 100) -> Dict[str, List[Dict[st
             lit("brief me on today"), lit("evening summary please"),
         ]:
             buckets["digest_summary"].append(make_sample(s, "digest_summary"))
+
+        # New Intent 57 & 58: dictation_start / dictation_stop
+        for s in [
+            lit("listen"), lit("listen to this"), lit("friday listen"),
+            lit("friday listen to this"), lit("start listening"), lit("start dictation"),
+            lit("take dictation"), lit("record and transcribe this"),
+            lit("transcribe this lecture"), lit("dictate this note"),
+        ]:
+            buckets["dictation_start"].append(make_sample(s, "dictation_start"))
+
+        for s in [
+            lit("stop listening"), lit("stop recording"), lit("end dictation"),
+            lit("save the transcription"), lit("stop dictating"), lit("finish dictation"),
+            lit("done listening"),
+        ]:
+            buckets["dictation_stop"].append(make_sample(s, "dictation_stop"))
 
         # Unknown / Conversational
         unk = random.choice(UNKNOWN_QUERIES)
@@ -689,8 +762,8 @@ def augment_asr_noise(item: Dict[str, Any]) -> Dict[str, Any]:
     return {"text": " ".join(final_words), "intent": item["intent"], "slots": final_slots}
 
 
-def prepare_stratified_splits(target_per_intent: int = 260, val_ratio: float = 0.12):
-    buckets = build_intent_buckets(samples_per_round=100)
+def prepare_stratified_splits(target_per_intent: int = 320, val_ratio: float = 0.12):
+    buckets = build_intent_buckets(samples_per_round=140)
     train_data, val_data = [], []
 
     for intent in INTENT_LABELS:
@@ -833,7 +906,7 @@ def evaluate(model, loader, device):
 def train_and_export():
     t0 = time.time()
     print("=" * 72)
-    print(" Friday Joint NLU v2 (12-Layer BAAI/bge-small-en-v1.5, 56 Intents)")
+    print(" Friday Joint NLU v3 (12-Layer BAAI/bge-small-en-v1.5, 59 Intents)")
     print("=" * 72)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -843,7 +916,7 @@ def train_and_export():
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     encoder = AutoModel.from_pretrained(model_name, attn_implementation="eager", torch_dtype=torch.float32)
 
-    train_data, val_data = prepare_stratified_splits(target_per_intent=260, val_ratio=0.14)
+    train_data, val_data = prepare_stratified_splits(target_per_intent=320, val_ratio=0.14)
     print(f"Dataset split -> train: {len(train_data)} | held-out val: {len(val_data)} across {len(INTENT_LABELS)} intents.")
 
     train_ds = JointDataset(train_data, tokenizer, max_len=48)
@@ -855,7 +928,7 @@ def train_and_export():
     intent_loss_fn = nn.CrossEntropyLoss(label_smoothing=0.04)
     slot_loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
 
-    epochs = 6
+    epochs = 7
     optimizer = torch.optim.AdamW(model.parameters(), lr=4e-5, weight_decay=0.015)
     total_steps = len(train_loader) * epochs
     scheduler = get_cosine_schedule_with_warmup(

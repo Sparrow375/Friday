@@ -134,6 +134,12 @@ class AgentCore(
         // 4. Always evaluate deterministic/validated command handlers FIRST, even when NLU confidence is borderline.
         //    Individual handlers gate pure-NLU matches on confidence while letting explicit keyword commands succeed.
         //    Web search is strictly locked to explicit queries containing the word 'search'.
+        if (matchedIntent == "dictation_start" ||
+            Regex("\\b(listen to this|start listening|start dictation|dictate this|transcribe this|take dictation)\\b").containsMatchIn(cleanQuery) ||
+            Regex("^(?:friday\\s+)?listen(?:\\s+please)?$").matches(cleanQuery)
+        ) {
+            return QueryResult("Listening continuously...", isFastTool = false, shouldStartDictation = true)
+        }
         val hasExplicitSearchKeyword = Regex("\\bsearch\\b").containsMatchIn(cleanQuery)
         val isSportsQuery = matchedIntent == "sports_score" || isSportsScoreQuery(cleanQuery)
         if (isSportsQuery) {
@@ -278,6 +284,30 @@ class AgentCore(
             return fast(msg)
         }
 
+        val isReminderDelete = (matchedIntent == "reminder_delete" && confidence > 0.6f) ||
+            Regex("\\b(delete|clear|remove|cancel)\\b.*\\breminders?\\b").containsMatchIn(cleanQuery) ||
+            Regex("\\breminders?\\b.*\\b(delete|clear|remove|cancel)\\b").containsMatchIn(cleanQuery)
+        if (isReminderDelete) {
+            _agentStatusFlow.emit("Deleting reminders...")
+            if (cleanQuery.contains("all") || cleanQuery.contains("every")) {
+                val count = withContext(Dispatchers.IO) { ReminderScheduler.cancelAllReminders(context) }
+                return fast(if (count > 0) "Deleted all $count reminders." else "You don't have any reminders to delete.")
+            } else {
+                val target = cleanQuery
+                    .replace(Regex("(?i)^(?:please|can you|could you|friday)\\s+"), "")
+                    .replace(Regex("(?i)\\b(?:delete|clear|remove|cancel)\\s+(?:my\\s+|the\\s+)?reminders?\\s*(?:to|for|about|called|number)?\\s*"), "")
+                    .replace(Regex("[.!?]$"), "")
+                    .trim()
+                val count = withContext(Dispatchers.IO) {
+                    ReminderScheduler.cancelMatchingReminders(context, target.ifEmpty { "last" })
+                }
+                return fast(
+                    if (count > 0) "Deleted $count matching reminder${if (count > 1) "s" else ""}."
+                    else "Could not find a matching reminder to delete."
+                )
+            }
+        }
+
         val isReminderList = (matchedIntent == "reminder_list" && confidence > 0.6f) ||
             Regex("\\b(list|show|what|check|any|pending)\\b.*\\breminders?\\b").containsMatchIn(cleanQuery) ||
             cleanQuery.contains("list my reminders") ||
@@ -299,25 +329,35 @@ class AgentCore(
             return fast("Upcoming reminders: $summary.")
         }
 
-        val isCalendarList = matchedIntent == "calendar_list" ||
+        val isCalendarAdd = (matchedIntent == "calendar_add" && confidence > 0.6f) ||
+            cleanQuery.contains("to my calendar") ||
+            cleanQuery.contains("to my schedule") ||
+            cleanQuery.contains("on my schedule") ||
+            cleanQuery.contains("schedule calendar event") ||
+            cleanQuery.contains("create calendar event") ||
+            Regex("\\b(?:add|put|create|schedule)\\b.+\\b(?:to|on)\\s+(?:my\\s+)?(?:calendar|schedule)\\b").containsMatchIn(cleanQuery)
+        val isCalendarList = !isCalendarAdd && (
+            (matchedIntent == "calendar_list" && confidence > 0.6f) ||
             cleanQuery.contains("on my calendar") ||
             cleanQuery.contains("calendar events") ||
             cleanQuery.contains("todays events") ||
             cleanQuery.contains("today's events") ||
-            cleanQuery.contains("my schedule today")
+            cleanQuery.contains("my schedule") ||
+            Regex("\\b(?:what'?s|whats|what is|show|list|check|any)\\b.*\\bschedule\\b").containsMatchIn(cleanQuery)
+        )
         if (isCalendarList) {
             val calTool = ToolRegistry.get("calendar_control")
             if (calTool != null) {
-                _agentStatusFlow.emit("Checking calendar...")
-                val res = calTool.execute(JsonObject().apply { addProperty("action", "list_events") })
+                _agentStatusFlow.emit("Checking schedule...")
+                val onlyToday = cleanQuery.contains("today") || cleanQuery.contains("todays") || cleanQuery.contains("today's")
+                val res = calTool.execute(JsonObject().apply {
+                    addProperty("action", "list_events")
+                    addProperty("only_today", onlyToday)
+                })
                 return toolResult(res)
             }
         }
 
-        val isCalendarAdd = matchedIntent == "calendar_add" ||
-            cleanQuery.contains("to my calendar") ||
-            cleanQuery.contains("schedule calendar event") ||
-            cleanQuery.contains("create calendar event")
         if (isCalendarAdd) {
             val calTool = ToolRegistry.get("calendar_control")
             if (calTool != null) {
@@ -325,13 +365,13 @@ class AgentCore(
                     ?: (System.currentTimeMillis() + 3600_000L)
                 val title = nluSlots["NOTE_CONTENT"] ?: preprocessed.originalText
                     .replace(Regex("(?i)^(?:add|schedule|create|put)\\s+(?:a\\s+)?(?:calendar\\s+event|meeting|event)?\\s*"), "")
-                    .replace(Regex("(?i)\\s+(?:to|on)\\s+(?:my\\s+)?calendar.*$"), "")
+                    .replace(Regex("(?i)\\s+(?:to|on)\\s+(?:my\\s+)?(?:calendar|schedule).*$"), "")
                     .replace(Regex("(?i)\\s+(?:tomorrow|today|tonight|at|on|in)\\s+.*$"), "")
                     .trim()
                     .ifEmpty { "Scheduled Event" }
                 val iso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault())
                     .format(java.util.Date(timeMs))
-                _agentStatusFlow.emit("Adding calendar event...")
+                _agentStatusFlow.emit("Adding to schedule...")
                 val res = calTool.execute(JsonObject().apply {
                     addProperty("action", "add_event")
                     addProperty("title", title)
@@ -994,28 +1034,45 @@ class AgentCore(
             }
         }
 
+        val isOpenYouTubeApp = cleanQuery.startsWith("open youtube") || cleanQuery.startsWith("launch youtube")
         val isPlayMedia = matchedIntent == "play_media" || matchedIntent == "play_spotify" ||
             matchedIntent == "play_youtube" ||
+            (!isOpenYouTubeApp && (cleanQuery.contains(" on youtube") || cleanQuery.startsWith("search youtube"))) ||
             MUSIC_PLAY_REGEX.containsMatchIn(cleanQuery) ||
             MUSIC_LISTEN_REGEX.containsMatchIn(cleanQuery)
         if (isPlayMedia && !EntityExtractor.isScreenshotQuery(cleanQuery)) {
             val (regexQuery, targetApp) = EntityExtractor.extractMediaQuery(preprocessed.originalText)
-            val mediaQuery = (nluSlots["QUERY"] ?: regexQuery).trim()
-            val app = when (matchedIntent) {
-                "play_youtube" -> "youtube"
-                else -> "youtube music"
-            }
+            val cleanedSlotQuery = nluSlots["QUERY"]
+                ?.replace(Regex("(?i)\\s+(?:on|in)\\s+(?:youtube music|youtube|spotify|google).*$"), "")
+                ?.trim()
+            val mediaQuery = (if (!cleanedSlotQuery.isNullOrBlank()) cleanedSlotQuery else regexQuery).trim()
+            val isExplicitYouTube = matchedIntent == "play_youtube" ||
+                targetApp == "youtube" ||
+                (cleanQuery.contains("youtube") && !cleanQuery.contains("youtube music"))
+            val isSearchAction = Regex("\\bsearch\\b").containsMatchIn(cleanQuery) &&
+                !cleanQuery.contains("play ") && !cleanQuery.contains("watch ")
             if (mediaQuery.isNotEmpty()) {
-                _agentStatusFlow.emit("Playing $mediaQuery on YouTube Music...")
                 val mediaTool = ToolRegistry.get("media_control")
                 if (mediaTool != null) {
-                    val result = mediaTool.execute(JsonObject().apply {
-                        addProperty("action", "play_search")
-                        addProperty("query", mediaQuery)
-                        addProperty("app", app)
-                    })
-                    DialogueStateTracker.record("media", "on")
-                    return toolResult(result)
+                    if (isExplicitYouTube && isSearchAction) {
+                        _agentStatusFlow.emit("Searching YouTube for $mediaQuery...")
+                        val result = mediaTool.execute(JsonObject().apply {
+                            addProperty("action", "search_youtube")
+                            addProperty("query", mediaQuery)
+                        })
+                        DialogueStateTracker.record("media", "on")
+                        return toolResult(result)
+                    } else {
+                        val app = if (isExplicitYouTube) "youtube" else "youtube music"
+                        _agentStatusFlow.emit("Playing $mediaQuery on ${if (app == "youtube") "YouTube" else "YouTube Music"}...")
+                        val result = mediaTool.execute(JsonObject().apply {
+                            addProperty("action", "play_search")
+                            addProperty("query", mediaQuery)
+                            addProperty("app", app)
+                        })
+                        DialogueStateTracker.record("media", "on")
+                        return toolResult(result)
+                    }
                 }
             }
         }
@@ -1030,12 +1087,63 @@ class AgentCore(
         nluSlots: Map<String, String>,
         confidence: Float
     ): QueryResult? {
+        val isNoteDelete = (matchedIntent == "notes_delete" && confidence > 0.6f) ||
+                Regex("\\b(delete|clear|remove)\\b.*\\bnotes?\\b").containsMatchIn(cleanQuery) ||
+                cleanQuery.contains("delete note") ||
+                cleanQuery.contains("remove note") ||
+                cleanQuery.contains("delete my note") ||
+                cleanQuery.contains("clear note")
+        if (isNoteDelete) {
+            val notesTool = ToolRegistry.get("notes_control")
+            if (notesTool != null) {
+                when {
+                    cleanQuery.contains("all") || cleanQuery.contains("every") -> {
+                        _agentStatusFlow.emit("Deleting all notes...")
+                        val result = notesTool.execute(JsonObject().apply { addProperty("action", "delete_all") })
+                        return toolResult(result)
+                    }
+                    cleanQuery.contains("last note") || cleanQuery.contains("latest note") -> {
+                        _agentStatusFlow.emit("Deleting latest note...")
+                        val result = notesTool.execute(JsonObject().apply { addProperty("action", "delete_last") })
+                        return toolResult(result)
+                    }
+                    else -> {
+                        val idMatch = NOTES_ID_REGEX.find(cleanQuery)
+                        if (idMatch != null) {
+                            val id = idMatch.groupValues[1].toLong()
+                            _agentStatusFlow.emit("Deleting note $id...")
+                            val result = notesTool.execute(JsonObject().apply {
+                                addProperty("action", "delete")
+                                addProperty("note_id", id)
+                            })
+                            return toolResult(result)
+                        }
+                        val keyword = cleanQuery
+                            .replace(Regex("(?i)^(?:please|can you|could you|friday)\\s+"), "")
+                            .replace(Regex("(?i)\\b(?:delete|clear|remove)\\s+(?:my\\s+|the\\s+)?notes?\\s*(?:about|for|on|with)?\\s*"), "")
+                            .replace(Regex("[.!?]$"), "")
+                            .trim()
+                        if (keyword.isNotEmpty()) {
+                            _agentStatusFlow.emit("Deleting note matching '$keyword'...")
+                            val result = notesTool.execute(JsonObject().apply {
+                                addProperty("action", "delete")
+                                addProperty("query", keyword)
+                            })
+                            return toolResult(result)
+                        }
+                    }
+                }
+            }
+        }
+
         val isNoteCreate = (matchedIntent == "notes_create" && confidence > 0.7f ||
                 cleanQuery.startsWith("note ") ||
                 cleanQuery.contains("save note") || cleanQuery.contains("note down") ||
                 cleanQuery.startsWith("take a note")) &&
                 !cleanQuery.contains("remind") &&
-                matchedIntent != "set_reminder"
+                !isNoteDelete &&
+                matchedIntent != "set_reminder" &&
+                matchedIntent != "notes_delete"
         if (isNoteCreate) {
             val content = nluSlots["NOTE_CONTENT"] ?: preprocessed.originalText
                 .replace(Regex("(?i)^(?:note down|save note that|take a note that|take a note|note my|note that)\\s+"), "")
@@ -1080,27 +1188,6 @@ class AgentCore(
             }
         }
 
-        val isNoteDelete = (matchedIntent == "notes_delete" && confidence > 0.6f) ||
-                cleanQuery.contains("delete note") ||
-                cleanQuery.contains("remove note") ||
-                cleanQuery.contains("delete my note") ||
-                cleanQuery.contains("clear note")
-        if (isNoteDelete) {
-            val idMatch = NOTES_ID_REGEX.find(cleanQuery)
-            if (idMatch != null) {
-                val id = idMatch.groupValues[1].toLong()
-                _agentStatusFlow.emit("Deleting note $id...")
-                val notesTool = ToolRegistry.get("notes_control")
-                if (notesTool != null) {
-                    val result = notesTool.execute(JsonObject().apply {
-                        addProperty("action", "delete")
-                        addProperty("note_id", id)
-                    })
-                    return toolResult(result)
-                }
-            }
-        }
-
         val isNoteList = matchedIntent == "notes_list" && confidence > 0.7f ||
                 cleanQuery.contains("my notes") || cleanQuery.contains("list notes") ||
                 cleanQuery.contains("show notes") || cleanQuery.contains("tell my notes")
@@ -1115,10 +1202,12 @@ class AgentCore(
             }
         }
 
-        val isNoteSearch = matchedIntent == "notes_search" && confidence > 0.6f ||
+        val isNoteSearch = !isNoteDelete && (
+                matchedIntent == "notes_search" && confidence > 0.6f ||
                 cleanQuery.contains("search note") || cleanQuery.contains("find note") ||
                 cleanQuery.contains("check note") || cleanQuery.contains("in my notes") ||
                 cleanQuery.contains("from my notes")
+            )
         if (isNoteSearch) {
             val searchQuery = (nluSlots["QUERY"] ?: cleanQuery
                 .replace(Regex("(?i)^(?:search|find|check|look up|get)\\s+(?:notes?|my notes?)\\s*(?:for)?\\s*"), "")

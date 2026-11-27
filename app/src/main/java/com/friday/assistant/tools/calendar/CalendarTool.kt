@@ -89,7 +89,10 @@ class CalendarTool(private val context: Context) : Tool {
                     val description = args.get("description")?.asString ?: ""
                     addEvent(title, startTimeStr, duration, description)
                 }
-                "list_events" -> listEvents()
+                "list_events" -> {
+                    val onlyToday = args.get("only_today")?.asBoolean ?: false
+                    listEvents(onlyToday)
+                }
                 "set_alarm" -> {
                     val hour = args.get("hour")?.asInt
                         ?: return ToolResult(false, "Missing parameter 'hour' for action 'set_alarm'")
@@ -150,21 +153,24 @@ class CalendarTool(private val context: Context) : Tool {
     }
 
     @SuppressLint("Range")
-    private fun listEvents(): ToolResult {
+    private fun listEvents(onlyToday: Boolean = false): ToolResult {
         if (!hasCalendarReadPermission(context)) {
             return ToolResult(false, "Calendar read permission has not been granted yet. Please grant Calendar permission in Settings or Home.")
         }
-        val events = getUpcomingEvents(context, limit = 5, onlyToday = false)
+        val events = getUpcomingEvents(context, limit = 5, onlyToday = onlyToday)
         if (events.isEmpty()) {
-            return ToolResult(true, "No upcoming calendar events found")
+            return ToolResult(
+                true,
+                if (onlyToday) "You have nothing scheduled for the rest of today." else "No upcoming calendar events found."
+            )
         }
-        val sdf = SimpleDateFormat("MMM d, yyyy HH:mm", Locale.getDefault())
-        val result = StringBuilder("Upcoming calendar events:\n")
+        val sdf = SimpleDateFormat(if (onlyToday) "h:mm a" else "MMM d, h:mm a", Locale.getDefault())
+        val result = StringBuilder(if (onlyToday) "Today's schedule:\n" else "Upcoming schedule:\n")
         events.forEach { ev ->
             val dateStr = sdf.format(Date(ev.startMs))
-            result.append("- ${ev.title} on $dateStr" + (if (ev.description.isNotEmpty()) " (${ev.description})" else "") + "\n")
+            result.append("- ${ev.title} at $dateStr" + (if (ev.description.isNotEmpty()) " (${ev.description})" else "") + "\n")
         }
-        return ToolResult(true, result.toString())
+        return ToolResult(true, result.toString().trim())
     }
 
     companion object {

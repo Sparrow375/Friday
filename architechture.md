@@ -76,7 +76,8 @@ graph TD
    - Built on the Nordic SoftDevice S140 stack bundled directly with Seeed nRF52 Boards, configured with `Bluefruit.configPrphBandwidth(BANDWIDTH_MAX)` to support MTU 247.
    - **State Characteristic UUID**: `1F81DA01-B5A3-F393-E0A9-E50E24DCCA9E` (Notify / Read)
      - `0x01`: Wake-Word Trigger detected.
-     - `0x02`: Pendant is currently recording speech.
+     - `0x02`: Pendant is currently recording command speech (`~416ms` end hangover).
+     - `0x03`: Pendant is in Continuous Listen / Dictation Mode (streams ADPCM uninterrupted while running simultaneous wake detection for `"Friday, stop"`).
      - `0x00`: Pendant in Idle / Listening state.
    - **Command Characteristic UUID**: `1F81DA02-B5A3-F393-E0A9-E50E24DCCA9E` (Notify / Write)
      - `0x00`: Direct plain text command (if on-device STT is available).
@@ -84,7 +85,8 @@ graph TD
      - `0x02`: Audio Chunk (`chunkIndex` + IMA-ADPCM compressed payload). Dynamically adapts chunk size based on negotiated MTU: full 128-byte ADPCM payload (256 samples) when MTU >= 134; 16-byte ADPCM payload (32 samples = 19B packet) when MTU < 134, completely eliminating packet truncation.
      - `0x03`: Audio End transmission sentinel with 20x retry.
      - `0x04`: Battery Telemetry (`percent`, `millivolts` BE) sampled via `VBAT_ENABLE` (`P0.14`) and `PIN_VBAT` (`32`), reported on connect and every 30s in IDLE.
-     - `0x10` write (Phone -> Pendant): Signals TTS playback started on phone, arming immediate voice barge-in cooldown (`450ms`).
+     - `0x10` write (Phone -> Pendant): Signals TTS playback started on phone, arming immediate voice barge-in cooldown (`650ms`).
+     - `0x11` / `0x12` write (Phone -> Pendant): Starts (`0x11`) / stops (`0x12`) `STATE_CONTINUOUS_LISTEN` dictation streaming.
      - Text write: Phone echoes recognized speech back to chip for USB Serial output.
 5. **Stage 3: Fast Audio Compression (IMA-ADPCM)**:
    - Compresses 16-bit linear PCM down to 4 bits per sample (4:1 compression ratio).
@@ -145,18 +147,20 @@ The Android application is organized under package namespace `com.friday.assista
   - During `SPEAKING` of substantial responses (`>= 45` chars or streaming LLM), runs in barge-in mode alongside `AcousticEchoCanceler`.
 
 ### 4.4 Intelligence & Neural Processing (`intelligence/`)
-- **Single-Pass 12-Layer Joint NLU v2 (`NluIntentClassifier.kt` + `PostClassificationValidator.kt`)**:
-  - Single-pass 12-layer transformer (`BAAI/bge-small-en-v1.5`, `joint_nlu_model.onnx`, 66.58 MB INT8 linear-quantized ONNX) predicting **56 Intent classes + 23 BIO slot tags** (`decodeBioSlots` with orphan `I-X` span promotion).
-  - `PostClassificationValidator.validateRules(...)` applies deterministic keyword rescues (`set_reminder`, `reminder_list`, `set_alarm`, `set_timer`, `take_screenshot`, `volume_up/down`, `torch_toggle`, `brightness_down`, system toggles) and enforces the **Strict Web Search Lock** (blocks `search_google`/`web_search` unless `\bsearch\b` was spoken).
+- **Single-Pass 12-Layer Joint NLU v3 (`NluIntentClassifier.kt` + `PostClassificationValidator.kt`)**:
+  - Single-pass 12-layer transformer (`BAAI/bge-small-en-v1.5`, `joint_nlu_model.onnx`, 66.59 MB INT8 linear-quantized ONNX) predicting **59 Intent classes** (adding `reminder_delete`, `dictation_start`, `dictation_stop`) + **23 BIO slot tags** (`decodeBioSlots` with orphan `I-X` span promotion).
+  - `PostClassificationValidator.validateRules(...)` applies deterministic keyword rescues (`dictation_start`, `reminder_delete`, `notes_delete`, `set_reminder`, `reminder_list`, `calendar_add`/`calendar_list` incl. `"schedule"`, `play_youtube` for `on youtube`, `set_alarm`, `set_timer`, `take_screenshot`, `volume_up/down`, `torch_toggle`, `brightness_down`, system toggles) and enforces the **Strict Web Search Lock** (blocks `search_google`/`web_search` unless `\bsearch\b` was spoken).
 - **`RoutineManager.kt`**:
   - Parses `"create routine <name> that ..."` / `"when i say <phrase> ..."` definitions into `RoutineEntity` multi-step command macros and dispatches steps cleanly through `AgentCore`.
 - **`AgentCore.kt`**:
-  - Evaluates deterministic domain handlers *before* LLM or search fallback (even when NLU confidence `< 0.60f`), preventing device/reminder commands from leaking into fallback handlers:
-    - Routines & Reminders (multi-step `RoutineManager`, Room v3 `ReminderScheduler`, Calendar `add_event`/`list_events`).
+  - Executed off the main thread (`Dispatchers.Default`) from `FridayService` so `AutomationBridge` calls (`GLOBAL_ACTION_LOCK_SCREEN`, `GLOBAL_ACTION_TAKE_SCREENSHOT`) complete in `< 350ms` without blocking `mainHandler`.
+  - Evaluates deterministic domain handlers *before* LLM or search fallback (even when NLU confidence `< 0.60f`), preventing device/reminder/schedule commands from leaking into fallback handlers:
+    - Dictation Mode (`"Friday, listen"` / `"listen to this"` -> `shouldStartDictation` -> continuous `STATE_CONTINUOUS_LISTEN` ADPCM streaming + 4.5s Whisper chunk transcription -> saves `NoteEntity` on `"Friday, stop"`).
+    - Routines, Reminders & Schedule (multi-step `RoutineManager`, Room v3 `ReminderScheduler` incl. delete all/matching, Calendar `add_event`/`list_events` supporting `"schedule"` & `only_today`).
     - Messaging & Calls (WhatsApp autonomous sending, Phone dials, `NotificationService` triage; excludes plain `"open whatsapp"` from message collision).
-    - System Controls (Volume incl. `"turn up/down the music"`, Torch-before-Brightness, Biometric screen lock, WiFi, Bluetooth, DND, Airplane, Mobile Data).
-    - Media Controls (YouTube Music / YouTube playback, next/previous track, pause).
-    - Notes & Preferences (Room DB note creation/pinning/search/update, semantic memory keys via `PreferenceExtractor`).
+    - System Controls (Volume incl. `"turn up/down the music"`, Torch-before-Brightness, instant Biometric screen lock & screenshot, WiFi, Bluetooth, DND, Airplane, Mobile Data).
+    - Media Controls (instant `search_youtube` results for `"search ... on youtube"`, YouTube Music / YouTube playback, next/previous track, pause).
+    - Notes & Preferences (Room DB note creation/pinning/search/update/delete by ID, `"all"`, `"last"`, or keyword; semantic memory keys via `PreferenceExtractor`).
     - Search, Sports & Navigation (Google Maps turn-by-turn, `SportsScoreTool` live cricket & football scores + team follow/unfollow, and web/Google search **strictly locked to queries containing `\bsearch\b`**).
   - Conversational fallback to local LLM when intent is unmatched, with clear non-searching prompt when LLM is unavailable and `'search'` was not spoken.
 - **`LlamaEngine.kt` & `friday_jni.cpp`**:

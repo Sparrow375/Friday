@@ -70,6 +70,11 @@ class MediaControlTool(private val context: Context) : Tool {
                     ?: return ToolResult(false, "Missing parameter 'query' for action 'play_search'")
                 playFromSearch(query, app)
             }
+            "search_youtube" -> {
+                val query = args.get("query")?.asString
+                    ?: return ToolResult(false, "Missing parameter 'query' for action 'search_youtube'")
+                openYouTubeSearchResults(query)
+            }
             else -> ToolResult(false, "Unknown media action: $action")
         }
     }
@@ -230,6 +235,26 @@ class MediaControlTool(private val context: Context) : Tool {
         } catch (e: Exception) {
             Log.e(TAG, "YouTube Music search failed", e)
             ToolResult(false, "Failed to open YouTube Music: ${e.message}")
+        }
+    }
+
+    private fun openYouTubeSearchResults(query: String): ToolResult {
+        return try {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val searchUri = Uri.parse("https://www.youtube.com/results?search_query=$encoded")
+            val isYtInstalled = try {
+                context.packageManager.getPackageInfo(PKG_YOUTUBE, 0) != null
+            } catch (_: Exception) { false }
+
+            val intent = Intent(Intent.ACTION_VIEW, searchUri).apply {
+                if (isYtInstalled) setPackage(PKG_YOUTUBE)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(intent)
+            ToolResult(true, "Searching YouTube for '$query'.")
+        } catch (e: Exception) {
+            Log.e(TAG, "YouTube search intent failed", e)
+            ToolResult(false, "Failed to search YouTube: ${e.message}")
         }
     }
 

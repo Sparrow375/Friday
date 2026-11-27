@@ -54,5 +54,8 @@
   "reminder_list",
   "routine_create",
   "routine_run",
-  "digest_summary"
+  "digest_summary",
+  "reminder_delete",
+  "dictation_start",
+  "dictation_stop"
 ]

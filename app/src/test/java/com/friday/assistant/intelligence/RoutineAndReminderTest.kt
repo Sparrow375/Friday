@@ -119,4 +119,59 @@ class RoutineAndReminderTest {
         )
         assertEquals("take_screenshot", snap.intent)
     }
+
+    @Test
+    fun `delete schedule youtube and dictation commands route deterministically`() {
+        val remDel = PostClassificationValidator.validateRules(
+            intent = "search_google",
+            confidence = 0.85f,
+            preprocessed = InputPreprocessor.preprocess("friday delete all reminders")
+        )
+        assertEquals("reminder_delete", remDel.intent)
+        assertEquals(false, remDel.routeToLlm)
+
+        val noteDel = PostClassificationValidator.validateRules(
+            intent = "notes_create",
+            confidence = 0.50f,
+            preprocessed = InputPreprocessor.preprocess("delete note 3")
+        )
+        assertEquals("notes_delete", noteDel.intent)
+        assertEquals(false, noteDel.routeToLlm)
+
+        val schedAdd = PostClassificationValidator.validateRules(
+            intent = "unknown",
+            confidence = 0.25f,
+            preprocessed = InputPreprocessor.preprocess("add cooking to my schedule today")
+        )
+        assertEquals("calendar_add", schedAdd.intent)
+        assertEquals(false, schedAdd.routeToLlm)
+
+        val schedList = PostClassificationValidator.validateRules(
+            intent = "unknown",
+            confidence = 0.30f,
+            preprocessed = InputPreprocessor.preprocess("whats on my schedule today")
+        )
+        assertEquals("calendar_list", schedList.intent)
+        assertEquals(false, schedList.routeToLlm)
+
+        val ytSearch = PostClassificationValidator.validateRules(
+            intent = "search_google",
+            confidence = 0.89f,
+            preprocessed = InputPreprocessor.preprocess("search how to bake a cake on youtube")
+        )
+        assertEquals("play_youtube", ytSearch.intent)
+        assertEquals(false, ytSearch.routeToLlm)
+
+        val ytPair = EntityExtractor.extractMediaQuery("search how to bake a cake on youtube")
+        assertEquals("how to bake a cake", ytPair.first)
+        assertEquals("youtube", ytPair.second)
+
+        val listen = PostClassificationValidator.validateRules(
+            intent = "unknown",
+            confidence = 0.20f,
+            preprocessed = InputPreprocessor.preprocess("listen to this")
+        )
+        assertEquals("dictation_start", listen.intent)
+        assertEquals(false, listen.routeToLlm)
+    }
 }

@@ -196,18 +196,18 @@ class FridayAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
+    fun performTakeScreenshotSync(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
+        } else {
+            false
+        }
+    }
+
     fun postTakeScreenshot(callback: (Boolean) -> Unit) {
         mainHandler.post {
-            // GLOBAL_ACTION_TAKE_SCREENSHOT is fire-and-forget — the system captures
-            // asynchronously. We dispatch and immediately return true; checking the
-            // return value of performGlobalAction only tells us if the dispatch succeeded,
-            // not whether the capture completed.
-            val dispatched = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
-            } else {
-                false
-            }
-            callback(dispatched)
+            // GLOBAL_ACTION_TAKE_SCREENSHOT is fire-and-forget — the system captures asynchronously.
+            callback(performTakeScreenshotSync())
         }
     }
 
@@ -215,14 +215,17 @@ class FridayAccessibilityService : AccessibilityService() {
      * Locks the screen via GLOBAL_ACTION_LOCK_SCREEN (Android 9+ / API 28).
      * Unlike DevicePolicyManager.lockNow(), this preserves fingerprint & biometric unlock.
      */
+    fun performLockScreenSync(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+        } else {
+            false
+        }
+    }
+
     fun postLockScreen(callback: (Boolean) -> Unit) {
         mainHandler.post {
-            val locked = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
-            } else {
-                false
-            }
-            callback(locked)
+            callback(performLockScreenSync())
         }
     }
 

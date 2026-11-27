@@ -104,7 +104,7 @@ class NluIntentClassifier(private val context: Context) {
     private var tokenizer: WordpieceTokenizer? = null
     private var isLoaded = false
 
-    // 56 Intent Labels (v2 default fallback)
+    // 59 Intent Labels (v3)
     private var intentLabels = listOf(
         "volume_up", "volume_down", "brightness_up", "brightness_down",
         "torch_toggle", "torch_strength", "lock_phone", "open_app",
@@ -124,7 +124,8 @@ class NluIntentClassifier(private val context: Context) {
         "unknown",
         "sports_score", "sports_follow",
         "calendar_list", "calendar_add",
-        "reminder_list", "routine_create", "routine_run", "digest_summary"
+        "reminder_list", "routine_create", "routine_run", "digest_summary",
+        "reminder_delete", "dictation_start", "dictation_stop"
     )
 
     // 23 BIO Slot Labels

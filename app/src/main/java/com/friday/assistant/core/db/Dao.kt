@@ -96,6 +96,9 @@ interface FridayDao {
     @Query("SELECT * FROM reminders WHERE isCompleted = 0 ORDER BY triggerAtMs ASC")
     suspend fun getActiveRemindersSync(): List<ReminderEntity>
 
+    @Query("SELECT * FROM reminders ORDER BY triggerAtMs ASC")
+    suspend fun getAllRemindersSync(): List<ReminderEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertReminder(reminder: ReminderEntity): Long
 
@@ -107,6 +110,9 @@ interface FridayDao {
 
     @Query("DELETE FROM reminders WHERE id = :id")
     suspend fun deleteReminderById(id: Long)
+
+    @Query("DELETE FROM reminders")
+    suspend fun clearAllReminders()
 
     // ==========================================
     // Interests (Daily Briefing)

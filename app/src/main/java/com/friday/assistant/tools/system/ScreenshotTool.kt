@@ -20,9 +20,9 @@ class ScreenshotTool(private val context: Context) : Tool {
     companion object {
         private const val TAG = "ScreenshotTool"
         /** Delay (ms) between overlay hide and capture dispatch so the UI has time to vanish. */
-        private const val OVERLAY_HIDE_DELAY_MS = 250L
+        private const val OVERLAY_HIDE_DELAY_MS = 80L
         /** Delay (ms) after capture dispatch before restoring the overlay. */
-        private const val OVERLAY_RESTORE_DELAY_MS = 800L
+        private const val OVERLAY_RESTORE_DELAY_MS = 280L
     }
 
     override val name: String = "screenshot"
@@ -50,19 +50,16 @@ class ScreenshotTool(private val context: Context) : Tool {
         if (action != "capture") return ToolResult(false, "Unknown screenshot action: $action")
 
         // Tier 1: Accessibility GLOBAL_ACTION_TAKE_SCREENSHOT
-        // The action is async — the system saves the screenshot independently after dispatch.
-        // We MUST hide the overlay first so it doesn't appear in the capture.
+        // Hide the overlay briefly so it doesn't appear in the screenshot, dispatch, then restore.
         if (AutomationBridge.isReady() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val service = FridayService.instance
 
-            // Hide overlay, wait briefly, then dispatch the screenshot action
             service?.hideOverlayForScreenshot()
-            Thread.sleep(OVERLAY_HIDE_DELAY_MS)
+            kotlinx.coroutines.delay(OVERLAY_HIDE_DELAY_MS)
 
             val dispatched = AutomationBridge.takeScreenshot()
 
-            // Restore overlay after a short wait regardless of dispatch result
-            Thread.sleep(OVERLAY_RESTORE_DELAY_MS)
+            kotlinx.coroutines.delay(OVERLAY_RESTORE_DELAY_MS)
             service?.restoreOverlayAfterScreenshot()
 
             if (dispatched) {

@@ -1,5 +1,6 @@
 package com.friday.assistant.automation
 
+import android.os.Looper
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -24,25 +25,31 @@ object AutomationBridge {
 
     fun takeScreenshot(): Boolean {
         val svc = service ?: return false
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return svc.performTakeScreenshotSync()
+        }
         val result = AtomicBoolean(false)
         val latch = CountDownLatch(1)
         svc.postTakeScreenshot { ok ->
             result.set(ok)
             latch.countDown()
         }
-        latch.await(3, TimeUnit.SECONDS)
+        latch.await(1500, TimeUnit.MILLISECONDS)
         return result.get()
     }
 
     fun lockScreen(): Boolean {
         val svc = service ?: return false
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return svc.performLockScreenSync()
+        }
         val result = AtomicBoolean(false)
         val latch = CountDownLatch(1)
         svc.postLockScreen { ok ->
             result.set(ok)
             latch.countDown()
         }
-        latch.await(1500, TimeUnit.MILLISECONDS)
+        latch.await(1000, TimeUnit.MILLISECONDS)
         return result.get()
     }
 

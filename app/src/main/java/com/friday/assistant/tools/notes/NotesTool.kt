@@ -76,9 +76,15 @@ class NotesTool : Tool {
                 }
                 "delete" -> {
                     val id = args.get("note_id")?.asLong
-                        ?: return ToolResult(false, "Missing parameter 'note_id' for action 'delete'")
-                    deleteNote(id)
+                    val query = args.get("query")?.asString
+                    when {
+                        id != null -> deleteNote(id)
+                        !query.isNullOrBlank() -> deleteMatchingNote(query)
+                        else -> ToolResult(false, "Please specify a note number or keyword to delete.")
+                    }
                 }
+                "delete_all" -> deleteAllNotes()
+                "delete_last" -> deleteLastNote()
                 "update" -> {
                     val id = args.get("note_id")?.asLong
                         ?: return ToolResult(false, "Missing parameter 'note_id' for action 'update'")
@@ -211,9 +217,50 @@ class NotesTool : Tool {
         
         return if (noteToDelete != null) {
             dao.deleteNote(noteToDelete)
-            ToolResult(true, "Successfully deleted note $id: \"${noteToDelete.content}\"")
+            ToolResult(true, "Deleted note $id.")
         } else {
-            ToolResult(false, "Could not find a note with ID: $id")
+            // Also support 1-based list index if DB IDs shifted after earlier deletions
+            val allNotes = dao.getAllNotes().first()
+            val idx = (id - 1).toInt()
+            if (idx in allNotes.indices) {
+                val indexedNote = allNotes[idx]
+                dao.deleteNote(indexedNote)
+                ToolResult(true, "Deleted note $id.")
+            } else {
+                ToolResult(false, "Could not find note $id.")
+            }
         }
+    }
+
+    private suspend fun deleteLastNote(): ToolResult {
+        val allNotes = dao.getAllNotes().first()
+        val latest = allNotes.maxByOrNull { it.timestamp }
+            ?: return ToolResult(true, "You don't have any saved notes to delete.")
+        dao.deleteNote(latest)
+        return ToolResult(true, "Deleted your latest note.")
+    }
+
+    private suspend fun deleteMatchingNote(keyword: String): ToolResult {
+        val clean = keyword.trim().lowercase(Locale.getDefault())
+        val allNotes = dao.getAllNotes().first()
+        val matches = allNotes.filter {
+            it.content.lowercase(Locale.getDefault()).contains(clean) ||
+                it.tags.lowercase(Locale.getDefault()).contains(clean)
+        }
+        if (matches.isEmpty()) {
+            return ToolResult(false, "No note found matching '$keyword'.")
+        }
+        val target = matches.first()
+        dao.deleteNote(target)
+        return ToolResult(true, "Deleted note: \"${target.content.take(50)}\".")
+    }
+
+    private suspend fun deleteAllNotes(): ToolResult {
+        val count = dao.getAllNotes().first().size
+        if (count == 0) {
+            return ToolResult(true, "You don't have any saved notes.")
+        }
+        dao.clearAllNotes()
+        return ToolResult(true, "Deleted all $count saved notes.")
     }
 }

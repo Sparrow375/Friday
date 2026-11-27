@@ -115,6 +115,77 @@ object ReminderScheduler {
         }
     }
 
+    suspend fun cancelAllReminders(context: Context): Int {
+        return try {
+            val dao = FridayApplication.database.dao()
+            val all = dao.getAllRemindersSync()
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+            for (r in all) {
+                cancelPendingAlarmOnly(context, alarmManager, r)
+            }
+            dao.clearAllReminders()
+            FridayLogger.i(TAG, "Cancelled and deleted all ${all.size} reminders")
+            all.size
+        } catch (e: Exception) {
+            FridayLogger.e(TAG, "Failed to delete all reminders", e)
+            0
+        }
+    }
+
+    suspend fun cancelMatchingReminders(context: Context, queryOrId: String): Int {
+        return try {
+            val dao = FridayApplication.database.dao()
+            val all = dao.getAllRemindersSync()
+            if (all.isEmpty()) return 0
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+
+            val trimmed = queryOrId.trim().lowercase()
+            val numericId = trimmed.toLongOrNull()
+            val targets = when {
+                trimmed == "last" || trimmed == "latest" -> listOfNotNull(all.maxByOrNull { it.id })
+                numericId != null -> {
+                    val exact = all.filter { it.id == numericId }
+                    if (exact.isNotEmpty()) exact
+                    else {
+                        val idx = (numericId - 1).toInt()
+                        if (idx in all.indices) listOf(all[idx]) else emptyList()
+                    }
+                }
+                else -> all.filter { it.message.lowercase().contains(trimmed) }
+            }
+            for (r in targets) {
+                cancelPendingAlarmOnly(context, alarmManager, r)
+                dao.deleteReminderById(r.id)
+            }
+            targets.size
+        } catch (e: Exception) {
+            FridayLogger.e(TAG, "Failed to cancel matching reminders for '$queryOrId'", e)
+            0
+        }
+    }
+
+    private fun cancelPendingAlarmOnly(context: Context, alarmManager: AlarmManager?, reminder: ReminderEntity) {
+        try {
+            val intent = Intent(context, ReminderReceiver::class.java).apply {
+                action = ReminderReceiver.ACTION_TRIGGER_REMINDER
+                putExtra(ReminderReceiver.EXTRA_REMINDER_TEXT, reminder.message)
+                putExtra("reminder_code", reminder.requestCode)
+            }
+            val pi = PendingIntent.getBroadcast(
+                context,
+                reminder.requestCode,
+                intent,
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            )
+            if (pi != null) {
+                alarmManager?.cancel(pi)
+                pi.cancel()
+            }
+        } catch (e: Exception) {
+            FridayLogger.w(TAG, "Error cancelling alarm for reminder ${reminder.id}: ${e.message}")
+        }
+    }
+
     fun parseNaturalDateTime(rawInput: String, nowMs: Long = System.currentTimeMillis()): Long? {
         val input = rawInput.trim().lowercase()
         val cal = java.util.Calendar.getInstance().apply { timeInMillis = nowMs }

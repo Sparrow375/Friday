@@ -55,9 +55,12 @@ uint16_t cachedBatteryMv = 4200;
 enum PendantState {
   STATE_IDLE = 0x00,
   STATE_WAKE_DETECTED = 0x01,
-  STATE_RECORDING_VOICE = 0x02
+  STATE_RECORDING_VOICE = 0x02,
+  STATE_CONTINUOUS_LISTEN = 0x03
 };
 PendantState currentState = STATE_IDLE;
+volatile bool continuousListenRequested = false;
+volatile bool continuousListenStopRequested = false;
 
 // VAD & Wake-word calibrated parameters (pure AC RMS after DC removal)
 float backgroundRms = 60.0f;
@@ -326,6 +329,20 @@ void command_write_callback(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* 
     return;
   }
 
+  if (len == 1 && data[0] == 0x11) {
+    continuousListenStopRequested = false;
+    continuousListenRequested = true;
+    Serial.println(F("[Pendant BLE] Starting CONTINUOUS LISTEN mode (until 'Friday, stop' or 0x12)"));
+    return;
+  }
+
+  if (len == 1 && data[0] == 0x12) {
+    continuousListenRequested = false;
+    continuousListenStopRequested = true;
+    Serial.println(F("[Pendant BLE] Stopping CONTINUOUS LISTEN mode (0x12)"));
+    return;
+  }
+
   // Phone echoes back transcribed text for serial debugging
   Serial.print(F("[Phone STT Echo]: "));
   for (uint16_t i = 0; i < len; i++) {
@@ -578,6 +595,29 @@ void loop() {
     newAudioReady = false;
 
     // ================= State Machine =================
+    if (currentState == STATE_IDLE && continuousListenRequested && Bluefruit.connected()) {
+      continuousListenRequested = false;
+      continuousListenStopRequested = false;
+      currentState = STATE_CONTINUOUS_LISTEN;
+      globalChunkIndex = 0;
+      streamingReadIdx = rollingWriteIdx;
+      resetAdpcm();
+      wakeCooldownUntil = millis() + 2500;
+
+      stateCharacteristic.write8((uint8_t)STATE_CONTINUOUS_LISTEN);
+      stateCharacteristic.notify8((uint8_t)STATE_CONTINUOUS_LISTEN);
+
+      uint8_t header[9] = {
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        (uint8_t)((SAMPLE_RATE >> 8) & 0xFF), (uint8_t)(SAMPLE_RATE & 0xFF)
+      };
+      for (int r = 0; r < 5; r++) {
+        if (commandCharacteristic.notify(header, sizeof(header))) break;
+        delay(5);
+      }
+      Serial.println(F("[Pendant BLE] Streaming CONTINUOUS LISTEN audio..."));
+    }
+
     if (currentState == STATE_IDLE) {
       if (checkWakeWord(lastCalculatedRms)) {
         currentState = STATE_WAKE_DETECTED;
@@ -695,12 +735,12 @@ void loop() {
       // Check for completion of spoken phrase
       bool finishStreaming = false;
       // Hands-Free Wake-Word triggered command mode:
-      // Wait up to ~2.56s (160 frames) for user to start speaking after "Friday",
-      // allow ~640ms (40 frames) hangover after speech to bridge natural word pauses,
+      // Wait up to ~2.4s (150 frames) for user to start speaking after "Friday",
+      // trigger snappy end-of-speech at ~416ms (26 frames) hangover after speech ends,
       // and cap recording at ~6.4 seconds (400 chunks).
-      if (speechFrames >= 3 && silenceFrames >= 40) {
+      if (speechFrames >= 3 && silenceFrames >= 26) {
         finishStreaming = true;
-      } else if (speechFrames == 0 && silenceFrames >= 160) {
+      } else if (speechFrames == 0 && silenceFrames >= 150) {
         finishStreaming = true;
       } else if (globalChunkIndex >= 400 || (millis() - recordingStartTime > 6400)) {
         finishStreaming = true;
@@ -759,6 +799,90 @@ void loop() {
 
         digitalWrite(LED_RED, HIGH);
         digitalWrite(LED_BLUE, HIGH);
+      }
+    } else if (currentState == STATE_CONTINUOUS_LISTEN) {
+      // Gentle Green pulse while in continuous dictation mode
+      unsigned long phase = millis() % 2000UL;
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_BLUE, HIGH);
+      digitalWrite(LED_GREEN, (phase < 50UL) ? LOW : HIGH);
+
+      int currentHead = rollingWriteIdx;
+      int availableSamples = (currentHead - streamingReadIdx + ROLLING_BUFFER_SIZE) % ROLLING_BUFFER_SIZE;
+      BLEConnection* activeConn = Bluefruit.Connection(Bluefruit.connHandle());
+      uint16_t connMtu = activeConn ? activeConn->getMtu() : 23;
+      int frameSamples = (connMtu >= 134) ? 256 : 32;
+      int payloadBytes = frameSamples / 2;
+
+      int batchLimit = 6;
+      while (availableSamples >= frameSamples && batchLimit-- > 0) {
+        short chunk[256];
+        for (int i = 0; i < frameSamples; i++) {
+          chunk[i] = rollingBuffer[(streamingReadIdx + i) % ROLLING_BUFFER_SIZE];
+        }
+        uint8_t adpcmPayload[128];
+        encodeFrame(chunk, adpcmPayload, frameSamples);
+
+        uint8_t packet[3 + 128];
+        packet[0] = 0x02;
+        packet[1] = (globalChunkIndex >> 8) & 0xFF;
+        packet[2] = globalChunkIndex & 0xFF;
+        memcpy(&packet[3], adpcmPayload, payloadBytes);
+
+        if (commandCharacteristic.notify(packet, 3 + payloadBytes)) {
+          globalChunkIndex++;
+          streamingReadIdx = (streamingReadIdx + frameSamples) % ROLLING_BUFFER_SIZE;
+          availableSamples -= frameSamples;
+        } else {
+          delay(4);
+          break;
+        }
+      }
+
+      if (continuousListenStopRequested || !Bluefruit.connected()) {
+        continuousListenStopRequested = false;
+        uint8_t endPacket[1] = { 0x03 };
+        for (int r = 0; r < 20; r++) {
+          if (commandCharacteristic.notify(endPacket, 1)) break;
+          delay(15);
+        }
+        globalChunkIndex = 0;
+        currentState = STATE_IDLE;
+        stateCharacteristic.write8((uint8_t)STATE_IDLE);
+        stateCharacteristic.notify8((uint8_t)STATE_IDLE);
+        digitalWrite(LED_GREEN, HIGH);
+        Serial.println(F("[Pendant BLE] Continuous listen stopped."));
+      } else if (checkWakeWord(lastCalculatedRms)) {
+        // User said "Friday" (e.g., "Friday, stop") — flush continuous stream, then stream command
+        uint8_t endPacket[1] = { 0x03 };
+        for (int r = 0; r < 15; r++) {
+          if (commandCharacteristic.notify(endPacket, 1)) break;
+          delay(10);
+        }
+
+        currentState = STATE_WAKE_DETECTED;
+        wakeTriggerTimestamp = millis();
+        stateCharacteristic.write8((uint8_t)STATE_WAKE_DETECTED);
+        stateCharacteristic.notify8((uint8_t)STATE_WAKE_DETECTED);
+
+        digitalWrite(LED_GREEN, HIGH);
+        digitalWrite(LED_RED, LOW);
+        resetAdpcm();
+
+        currentState = STATE_RECORDING_VOICE;
+        globalChunkIndex = 0;
+        streamingReadIdx = rollingWriteIdx;
+        stateCharacteristic.write8((uint8_t)STATE_RECORDING_VOICE);
+        stateCharacteristic.notify8((uint8_t)STATE_RECORDING_VOICE);
+
+        uint8_t header[9] = {
+          0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+          (uint8_t)((SAMPLE_RATE >> 8) & 0xFF), (uint8_t)(SAMPLE_RATE & 0xFF)
+        };
+        for (int r = 0; r < 5; r++) {
+          if (commandCharacteristic.notify(header, sizeof(header))) break;
+          delay(5);
+        }
       }
     }
   }

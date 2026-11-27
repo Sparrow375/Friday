@@ -119,7 +119,18 @@ class FridayBleWearableManager private constructor(private val context: Context)
     var onAudioStreamStarted: (() -> Unit)? = null
     var onAudioChunkReceived: ((Int, FloatArray) -> Unit)? = null
     var onCommandAudioReceived: ((FloatArray) -> Unit)? = null
+    var onDictationSegmentReady: ((FloatArray) -> Unit)? = null
     var onCommandTextReceived: ((String) -> Unit)? = null
+
+    @Volatile
+    private var continuousDictationMode = false
+
+    fun setContinuousDictationMode(enabled: Boolean) {
+        continuousDictationMode = enabled
+        if (enabled) {
+            mainHandler.removeCallbacks(streamTimeoutRunnable)
+        }
+    }
 
     fun sendControlByte(opcode: Byte) {
         val gatt = activeGatt ?: return
@@ -441,7 +452,9 @@ class FridayBleWearableManager private constructor(private val context: Context)
 
     private fun resetStreamTimeout() {
         mainHandler.removeCallbacks(streamTimeoutRunnable)
-        mainHandler.postDelayed(streamTimeoutRunnable, 1800L)
+        if (!continuousDictationMode) {
+            mainHandler.postDelayed(streamTimeoutRunnable, 1800L)
+        }
     }
 
     private fun resetStreamBuffers() {
@@ -481,7 +494,13 @@ class FridayBleWearableManager private constructor(private val context: Context)
                     offset += chunk.size
                 }
                 mainHandler.post {
-                    onCommandAudioReceived?.invoke(merged)
+                    if (continuousDictationMode) {
+                        scope.launch(Dispatchers.Default) {
+                            onDictationSegmentReady?.invoke(merged)
+                        }
+                    } else {
+                        onCommandAudioReceived?.invoke(merged)
+                    }
                 }
             }
         }
@@ -504,6 +523,7 @@ class FridayBleWearableManager private constructor(private val context: Context)
                     }
                     0x02 -> {
                         FridayLogger.d(TAG, "★ Wearable reported VOICE RECORDING started!")
+                        continuousDictationMode = false
                         if (!_isAudioStreaming.value) {
                             _isAudioStreaming.value = true
                             _streamChunksReceived.value = 0
@@ -515,6 +535,12 @@ class FridayBleWearableManager private constructor(private val context: Context)
                         } else {
                             resetStreamTimeout()
                         }
+                    }
+                    0x03 -> {
+                        FridayLogger.i(TAG, "★ Wearable entered CONTINUOUS LISTEN (dictation) mode!")
+                        continuousDictationMode = true
+                        mainHandler.removeCallbacks(streamTimeoutRunnable)
+                        _isAudioStreaming.value = true
                     }
                     0x00 -> {
                         FridayLogger.d(TAG, "Wearable is idle.")
@@ -578,16 +604,35 @@ class FridayBleWearableManager private constructor(private val context: Context)
                         if (value.size > 3) {
                             val chunkIdx = ((value[1].toInt() and 0xFF) shl 8) or (value[2].toInt() and 0xFF)
                             val payloadLen = value.size - 3
+                            var segmentToFlush: FloatArray? = null
                             val chunkSamples = synchronized(audioStreamLock) {
                                 val decoded = streamAdpcmDecoder.decodeChunk(value, 3, payloadLen)
                                 decodedChunksAccumulator.add(decoded)
                                 decodedTotalSamples += decoded.size
+                                // In continuous dictation mode, flush ~4.5s speech segments without resetting ADPCM predictor
+                                if (continuousDictationMode && decodedTotalSamples >= 72000) {
+                                    val merged = FloatArray(decodedTotalSamples)
+                                    var offset = 0
+                                    for (c in decodedChunksAccumulator) {
+                                        System.arraycopy(c, 0, merged, offset, c.size)
+                                        offset += c.size
+                                    }
+                                    decodedChunksAccumulator.clear()
+                                    decodedTotalSamples = 0
+                                    segmentToFlush = merged
+                                }
                                 decoded
                             }
                             _streamChunksReceived.value = _streamChunksReceived.value + 1
                             _isAudioStreaming.value = true
 
                             resetStreamTimeout()
+
+                            segmentToFlush?.let { seg ->
+                                scope.launch(Dispatchers.Default) {
+                                    onDictationSegmentReady?.invoke(seg)
+                                }
+                            }
 
                             mainHandler.post {
                                 onAudioChunkReceived?.invoke(chunkIdx, chunkSamples)

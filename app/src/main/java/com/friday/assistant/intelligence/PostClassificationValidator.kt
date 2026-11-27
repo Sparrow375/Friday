@@ -89,6 +89,24 @@ object PostClassificationValidator {
                 finalIntent = "airplane_mode_toggle"
                 finalConfidence = maxOf(finalConfidence, 0.92f)
             }
+            Regex("\\b(listen to this|start listening|start dictation|dictate this|transcribe this|take dictation)\\b").containsMatchIn(originalTextLower) ||
+                Regex("^(?:friday\\s+)?listen(?:\\s+please)?$").matches(originalTextLower) -> {
+                finalIntent = "dictation_start"
+                finalConfidence = maxOf(finalConfidence, 0.96f)
+                routeToLlm = false
+            }
+            Regex("\\b(delete|clear|remove|cancel)\\b.*\\breminders?\\b").containsMatchIn(originalTextLower) ||
+                Regex("\\breminders?\\b.*\\b(delete|clear|remove|cancel)\\b").containsMatchIn(originalTextLower) -> {
+                finalIntent = "reminder_delete"
+                finalConfidence = maxOf(finalConfidence, 0.96f)
+                routeToLlm = false
+            }
+            Regex("\\b(delete|clear|remove)\\b.*\\bnotes?\\b").containsMatchIn(originalTextLower) ||
+                Regex("\\bnotes?\\b.*\\b(delete|clear|remove)\\b").containsMatchIn(originalTextLower) -> {
+                finalIntent = "notes_delete"
+                finalConfidence = maxOf(finalConfidence, 0.96f)
+                routeToLlm = false
+            }
             Regex("\\b(list|show|what|check|any|pending)\\b.*\\breminders?\\b").containsMatchIn(originalTextLower) ||
                 originalTextLower.contains("list my reminders") || originalTextLower.contains("show my reminders") ||
                 originalTextLower.contains("what reminders") -> {
@@ -99,6 +117,22 @@ object PostClassificationValidator {
             Regex("\\b(remind|reminder|reminders)\\b").containsMatchIn(originalTextLower) ||
                 originalTextLower.contains("don't let me forget") || originalTextLower.contains("dont let me forget") -> {
                 finalIntent = "set_reminder"
+                finalConfidence = maxOf(finalConfidence, 0.95f)
+                routeToLlm = false
+            }
+            Regex("\\b(add|put|create|schedule)\\b.*\\b(?:on|to)\\s+(?:my\\s+)?(?:schedule|calendar)\\b").containsMatchIn(originalTextLower) -> {
+                finalIntent = "calendar_add"
+                finalConfidence = maxOf(finalConfidence, 0.94f)
+                routeToLlm = false
+            }
+            Regex("\\b(what'?s|whats|what is|show|list|check|any|events)\\b.*\\b(?:on\\s+(?:my\\s+)?)?(?:schedule|calendar)\\b").containsMatchIn(originalTextLower) -> {
+                finalIntent = "calendar_list"
+                finalConfidence = maxOf(finalConfidence, 0.94f)
+                routeToLlm = false
+            }
+            (originalTextLower.contains(" on youtube") || originalTextLower.contains(" youtube")) &&
+                !originalTextLower.startsWith("open youtube") && !originalTextLower.startsWith("launch youtube") -> {
+                finalIntent = "play_youtube"
                 finalConfidence = maxOf(finalConfidence, 0.95f)
                 routeToLlm = false
             }
@@ -162,12 +196,18 @@ object PostClassificationValidator {
             }
         }
 
-        // 3. Explicit 'search ...' safeguard (unless searching personal notes or Reddit)
+        // 3. Explicit 'search ...' safeguard (unless searching personal notes, Reddit, or YouTube/music)
         if (hasExplicitSearchKeyword &&
             !originalTextLower.contains("note") &&
             !originalTextLower.contains("reddit") &&
+            !originalTextLower.contains("youtube") &&
+            !originalTextLower.contains("spotify") &&
             finalIntent != "set_reminder" &&
-            finalIntent != "reminder_list"
+            finalIntent != "reminder_list" &&
+            finalIntent != "reminder_delete" &&
+            finalIntent != "notes_delete" &&
+            finalIntent != "play_youtube" &&
+            finalIntent != "play_spotify"
         ) {
             finalIntent = "search_google"
             finalConfidence = maxOf(finalConfidence, 0.92f)

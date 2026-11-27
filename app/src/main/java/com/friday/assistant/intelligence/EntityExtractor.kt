@@ -64,14 +64,15 @@ object EntityExtractor {
         val app = detectAppName(query)
 
         val patterns = listOf(
-            "(?i)play\\s+(.+?)\\s+on\\s+(spotify|youtube|youtube music)".toRegex(),
+            "(?i)search\\s+(?:youtube|yt)\\s+(?:for\\s+)?(.+)".toRegex(),
+            "(?i)(?:search|find|look up)\\s+(?:for\\s+)?(.+?)\\s+(?:on|in)\\s+(youtube music|youtube|spotify|google)".toRegex(),
+            "(?i)play\\s+(.+?)\\s+(?:on|in)\\s+(spotify|youtube music|youtube)".toRegex(),
             "(?i)play\\s+(.+?)\\s+from\\s+(spotify|youtube)".toRegex(),
-            "(?i)listen to\\s+(.+?)\\s+on\\s+(spotify|youtube)".toRegex(),
+            "(?i)listen to\\s+(.+?)\\s+(?:on|in)\\s+(spotify|youtube music|youtube)".toRegex(),
+            "(?i)watch\\s+(.+?)\\s+(?:on|in)\\s+(youtube)".toRegex(),
             "(?i)play\\s+(.+)".toRegex(),
             "(?i)listen to\\s+(.+)".toRegex(),
-            "(?i)start playing\\s+(.+)".toRegex(),
-            "(?i)search\\s+(.+?)\\s+on\\s+(spotify|youtube|google)".toRegex(),
-            "(?i)search\\s+(?:for\\s+)?(.+?)\\s+on\\s+(spotify|youtube|google)".toRegex()
+            "(?i)start playing\\s+(.+)".toRegex()
         )
 
         for (pattern in patterns) {
