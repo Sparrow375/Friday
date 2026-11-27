@@ -898,3 +898,30 @@ The project uses a clean package namespace `com.friday.assistant`:
               - Exported INT8 `joint_nlu_model.onnx` (`66.59 MB`) + `labels.txt` achieving **`146/151 (96.7%)`** on Original Stress Suite (`1.15 ms` mean) and **`32/32 (100.0%)`** on the V2/V3 Targeted Suite.
             - **Verification**: `python scripts/compile_pendant.py` (`0` errors) and `.\gradlew.bat testDebugUnitTest assembleDebug --no-daemon` (`BUILD SUCCESSFUL in 39s`, all unit tests incl. new delete/schedule/YouTube/dictation tests passed).
 
+          * **Continuous Dictation Full Audio Overhaul & Wearable Battery Level Telemetry Stabilization (November 2026 - Part 33)**:
+            - **Continuous Dictation 22-Word Truncation Diagnosis & Resolution**:
+              - **Root Causes**:
+                1. `friday_jni.cpp` hardcoded `params.max_tokens = 48` and `params.single_segment = true`, strictly capping any Whisper transcription to ~22-30 words / 1 short segment.
+                2. `FridayBleWearableManager.kt` flushed and cleared `decodedChunksAccumulator` every 4.5 seconds (`72,000` samples), causing `finalizeAudioStream()` to only hold the final residual snippet and discard the preceding interview.
+                3. `xiao_friday_pendant.ino` ran `checkWakeWord` on every frame inside `STATE_CONTINUOUS_LISTEN`. Any conversational phoneme spike triggered wake detection, sent `0x03` end packet, and switched to `STATE_RECORDING_VOICE` with a 416ms silence timeout, killing continuous listen mid-interview.
+              - **Fixes**:
+                1. Updated `app/src/main/cpp/friday_jni.cpp`: Added `jboolean is_long_form` to `transcribeWhisper`. When `is_long_form == true`, disables token capping (`params.max_tokens = 0`), enables multi-segment decoding (`params.single_segment = false; params.no_timestamps = false; params.no_context = false`), and loops over all `whisper_full_n_segments(ctx)` segments.
+                2. Updated `app/src/main/java/com/friday/assistant/core/native/WhisperEngine.kt`: Exposed `transcribe(audioSamples, initialPrompt, isLongForm = false)`.
+                3. Updated `app/src/main/java/com/friday/assistant/ble/FridayBleWearableManager.kt`: Preserved all continuous audio chunks in `decodedChunksAccumulator` throughout dictation mode without clearing every 4.5s; made `finalizeAudioStream(): FloatArray` public, returning the complete session audio, and wired `onDictationFinished`.
+                4. Updated `app/src/main/java/com/friday/assistant/ui/FridayService.kt`: Replaced fragmented real-time chunking with `processFullDictationAudio` + `saveAndAnnounceDictation`. Slices full recorded audio into sequential 25-second (`400,000` samples) windows with `isLongForm = true` in Whisper, concatenates all segments, and saves the full interview to `NoteEntity(content = fullTranscript, tags = "dictation,transcript")`.
+                5. Updated `firmware/xiao_friday_pendant/xiao_friday_pendant.ino`: Uncapped BLE notification draining in `STATE_CONTINUOUS_LISTEN` while `commandCharacteristic.notify()` succeeds (eliminates `batchLimit = 6` buffer overwrites); removed conversational `checkWakeWord` mid-session aborts so the pendant streams all audio continuously until stopped via phone `0x12`.
+                6. Updated `app/src/main/java/com/friday/assistant/ui/overlay/FridayOverlayContent.kt`: Added a prominent, glowing "Stop & Save Note" button in the overlay during continuous dictation.
+            - **Wearable Battery Level Telemetry Stabilization (33% to 40s Jitter Fix)**:
+              - **Root Causes**:
+                1. XIAO nRF52840 Sense uses a high-impedance (2.02 Megohm: `1510k / 510k`) divider on `VBAT_ENABLE` / `PIN_VBAT`. A brief 2ms delay was insufficient for the RC network to settle, reading partially charged SAADC cap voltages.
+                2. LiPo internal resistance causes 20-50mV transient dips during radio bursts. The steep piecewise LUT (3730mV = 25% vs 3800mV = 45%, ~0.3%/mV) turned small 40mV dips into wild 12% percentage jumps (32% vs 44%).
+                3. Absence of rolling filtering on both firmware and phone accepted jitter directly.
+              - **Fixes**:
+                1. Updated `readBatteryMillivolts()` in `xiao_friday_pendant.ino`: 10ms settling delay after `VBAT_ENABLE = LOW`, 2 warmup SAADC discards, 16 readings with 1ms spacing, sorted and averaged middle 8 (median-trimmed mean, discarding transient radio spikes).
+                2. Added persistent 80/20 Exponential Moving Average (`filteredBatteryMv = filteredBatteryMv * 0.80f + rawMv * 0.20f`) and calibrated 11-point piecewise LiPo LUT (3300mV = 0% to 4200mV = 100%).
+                3. Added firmware monotonic rate clamp: maximum ±1% step per 30-second interval unless on charger (`>= 4180mV`).
+                4. Added phone-side hysteresis filter in `FridayBleWearableManager.kt`: smoothly clamps incoming battery telemetry to stable steps, preventing rapid oscillation so Dashboard and Settings display one accurate, consistent percentage.
+            - **Verification**:
+              - Pendant Arduino sketch compiled cleanly with 0 errors (`python scripts/compile_pendant.py`).
+              - Android unit tests and APK compiled with 0 errors (`.\gradlew.bat testDebugUnitTest assembleDebug --no-daemon` -> `BUILD SUCCESSFUL in 32s`).
+

@@ -26,7 +26,7 @@ class WhisperEngine {
     private external fun initWhisper(modelPath: String): Long
     private external fun freeWhisper(ctxPtr: Long)
     private external fun abortWhisper()
-    private external fun transcribeWhisper(ctxPtr: Long, audioSamples: FloatArray, initialPrompt: String?): String
+    private external fun transcribeWhisper(ctxPtr: Long, audioSamples: FloatArray, initialPrompt: String?, isLongForm: Boolean): String
 
     /**
      * Signals any in-flight Whisper transcription to abort immediately so the caller
@@ -73,14 +73,18 @@ class WhisperEngine {
         }
     }
 
-    suspend fun transcribe(audioSamples: FloatArray, initialPrompt: String? = null): String = mutex.withLock {
+    suspend fun transcribe(
+        audioSamples: FloatArray,
+        initialPrompt: String? = null,
+        isLongForm: Boolean = false
+    ): String = mutex.withLock {
         withContext(Dispatchers.IO) {
             if (contextPtr == 0L) {
                 Log.e(TAG, "Whisper model not loaded")
                 return@withContext ""
             }
             try {
-                transcribeWhisper(contextPtr, audioSamples, initialPrompt)
+                transcribeWhisper(contextPtr, audioSamples, initialPrompt, isLongForm)
             } catch (e: Throwable) {
                 Log.e(TAG, "Exception transcribing audio", e)
                 ""

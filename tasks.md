@@ -156,3 +156,30 @@
 - [x] 127. Implement hands-free Continuous Listen / Dictation Mode (`"Friday, listen"` / `"listen to this"` -> `0x11`/`0x12`/`STATE_CONTINUOUS_LISTEN` continuous ADPCM streaming -> incremental Whisper chunking -> saves full transcript to Notes on `"Friday, stop"` or UI stop) across `xiao_friday_pendant.ino`, `FridayBleWearableManager.kt`, and `FridayService.kt`
 - [x] 128. Audit & upgrade `scripts/train_joint_nlu_v2.py` and `scripts/manual_commands_dataset.json` (59 intents adding `reminder_delete`, `dictation_start`, `dictation_stop`; rich reminder/schedule/YouTube/delete/unknown data), retrain `JointTransformerNluV2` on RTX 5060 Ti GPU, export INT8 `joint_nlu_model.onnx`, update `labels.txt` & `NluIntentClassifier.kt`
 - [x] 129. Add unit tests for new routing rules, run `eval_nlu_benchmark.py`, `compile_pendant.py`, `testDebugUnitTest assembleDebug`, update `context.md` & `architechture.md`, commit, and push to `origin main`
+
+## Continuous Dictation Full Audio Overhaul & Battery Level Telemetry Stabilization
+
+- [x] 130. Stabilize wearable battery level sensing & telemetry in `firmware/xiao_friday_pendant/xiao_friday_pendant.ino`:
+  - 10ms RC settling time for high-impedance (2.02M) `VBAT_ENABLE` divider, 2 warmup discards, 16-sample trimmed median
+  - Persistent Exponential Moving Average (EMA) on `cachedBatteryMv` (`alpha = 0.15`)
+  - Calibrated 11-point piecewise LiPo lookup matching 3.7V/3.87V discharge
+  - Monotonic/rate clamping (max ±1% per 30s interval unless charging) to prevent jumping between 33% and 40s
+- [x] 131. Overhaul `STATE_CONTINUOUS_LISTEN` in `firmware/xiao_friday_pendant/xiao_friday_pendant.ino`:
+  - Uncap BLE notification draining while `commandCharacteristic.notify()` succeeds (eliminates `batchLimit = 6` buffer overwrite)
+  - Prevent premature termination from conversational phoneme matches: continuous listen streams all audio without interruption until phone sends `0x12` stop
+  - Multi-retry `0x03` end packet delivery
+- [x] 132. Upgrade Whisper JNI & Engine (`friday_jni.cpp`, `WhisperEngine.kt`):
+  - Add `isLongForm` boolean flag to `transcribeWhisper`
+  - Remove 48-token cap (`max_tokens = 0`) and allow multi-segment decoding (`single_segment = false`) when `isLongForm = true`
+- [x] 133. Overhaul BLE audio accumulation & phone battery stabilization in `FridayBleWearableManager.kt`:
+  - Preserve and continuously accumulate ALL decoded float PCM samples in `continuousAudioAccumulator` without clearing every 4.5s
+  - Phone-side battery hysteresis/stabilizer for rock-solid single percentage across Dashboard and Settings
+  - Provide `finalizeContinuousDictationAudio(): FloatArray`
+- [x] 134. Overhaul `FridayService.kt` Continuous Dictation:
+  - Eliminate lossy 4.5s real-time Whisper chunking
+  - In `finalizeContinuousDictation()`, retrieve complete session audio, transcribe in full via long-form Whisper pass, and save complete interview text into `NoteEntity`
+  - Speak confirmation with total word count
+- [x] 135. Enhance Overlay UI in `FridayOverlayContent.kt`:
+  - Add visual "Stop & Save Note" button in `FridayOverlayContent.kt` during continuous dictation
+- [x] 136. Verify firmware compilation (`python scripts/compile_pendant.py`) and Android unit tests + APK (`.\gradlew.bat testDebugUnitTest assembleDebug --no-daemon`)
+- [x] 137. Update `context.md`, `architechture.md`, commit, and push to `origin main`

@@ -111,7 +111,7 @@ Java_com_friday_assistant_core_native_WhisperEngine_abortWhisper(JNIEnv *env, jo
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_friday_assistant_core_native_WhisperEngine_transcribeWhisper(
-        JNIEnv *env, jobject thiz, jlong ctx_ptr, jfloatArray audio_samples, jstring initial_prompt) {
+        JNIEnv *env, jobject thiz, jlong ctx_ptr, jfloatArray audio_samples, jstring initial_prompt, jboolean is_long_form) {
     struct whisper_context *ctx = reinterpret_cast<struct whisper_context *>(ctx_ptr);
     if (ctx == nullptr) {
         LOGE("Whisper context is null");
@@ -141,26 +141,38 @@ Java_com_friday_assistant_core_native_WhisperEngine_transcribeWhisper(
     params.print_realtime = false;
     params.print_special = false;
     params.print_timestamps = false;
-    params.no_timestamps = true;
-    params.max_tokens = 48;
-    params.greedy.best_of = 1;
     params.language = "en";
     params.translate = false;
     params.suppress_blank = true;
     params.suppress_nst = true;
-    params.no_context = true;
-    params.single_segment = true;
     params.temperature = 0.0f;
     params.temperature_inc = 0.0f;
     params.entropy_thold = 2.4f;
     params.logprob_thold = -1.0f;
     params.abort_callback = whisper_abort_cb;
     params.abort_callback_user_data = nullptr;
+
+    if (is_long_form) {
+        // Multi-segment long-form transcription for lectures / interviews (no token cap)
+        params.no_timestamps = false;
+        params.max_tokens = 0;
+        params.single_segment = false;
+        params.no_context = false;
+        params.greedy.best_of = 1;
+    } else {
+        // Ultra-low latency voice command transcription
+        params.no_timestamps = true;
+        params.max_tokens = 48;
+        params.single_segment = true;
+        params.no_context = true;
+        params.greedy.best_of = 1;
+    }
+
     if (!prompt_str.empty()) {
         params.initial_prompt = prompt_str.c_str();
     }
 
-    LOGI("Starting Whisper transcription on %d samples", len);
+    LOGI("Starting Whisper transcription on %d samples (isLongForm=%d)", len, is_long_form);
     int ret = whisper_full(ctx, params, samples, len);
     env->ReleaseFloatArrayElements(audio_samples, samples, JNI_ABORT);
 

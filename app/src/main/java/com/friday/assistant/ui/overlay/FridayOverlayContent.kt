@@ -13,6 +13,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,8 +25,11 @@ import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -212,6 +216,35 @@ fun FridayOverlayContent(
                                     modifier = Modifier.size(36.dp)
                                 )
                             }
+                        }
+                    }
+
+                    // Direct Stop & Save Button during Continuous Dictation
+                    if (pipelineState == PipelineState.LISTENING &&
+                        (statusText.contains("Dictation", ignoreCase = true) || statusText.contains("stop", ignoreCase = true))
+                    ) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(
+                            onClick = onMicClick,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.primary
+                            ),
+                            shape = RoundedCornerShape(14.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = "Stop & Save Note",
+                                tint = colors.bg,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Stop & Save Note",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = colors.bg
+                            )
                         }
                     }
 

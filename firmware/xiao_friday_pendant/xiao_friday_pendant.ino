@@ -387,16 +387,42 @@ void startAdv(void) {
 }
 
 // ==================== Battery Sensing (VBAT_ENABLE P0.14 / PIN_VBAT P0.31) ====================
+static float filteredBatteryMv = 0.0f;
+
 uint16_t readBatteryMillivolts() {
   digitalWrite(VBAT_ENABLE, LOW); // Enable onboard divider briefly
-  delay(2);
-  uint32_t adcSum = 0;
-  for (int i = 0; i < 8; i++) {
-    adcSum += analogRead(PIN_VBAT);
+  delay(10); // Allow RC network on high-impedance (2.02M) divider to settle
+
+  // Discard 2 warmup readings to flush SAADC sampling capacitor
+  analogRead(PIN_VBAT);
+  analogRead(PIN_VBAT);
+
+  // Take 16 readings with 1ms spacing
+  uint16_t raw[16];
+  for (int i = 0; i < 16; i++) {
+    raw[i] = analogRead(PIN_VBAT);
+    delay(1);
   }
   digitalWrite(VBAT_ENABLE, HIGH); // Disable immediately to prevent ~2.3 uA leakage
 
+  // Insertion sort to find median and discard outlier spikes
+  for (int i = 1; i < 16; i++) {
+    uint16_t key = raw[i];
+    int j = i - 1;
+    while (j >= 0 && raw[j] > key) {
+      raw[j + 1] = raw[j];
+      j--;
+    }
+    raw[j + 1] = key;
+  }
+
+  // Average middle 8 readings (indices 4 to 11) for trimmed mean
+  uint32_t adcSum = 0;
+  for (int i = 4; i < 12; i++) {
+    adcSum += raw[i];
+  }
   float avgAdc = (float)adcSum / 8.0f;
+
   // AR_DEFAULT = 3.6V full scale at 12-bit (4096), onboard divider 1510k / 510k
   float mv = avgAdc * (3600.0f / 4096.0f) * (1510.0f / 510.0f);
   if (mv < 2500.0f) mv = 2500.0f;
@@ -405,11 +431,12 @@ uint16_t readBatteryMillivolts() {
 }
 
 uint8_t batteryMillivoltsToPercent(uint16_t mv) {
-  static const uint16_t VOLT_LUT[9] = { 3350, 3500, 3650, 3730, 3800, 3880, 3980, 4080, 4180 };
-  static const uint8_t  PCT_LUT[9]  = {    0,    4,   12,   25,   45,   62,   78,   90,  100 };
+  // Calibrated 11-point piecewise LiPo discharge curve for 3.7V / 3.87V nominal cell
+  static const uint16_t VOLT_LUT[11] = { 3300, 3450, 3600, 3680, 3740, 3800, 3860, 3940, 4020, 4100, 4200 };
+  static const uint8_t  PCT_LUT[11]  = {    0,    5,   15,   25,   40,   55,   68,   80,   90,   96,  100 };
   if (mv <= VOLT_LUT[0]) return 0;
-  if (mv >= VOLT_LUT[8]) return 100;
-  for (int i = 1; i < 9; i++) {
+  if (mv >= VOLT_LUT[10]) return 100;
+  for (int i = 1; i < 11; i++) {
     if (mv <= VOLT_LUT[i]) {
       float frac = (float)(mv - VOLT_LUT[i - 1]) / (float)(VOLT_LUT[i] - VOLT_LUT[i - 1]);
       return (uint8_t)(PCT_LUT[i - 1] + frac * (PCT_LUT[i] - PCT_LUT[i - 1]) + 0.5f);
@@ -419,8 +446,30 @@ uint8_t batteryMillivoltsToPercent(uint16_t mv) {
 }
 
 void updateAndNotifyBattery(bool sendBle) {
-  cachedBatteryMv = readBatteryMillivolts();
-  cachedBatteryPercent = batteryMillivoltsToPercent(cachedBatteryMv);
+  uint16_t rawMv = readBatteryMillivolts();
+  if (filteredBatteryMv < 2000.0f) {
+    filteredBatteryMv = (float)rawMv;
+  } else {
+    // Smooth with 80% history / 20% measurement EMA
+    filteredBatteryMv = filteredBatteryMv * 0.80f + (float)rawMv * 0.20f;
+  }
+  cachedBatteryMv = (uint16_t)(filteredBatteryMv + 0.5f);
+
+  uint8_t rawPct = batteryMillivoltsToPercent(cachedBatteryMv);
+  if (cachedBatteryPercent == 0) {
+    cachedBatteryPercent = rawPct;
+  } else {
+    // Hysteresis & rate clamp: prevent wild jumping back and forth
+    // Only allow at most +/- 1% step per interval unless on charger (>= 4180mV)
+    if (cachedBatteryMv >= 4180) {
+      cachedBatteryPercent = rawPct; // Fast update when on charger
+    } else if (rawPct > cachedBatteryPercent) {
+      cachedBatteryPercent += 1;
+    } else if (rawPct < cachedBatteryPercent) {
+      cachedBatteryPercent -= 1;
+    }
+  }
+
   if (sendBle && Bluefruit.connected() && currentState == STATE_IDLE) {
     uint8_t batPacket[4];
     batPacket[0] = 0x04;
@@ -814,8 +863,7 @@ void loop() {
       int frameSamples = (connMtu >= 134) ? 256 : 32;
       int payloadBytes = frameSamples / 2;
 
-      int batchLimit = 6;
-      while (availableSamples >= frameSamples && batchLimit-- > 0) {
+      while (availableSamples >= frameSamples) {
         short chunk[256];
         for (int i = 0; i < frameSamples; i++) {
           chunk[i] = rollingBuffer[(streamingReadIdx + i) % ROLLING_BUFFER_SIZE];
@@ -841,6 +889,31 @@ void loop() {
 
       if (continuousListenStopRequested || !Bluefruit.connected()) {
         continuousListenStopRequested = false;
+        // Drain any remaining buffered frames
+        currentHead = rollingWriteIdx;
+        availableSamples = (currentHead - streamingReadIdx + ROLLING_BUFFER_SIZE) % ROLLING_BUFFER_SIZE;
+        while (availableSamples >= frameSamples) {
+          short chunk[256];
+          for (int i = 0; i < frameSamples; i++) {
+            chunk[i] = rollingBuffer[(streamingReadIdx + i) % ROLLING_BUFFER_SIZE];
+          }
+          uint8_t adpcmPayload[128];
+          encodeFrame(chunk, adpcmPayload, frameSamples);
+          uint8_t packet[3 + 128];
+          packet[0] = 0x02;
+          packet[1] = (globalChunkIndex >> 8) & 0xFF;
+          packet[2] = globalChunkIndex & 0xFF;
+          memcpy(&packet[3], adpcmPayload, payloadBytes);
+          if (commandCharacteristic.notify(packet, 3 + payloadBytes)) {
+            globalChunkIndex++;
+            streamingReadIdx = (streamingReadIdx + frameSamples) % ROLLING_BUFFER_SIZE;
+            availableSamples -= frameSamples;
+          } else {
+            delay(10);
+            break;
+          }
+        }
+
         uint8_t endPacket[1] = { 0x03 };
         for (int r = 0; r < 20; r++) {
           if (commandCharacteristic.notify(endPacket, 1)) break;
@@ -848,41 +921,11 @@ void loop() {
         }
         globalChunkIndex = 0;
         currentState = STATE_IDLE;
+        wakeCooldownUntil = millis() + 3500;
         stateCharacteristic.write8((uint8_t)STATE_IDLE);
         stateCharacteristic.notify8((uint8_t)STATE_IDLE);
         digitalWrite(LED_GREEN, HIGH);
         Serial.println(F("[Pendant BLE] Continuous listen stopped."));
-      } else if (checkWakeWord(lastCalculatedRms)) {
-        // User said "Friday" (e.g., "Friday, stop") — flush continuous stream, then stream command
-        uint8_t endPacket[1] = { 0x03 };
-        for (int r = 0; r < 15; r++) {
-          if (commandCharacteristic.notify(endPacket, 1)) break;
-          delay(10);
-        }
-
-        currentState = STATE_WAKE_DETECTED;
-        wakeTriggerTimestamp = millis();
-        stateCharacteristic.write8((uint8_t)STATE_WAKE_DETECTED);
-        stateCharacteristic.notify8((uint8_t)STATE_WAKE_DETECTED);
-
-        digitalWrite(LED_GREEN, HIGH);
-        digitalWrite(LED_RED, LOW);
-        resetAdpcm();
-
-        currentState = STATE_RECORDING_VOICE;
-        globalChunkIndex = 0;
-        streamingReadIdx = rollingWriteIdx;
-        stateCharacteristic.write8((uint8_t)STATE_RECORDING_VOICE);
-        stateCharacteristic.notify8((uint8_t)STATE_RECORDING_VOICE);
-
-        uint8_t header[9] = {
-          0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-          (uint8_t)((SAMPLE_RATE >> 8) & 0xFF), (uint8_t)(SAMPLE_RATE & 0xFF)
-        };
-        for (int r = 0; r < 5; r++) {
-          if (commandCharacteristic.notify(header, sizeof(header))) break;
-          delay(5);
-        }
       }
     }
   }

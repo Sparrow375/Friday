@@ -77,14 +77,14 @@ graph TD
    - **State Characteristic UUID**: `1F81DA01-B5A3-F393-E0A9-E50E24DCCA9E` (Notify / Read)
      - `0x01`: Wake-Word Trigger detected.
      - `0x02`: Pendant is currently recording command speech (`~416ms` end hangover).
-     - `0x03`: Pendant is in Continuous Listen / Dictation Mode (streams ADPCM uninterrupted while running simultaneous wake detection for `"Friday, stop"`).
+     - `0x03`: Pendant is in Continuous Listen / Dictation Mode (uninterrupted ADPCM streaming until stopped via phone `0x12` or UI).
      - `0x00`: Pendant in Idle / Listening state.
    - **Command Characteristic UUID**: `1F81DA02-B5A3-F393-E0A9-E50E24DCCA9E` (Notify / Write)
      - `0x00`: Direct plain text command (if on-device STT is available).
      - `0x01`: Audio Header (`totalChunks`, `totalBytes`, `sampleRate = 16000`) with 5x retry.
      - `0x02`: Audio Chunk (`chunkIndex` + IMA-ADPCM compressed payload). Dynamically adapts chunk size based on negotiated MTU: full 128-byte ADPCM payload (256 samples) when MTU >= 134; 16-byte ADPCM payload (32 samples = 19B packet) when MTU < 134, completely eliminating packet truncation.
      - `0x03`: Audio End transmission sentinel with 20x retry.
-     - `0x04`: Battery Telemetry (`percent`, `millivolts` BE) sampled via `VBAT_ENABLE` (`P0.14`) and `PIN_VBAT` (`32`), reported on connect and every 30s in IDLE.
+     - `0x04`: Stabilized Battery Telemetry (`percent`, `millivolts` BE) sampled via `VBAT_ENABLE` (`P0.14`) with 10ms RC settling, 16-sample trimmed median, 80/20 EMA (`filteredBatteryMv`), 11-point piecewise LiPo LUT (3300-4200 mV), and +-1% rate clamp reported on connect and every 30s in IDLE.
      - `0x10` write (Phone -> Pendant): Signals TTS playback started on phone, arming immediate voice barge-in cooldown (`650ms`).
      - `0x11` / `0x12` write (Phone -> Pendant): Starts (`0x11`) / stops (`0x12`) `STATE_CONTINUOUS_LISTEN` dictation streaming.
      - Text write: Phone echoes recognized speech back to chip for USB Serial output.
@@ -155,7 +155,7 @@ The Android application is organized under package namespace `com.friday.assista
 - **`AgentCore.kt`**:
   - Executed off the main thread (`Dispatchers.Default`) from `FridayService` so `AutomationBridge` calls (`GLOBAL_ACTION_LOCK_SCREEN`, `GLOBAL_ACTION_TAKE_SCREENSHOT`) complete in `< 350ms` without blocking `mainHandler`.
   - Evaluates deterministic domain handlers *before* LLM or search fallback (even when NLU confidence `< 0.60f`), preventing device/reminder/schedule commands from leaking into fallback handlers:
-    - Dictation Mode (`"Friday, listen"` / `"listen to this"` -> `shouldStartDictation` -> continuous `STATE_CONTINUOUS_LISTEN` ADPCM streaming + 4.5s Whisper chunk transcription -> saves `NoteEntity` on `"Friday, stop"`).
+    - Dictation Mode (`"Friday, listen"` / `"listen to this"` -> `shouldStartDictation` -> continuous `STATE_CONTINUOUS_LISTEN` ADPCM streaming -> full session audio accumulation -> 25s multi-window Whisper transcription with `isLongForm = true` (unlimited tokens) -> saves complete interview to `NoteEntity` on stop or UI tap).
     - Routines, Reminders & Schedule (multi-step `RoutineManager`, Room v3 `ReminderScheduler` incl. delete all/matching, Calendar `add_event`/`list_events` supporting `"schedule"` & `only_today`).
     - Messaging & Calls (WhatsApp autonomous sending, Phone dials, `NotificationService` triage; excludes plain `"open whatsapp"` from message collision).
     - System Controls (Volume incl. `"turn up/down the music"`, Torch-before-Brightness, instant Biometric screen lock & screenshot, WiFi, Bluetooth, DND, Airplane, Mobile Data).

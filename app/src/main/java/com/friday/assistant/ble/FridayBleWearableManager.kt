@@ -120,6 +120,7 @@ class FridayBleWearableManager private constructor(private val context: Context)
     var onAudioChunkReceived: ((Int, FloatArray) -> Unit)? = null
     var onCommandAudioReceived: ((FloatArray) -> Unit)? = null
     var onDictationSegmentReady: ((FloatArray) -> Unit)? = null
+    var onDictationFinished: ((FloatArray) -> Unit)? = null
     var onCommandTextReceived: ((String) -> Unit)? = null
 
     @Volatile
@@ -465,13 +466,13 @@ class FridayBleWearableManager private constructor(private val context: Context)
         }
     }
 
-    private fun finalizeAudioStream() {
+    fun finalizeAudioStream(): FloatArray {
         mainHandler.removeCallbacks(streamTimeoutRunnable)
 
         val chunksSnapshot: List<FloatArray>
         val totalSamples: Int
         synchronized(audioStreamLock) {
-            if (!_isAudioStreaming.value && decodedTotalSamples == 0) return
+            if (!_isAudioStreaming.value && decodedTotalSamples == 0) return FloatArray(0)
             chunksSnapshot = ArrayList(decodedChunksAccumulator)
             totalSamples = decodedTotalSamples
             decodedChunksAccumulator.clear()
@@ -486,24 +487,23 @@ class FridayBleWearableManager private constructor(private val context: Context)
         FridayLogger.i(TAG, "Wearable audio stream finalized: $totalSamples decoded PCM samples ($chunks chunks, ${totalSamples / 16000.0f}s)")
 
         if (totalSamples > 0) {
-            scope.launch(Dispatchers.Default) {
-                val merged = FloatArray(totalSamples)
-                var offset = 0
-                for (chunk in chunksSnapshot) {
-                    System.arraycopy(chunk, 0, merged, offset, chunk.size)
-                    offset += chunk.size
-                }
-                mainHandler.post {
-                    if (continuousDictationMode) {
-                        scope.launch(Dispatchers.Default) {
-                            onDictationSegmentReady?.invoke(merged)
-                        }
-                    } else {
-                        onCommandAudioReceived?.invoke(merged)
-                    }
+            val merged = FloatArray(totalSamples)
+            var offset = 0
+            for (chunk in chunksSnapshot) {
+                System.arraycopy(chunk, 0, merged, offset, chunk.size)
+                offset += chunk.size
+            }
+            mainHandler.post {
+                if (continuousDictationMode) {
+                    onDictationFinished?.invoke(merged)
+                    onDictationSegmentReady?.invoke(merged)
+                } else {
+                    onCommandAudioReceived?.invoke(merged)
                 }
             }
+            return merged
         }
+        return FloatArray(0)
     }
 
     private fun handleCharacteristicBytes(uuid: UUID, value: ByteArray) {
@@ -604,34 +604,17 @@ class FridayBleWearableManager private constructor(private val context: Context)
                         if (value.size > 3) {
                             val chunkIdx = ((value[1].toInt() and 0xFF) shl 8) or (value[2].toInt() and 0xFF)
                             val payloadLen = value.size - 3
-                            var segmentToFlush: FloatArray? = null
                             val chunkSamples = synchronized(audioStreamLock) {
                                 val decoded = streamAdpcmDecoder.decodeChunk(value, 3, payloadLen)
                                 decodedChunksAccumulator.add(decoded)
                                 decodedTotalSamples += decoded.size
-                                // In continuous dictation mode, flush ~4.5s speech segments without resetting ADPCM predictor
-                                if (continuousDictationMode && decodedTotalSamples >= 72000) {
-                                    val merged = FloatArray(decodedTotalSamples)
-                                    var offset = 0
-                                    for (c in decodedChunksAccumulator) {
-                                        System.arraycopy(c, 0, merged, offset, c.size)
-                                        offset += c.size
-                                    }
-                                    decodedChunksAccumulator.clear()
-                                    decodedTotalSamples = 0
-                                    segmentToFlush = merged
-                                }
                                 decoded
                             }
                             _streamChunksReceived.value = _streamChunksReceived.value + 1
                             _isAudioStreaming.value = true
 
-                            resetStreamTimeout()
-
-                            segmentToFlush?.let { seg ->
-                                scope.launch(Dispatchers.Default) {
-                                    onDictationSegmentReady?.invoke(seg)
-                                }
+                            if (!continuousDictationMode) {
+                                resetStreamTimeout()
                             }
 
                             mainHandler.post {
@@ -649,11 +632,26 @@ class FridayBleWearableManager private constructor(private val context: Context)
                     0x04 -> {
                         // Battery Telemetry: 0x04 | percent (1B) | mv_hi | mv_lo
                         if (value.size >= 4) {
-                            val pct = (value[1].toInt() and 0xFF).coerceIn(0, 100)
+                            val rawPct = (value[1].toInt() and 0xFF).coerceIn(0, 100)
                             val mv = ((value[2].toInt() and 0xFF) shl 8) or (value[3].toInt() and 0xFF)
-                            _batteryPercent.value = pct
+
+                            val currentPct = _batteryPercent.value
+                            val stabilizedPct = if (currentPct == null) {
+                                rawPct
+                            } else {
+                                // Phone-side hysteresis filter: prevents transient drops while charging or discharging
+                                if (mv >= 4180 || rawPct >= currentPct + 2) {
+                                    val step = (rawPct - currentPct).coerceIn(1, 3)
+                                    currentPct + step
+                                } else if (rawPct <= currentPct - 1) {
+                                    currentPct - 1
+                                } else {
+                                    currentPct
+                                }
+                            }
+                            _batteryPercent.value = stabilizedPct
                             _batteryMillivolts.value = mv
-                            FridayLogger.d(TAG, "Wearable battery telemetry: $pct% (${mv}mV)")
+                            FridayLogger.d(TAG, "Wearable battery telemetry: $stabilizedPct% (raw: $rawPct%, ${mv}mV)")
                         }
                     }
                 }

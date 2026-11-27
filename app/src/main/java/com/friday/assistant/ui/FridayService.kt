@@ -191,8 +191,13 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             onCommandAudioReceived = { audioSamples ->
                 onWearableAudioCommandReceived(audioSamples)
             }
+            onDictationFinished = { fullAudio ->
+                serviceScope.launch(Dispatchers.Default) {
+                    processFullDictationAudio(fullAudio, speakConfirmation = true)
+                }
+            }
             onDictationSegmentReady = { segment ->
-                enqueueDictationTranscription(segment)
+                // Kept for backward compatibility
             }
             onCommandTextReceived = { text ->
                 onWearableTextCommandReceived(text)
@@ -796,6 +801,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     // Continuous Listen / Lecture Dictation state ("Friday, listen" ... "Friday, stop")
     @Volatile
     private var isContinuousDictationActive = false
+    @Volatile
+    private var isDictationProcessing = false
     private val dictationTranscriptParts = java.util.Collections.synchronizedList(mutableListOf<String>())
     private val dictationJobMutex = kotlinx.coroutines.sync.Mutex()
     private var lastDictationJob: kotlinx.coroutines.Job? = null
@@ -864,65 +871,129 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         )
     }
 
-    private fun enqueueDictationTranscription(audioSamples: FloatArray) {
-        if (!isContinuousDictationActive || audioSamples.isEmpty()) return
-
-        lastDictationJob = serviceScope.launch(Dispatchers.Default) {
-            dictationJobMutex.lock()
-            try {
-                if (!isContinuousDictationActive) return@launch
-                var sum = 0.0
-                for (s in audioSamples) sum += s
-                val mean = (sum / audioSamples.size).toFloat()
-                var maxPeak = 0.0f
-                for (s in audioSamples) {
-                    val abs = kotlin.math.abs(s - mean)
-                    if (abs > maxPeak) maxPeak = abs
-                }
-                if (maxPeak < 0.008f) return@launch
-
-                val whisperEngine = FridayApplication.whisperEngine
-                if (!whisperEngine.isModelLoaded()) {
-                    val whisperPath = modelManager.getWhisperModelPath()
-                    if (java.io.File(whisperPath).exists()) {
-                        whisperEngine.loadModel(whisperPath)
-                    }
-                }
-                if (!whisperEngine.isModelLoaded()) return@launch
-
-                val prepared = preprocessPendantAudio(audioSamples)
-                val raw = whisperEngine.transcribe(prepared, buildWhisperInitialPrompt()).trim()
-                val clean = cleanAndValidateTranscript(raw, isPartial = false)
-                if (clean.isNotBlank()) {
-                    com.friday.assistant.core.FridayLogger.i(TAG, "[Dictation chunk] '$clean'")
-                    appendDictationSnippet(clean)
-                }
-            } finally {
-                dictationJobMutex.unlock()
-            }
-        }
-    }
-
     private suspend fun finalizeContinuousDictation(speakConfirmation: Boolean) {
         com.friday.assistant.core.FridayLogger.i(TAG, "Finalizing continuous dictation mode...")
         bleWearableManager?.sendControlByte(0x12)
         bleWearableManager?.setContinuousDictationMode(false)
         pendantWakeTimeoutJob?.cancel()
         isPendantWakeActive = false
-
-        // Wait briefly for any in-flight Whisper segment to finish before disabling flag
-        lastDictationJob?.let { job ->
-            try {
-                kotlinx.coroutines.withTimeoutOrNull(3000L) { job.join() }
-            } catch (_: Exception) {}
-        }
         isContinuousDictationActive = false
 
-        val fullTranscript = synchronized(dictationTranscriptParts) {
-            dictationTranscriptParts.joinToString(" ")
-        }.replace(Regex("\\s+"), " ").trim()
-        dictationTranscriptParts.clear()
+        transitionToState(
+            PipelineState.THINKING,
+            statusMessage = "Transcribing recording...",
+            transcriptText = "Processing recorded audio..."
+        )
+        overlayManager?.updateState(
+            PipelineState.THINKING,
+            "Transcribing recording...",
+            trans = "Processing full recorded audio with Whisper...",
+            resp = ""
+        )
 
+        // Drain any pending continuous audio from BLE wearable manager
+        val fullAudio = bleWearableManager?.finalizeAudioStream() ?: FloatArray(0)
+        if (fullAudio.isNotEmpty()) {
+            processFullDictationAudio(fullAudio, speakConfirmation)
+        } else {
+            val fullTranscript = synchronized(dictationTranscriptParts) {
+                dictationTranscriptParts.joinToString(" ")
+            }.replace(Regex("\\s+"), " ").trim()
+            dictationTranscriptParts.clear()
+            saveAndAnnounceDictation(fullTranscript, speakConfirmation)
+        }
+    }
+
+    private suspend fun processFullDictationAudio(audioSamples: FloatArray, speakConfirmation: Boolean) {
+        if (isDictationProcessing) return
+        isDictationProcessing = true
+        try {
+            if (audioSamples.isEmpty()) {
+                val emptyMsg = "Stopped listening. No speech was captured to save."
+                if (speakConfirmation) speakResponse(emptyMsg)
+                else {
+                    overlayManager?.dismiss()
+                    transitionToState(PipelineState.IDLE)
+                }
+                return
+            }
+
+            val totalSeconds = audioSamples.size / 16000
+            com.friday.assistant.core.FridayLogger.i(TAG, "Starting full dictation transcription on ${audioSamples.size} samples (~${totalSeconds}s)")
+            transitionToState(
+                PipelineState.THINKING,
+                statusMessage = "Transcribing recording...",
+                transcriptText = "Transcribing full audio recording (~${totalSeconds}s)..."
+            )
+            overlayManager?.updateState(
+                PipelineState.THINKING,
+                "Transcribing recording...",
+                trans = "Transcribing audio (~${totalSeconds}s)...",
+                resp = ""
+            )
+
+            val whisperEngine = FridayApplication.whisperEngine
+            if (!whisperEngine.isModelLoaded()) {
+                val whisperPath = modelManager.getWhisperModelPath()
+                if (java.io.File(whisperPath).exists()) {
+                    whisperEngine.loadModel(whisperPath)
+                }
+            }
+
+            if (!whisperEngine.isModelLoaded()) {
+                com.friday.assistant.core.FridayLogger.e(TAG, "Whisper model unavailable for dictation transcription")
+                val errMsg = "Could not transcribe recording: speech model not loaded."
+                if (speakConfirmation) speakResponse(errMsg)
+                else {
+                    overlayManager?.dismiss()
+                    transitionToState(PipelineState.IDLE)
+                }
+                return
+            }
+
+            // Multi-window transcription for long audio sessions (e.g. interviews / lectures)
+            // Whisper processes ~25s windows without risk of memory pressure or sequence truncation
+            val windowSize = 400_000 // 25 seconds @ 16kHz
+            val transcripts = mutableListOf<String>()
+            var start = 0
+            val totalLen = audioSamples.size
+            var windowIndex = 0
+
+            while (start < totalLen) {
+                val end = kotlin.math.min(start + windowSize, totalLen)
+                val chunk = audioSamples.copyOfRange(start, end)
+                val prepared = preprocessPendantAudio(chunk)
+
+                // DC-removed AC Peak check to skip long silent gaps
+                var sum = 0.0
+                for (s in prepared) sum += s
+                val mean = (sum / prepared.size).toFloat()
+                var maxPeak = 0.0f
+                for (s in prepared) {
+                    val abs = kotlin.math.abs(s - mean)
+                    if (abs > maxPeak) maxPeak = abs
+                }
+
+                if (maxPeak >= 0.006f) {
+                    val rawSegment = whisperEngine.transcribe(prepared, buildWhisperInitialPrompt(), isLongForm = true).trim()
+                    val clean = cleanAndValidateTranscript(rawSegment, isPartial = false)
+                    if (clean.isNotBlank()) {
+                        transcripts.add(clean)
+                        com.friday.assistant.core.FridayLogger.i(TAG, "[Dictation segment $windowIndex] '$clean'")
+                    }
+                }
+                start += windowSize
+                windowIndex++
+            }
+
+            val fullTranscript = transcripts.joinToString(" ").replace(Regex("\\s+"), " ").trim()
+            saveAndAnnounceDictation(fullTranscript, speakConfirmation)
+        } finally {
+            isDictationProcessing = false
+        }
+    }
+
+    private suspend fun saveAndAnnounceDictation(fullTranscript: String, speakConfirmation: Boolean) {
         if (fullTranscript.isBlank()) {
             val emptyMsg = "Stopped listening. No speech was captured to save."
             if (speakConfirmation) {
@@ -946,11 +1017,17 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 com.friday.assistant.core.FridayLogger.e(TAG, "Failed saving continuous dictation note", e)
             }
         }
-        val words = fullTranscript.split(Regex("\\s+")).size
-        val summary = "Saved transcription ($words words) to your notes."
-        com.friday.assistant.core.FridayLogger.i(TAG, "Saved dictation note ($words words): ${fullTranscript.take(120)}")
+
+        val words = fullTranscript.split(Regex("\\s+")).filter { it.isNotBlank() }.size
+        val summary = "Saved transcription of $words words to your notes."
+        com.friday.assistant.core.FridayLogger.i(TAG, "Saved dictation note ($words words): ${fullTranscript.take(140)}")
         if (speakConfirmation) {
-            overlayManager?.updateState(PipelineState.THINKING, "Saved Note", trans = fullTranscript.takeLast(140), resp = summary)
+            overlayManager?.updateState(
+                PipelineState.THINKING,
+                "Saved Note",
+                trans = fullTranscript.takeLast(140),
+                resp = summary
+            )
             speakResponse(summary)
         } else {
             overlayManager?.dismiss()
