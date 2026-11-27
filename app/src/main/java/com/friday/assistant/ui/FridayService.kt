@@ -392,9 +392,12 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         }
         currentQueryJob?.cancel()
         currentQueryJob = null
+        pendantWakeTimeoutJob?.cancel()
         partialWhisperJob?.cancel()
         partialWhisperJob = null
         streamingAudioBuffer.clear()
+        lastPartialTranscript = ""
+        isPendantWakeActive = false
         FridayApplication.llamaEngine.abortGeneration()
         FridayApplication.whisperEngine.abortTranscription()
     }
@@ -760,6 +763,21 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
     private var partialWhisperJob: kotlinx.coroutines.Job? = null
     private val streamingAudioBuffer = java.util.ArrayList<FloatArray>()
     private var lastPartialTranscribeChunk = 0
+    private var lastPartialTranscript = ""
+
+    private fun schedulePendantWakeTimeout(timeoutMs: Long = 9500L) {
+        pendantWakeTimeoutJob?.cancel()
+        pendantWakeTimeoutJob = serviceScope.launch {
+            kotlinx.coroutines.delay(timeoutMs)
+            if (isPendantWakeActive && pipelineState.value == PipelineState.LISTENING) {
+                com.friday.assistant.core.FridayLogger.i(TAG, "Pendant wake timed out after ${timeoutMs}ms without command completion — dismissing overlay")
+                isPendantWakeActive = false
+                lastPartialTranscript = ""
+                transitionToState(PipelineState.IDLE)
+                overlayManager?.dismiss()
+            }
+        }
+    }
 
     private fun onWearableWakeWordTriggered() {
         val prefs = getSharedPreferences("friday_assistant_prefs", Context.MODE_PRIVATE)
@@ -774,27 +792,16 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         com.friday.assistant.core.FridayLogger.i(TAG, "Wearable wake-word ('Friday') confirmed by pendant — activating assistant (was ${pipelineState.value})")
 
-        serviceScope.launch {
-            if (pipelineState.value != PipelineState.IDLE) {
-                interruptActivePipeline("wearable_wake")
-            }
-            isPendantWakeActive = true
-
-            // Timeout safeguard: if no command speech follows within 6.5s, dismiss overlay cleanly
-            pendantWakeTimeoutJob?.cancel()
-            pendantWakeTimeoutJob = serviceScope.launch {
-                kotlinx.coroutines.delay(6500L)
-                if (isPendantWakeActive && pipelineState.value == PipelineState.LISTENING) {
-                    com.friday.assistant.core.FridayLogger.i(TAG, "Pendant wake timed out without command speech — dismissing overlay")
-                    isPendantWakeActive = false
-                    transitionToState(PipelineState.IDLE)
-                    overlayManager?.dismiss()
-                }
-            }
-
-            overlayManager?.show()
-            transitionToState(PipelineState.LISTENING, statusMessage = "Listening to Pendant...", transcriptText = "Say command into pendant...")
+        // Set state synchronously before BLE stream headers/chunks arrive on subsequent mainHandler posts
+        if (pipelineState.value != PipelineState.IDLE) {
+            interruptActivePipeline("wearable_wake")
         }
+        isPendantWakeActive = true
+        lastPartialTranscript = ""
+        schedulePendantWakeTimeout(9500L)
+        requestAudioFocus(exclusive = false)
+        overlayManager?.show()
+        transitionToState(PipelineState.LISTENING, statusMessage = "Listening to Pendant...", transcriptText = "Say command into pendant...")
     }
 
     private fun onWearableAudioStreamStarted() {
@@ -809,28 +816,39 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
 
         streamingAudioBuffer.clear()
         lastPartialTranscribeChunk = 0
+        lastPartialTranscript = ""
         partialWhisperJob?.cancel()
+        schedulePendantWakeTimeout(9500L)
     }
 
     private fun onWearableAudioChunkReceived(chunkIdx: Int, chunkSamples: FloatArray) {
         if (!isPendantWakeActive || pipelineState.value != PipelineState.LISTENING) return
 
-        // 1. Calculate actual RMS energy from real PCM samples to drive glowing waveform
+        // Extend safety timeout periodically while genuine pendant audio is still streaming
+        if (chunkIdx == 0 || chunkIdx % 40 == 0) {
+            schedulePendantWakeTimeout(9500L)
+        }
+
+        // 1. Calculate DC-removed AC RMS energy from real PCM samples to drive glowing waveform
+        var mean = 0.0f
+        for (s in chunkSamples) mean += s
+        mean /= chunkSamples.size.coerceAtLeast(1)
         var sumSq = 0.0f
         for (s in chunkSamples) {
-            sumSq += s * s
+            val ac = s - mean
+            sumSq += ac * ac
         }
-        val rms = kotlin.math.sqrt(sumSq / chunkSamples.size)
-        val normalizedAmp = (rms * 6.0f).coerceIn(0.08f, 1.0f)
+        val rms = kotlin.math.sqrt(sumSq / chunkSamples.size.coerceAtLeast(1))
+        val normalizedAmp = (rms * 14.0f).coerceIn(0.08f, 1.0f)
         overlayManager?.updateAmplitude(normalizedAmp)
 
         streamingAudioBuffer.add(chunkSamples)
 
-        // 2. Real-time partial transcription after >= 1s audio, throttled to every ~40 chunks (~640ms)
-        if (chunkIdx >= 62 && chunkIdx - lastPartialTranscribeChunk >= 40 && partialWhisperJob?.isActive != true) {
+        // 2. Real-time partial transcription after >= ~0.8s audio, throttled to every ~35 chunks (~560ms)
+        if (chunkIdx >= 50 && chunkIdx - lastPartialTranscribeChunk >= 35 && partialWhisperJob?.isActive != true) {
             lastPartialTranscribeChunk = chunkIdx
             val totalSamples = streamingAudioBuffer.sumOf { it.size }
-            if (totalSamples < 16000) return
+            if (totalSamples < 12800) return
             val snapshot = FloatArray(totalSamples)
             var offset = 0
             for (arr in streamingAudioBuffer) {
@@ -851,6 +869,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                     val rawPartial = whisperEngine.transcribe(prepared, buildWhisperInitialPrompt()).trim()
                     val cleanPartial = cleanAndValidateTranscript(rawPartial, isPartial = true)
                     if (cleanPartial.isNotBlank() && pipelineState.value == PipelineState.LISTENING && isPendantWakeActive) {
+                        lastPartialTranscript = cleanPartial
                         withContext(Dispatchers.Main) {
                             overlayManager?.updateState(
                                 PipelineState.LISTENING,
@@ -875,6 +894,8 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
             com.friday.assistant.core.FridayLogger.w(TAG, "Ignoring wearable audio command — wake word was not active")
             return
         }
+        val partialFallback = lastPartialTranscript
+        lastPartialTranscript = ""
         isPendantWakeActive = false
 
         serviceScope.launch {
@@ -885,25 +906,33 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 return@launch
             }
 
-            // Calculate RMS energy & peak amplitude to gate out silence / room murmur
+            // Compute DC-removed AC RMS & AC Peak so DC bias never masks chest-worn mic voice energy
+            var sum = 0.0
+            for (s in audioSamples) sum += s
+            val mean = (sum / audioSamples.size).toFloat()
             var sumSq = 0.0
             var maxPeak = 0.0f
             for (s in audioSamples) {
-                val abs = kotlin.math.abs(s)
+                val ac = s - mean
+                val abs = kotlin.math.abs(ac)
                 if (abs > maxPeak) maxPeak = abs
-                sumSq += (s * s)
+                sumSq += (ac * ac)
             }
             val rms = kotlin.math.sqrt(sumSq / audioSamples.size).toFloat()
-            com.friday.assistant.core.FridayLogger.i(TAG, "Received pendant audio: ${audioSamples.size} samples (${audioSamples.size / 16000.0f}s), RMS: $rms, MaxPeak: $maxPeak")
+            com.friday.assistant.core.FridayLogger.i(
+                TAG,
+                "Received pendant audio: ${audioSamples.size} samples (${audioSamples.size / 16000.0f}s), AC_RMS: $rms, AC_Peak: $maxPeak, partialFallback: '$partialFallback'"
+            )
 
-            if (rms < 0.012f || maxPeak < 0.040f) {
-                com.friday.assistant.core.FridayLogger.i(TAG, "Dropping pendant audio due to low energy/silence (RMS: $rms, Peak: $maxPeak)")
+            // Only drop for low energy if partial Whisper has not already recognized valid speech
+            if (partialFallback.isBlank() && (rms < 0.0014f || maxPeak < 0.009f)) {
+                com.friday.assistant.core.FridayLogger.i(TAG, "Dropping pendant audio due to low energy/silence (AC_RMS: $rms, AC_Peak: $maxPeak)")
                 transitionToState(PipelineState.IDLE)
                 overlayManager?.dismiss()
                 return@launch
             }
 
-            transitionToState(PipelineState.THINKING, statusMessage = "Processing your command...")
+            transitionToState(PipelineState.THINKING, statusMessage = "Processing your command...", transcriptText = partialFallback)
             val whisperEngine = FridayApplication.whisperEngine
             if (!whisperEngine.isModelLoaded()) {
                 val whisperPath = modelManager.getWhisperModelPath()
@@ -919,7 +948,13 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
                 ""
             }
 
-            val cleanTranscribed = cleanAndValidateTranscript(rawTranscribed)
+            var cleanTranscribed = cleanAndValidateTranscript(rawTranscribed)
+            if (cleanTranscribed.isBlank() && partialFallback.isNotBlank()) {
+                cleanTranscribed = cleanAndValidateTranscript(partialFallback)
+                if (cleanTranscribed.isNotBlank()) {
+                    com.friday.assistant.core.FridayLogger.i(TAG, "Using validated partial transcript fallback: '$cleanTranscribed'")
+                }
+            }
             val correctedTranscribed = if (cleanTranscribed.isNotBlank()) {
                 com.friday.assistant.intelligence.ContactHelper.correctTranscript(this@FridayService, cleanTranscribed)
             } else {
@@ -977,7 +1012,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         var lastSpeech = -1
         var maxPeak = 0.0f
         val ac = FloatArray(samples.size)
-        val silenceThresh = 0.014f
+        val silenceThresh = 0.008f
 
         for (i in samples.indices) {
             val v = samples[i] - mean
@@ -997,7 +1032,7 @@ class FridayService : VoiceInteractionService(), TextToSpeech.OnInitListener {
         val endIdx = (lastSpeech + pad).coerceAtMost(ac.size - 1)
         val trimmedLen = endIdx - startIdx + 1
         val out = FloatArray(trimmedLen)
-        val gain = if (maxPeak in 0.015f..0.60f) (0.75f / maxPeak).coerceAtMost(8.0f) else 1.0f
+        val gain = if (maxPeak in 0.006f..0.60f) (0.75f / maxPeak).coerceAtMost(12.0f) else 1.0f
 
         for (i in 0 until trimmedLen) {
             out[i] = (ac[startIdx + i] * gain).coerceIn(-1.0f, 1.0f)

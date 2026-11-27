@@ -105,7 +105,7 @@ The Android application is organized under package namespace `com.friday.assista
   - Sequential GATT CCCD subscription queue: Ensures descriptor writes for `STATE_CHAR_UUID` and `COMMAND_CHAR_UUID` complete sequentially via `onDescriptorWrite()`, eliminating GATT collision drops.
   - Platform deduplication: Binds deprecated `onCharacteristicChanged` exclusively on Android < 13 to eliminate double-firing and stale buffer reads on Samsung One UI (Android 14/15).
   - Stateful streaming architecture: `StreamImaAdpcmDecoder` decodes 4-bit IMA-ADPCM chunks continuously on arrival with preserved predictor state and zero redundant end-of-stream re-decoding.
-  - Watchdog & delivery resilience: Automatically finalizes and dispatches collected audio upon receiving `0x03` Audio End sentinel, `0x00` (IDLE) state update, or after a 900ms silence watchdog timer to prevent UI freezes.
+  - Watchdog & delivery resilience: Automatically finalizes and dispatches collected audio upon receiving `0x03` Audio End sentinel, `0x00` (IDLE) state update, or after a 1800ms silence watchdog timer to prevent premature truncation during BLE delays. Non-destructive `0x02` state updates preserve any audio chunks already buffered after the `0x01` header.
   - Dispatches `onWakeWordDetected`, `onAudioStreamStarted`, `onAudioChunkReceived`, `onCommandAudioReceived`, and `onCommandTextReceived` to `FridayService`.
 - **`StreamImaAdpcmDecoder` & `ImaAdpcmDecoder`**:
   - Stateful, zero-allocation Kotlin audio decoder converting 4-bit ADPCM chunks back to standard 16kHz float PCM `[-1.0f, 1.0f]`.
@@ -114,11 +114,11 @@ The Android application is organized under package namespace `com.friday.assista
 - **`FridayService.kt`**:
   - System-bound `VoiceInteractionService` & `AccessibilityService` running continuously.
   - Manages assistant lifecycle: `IDLE` -> `LISTENING` -> `THINKING` -> `SPEAKING`, with generation-guarded `interruptActivePipeline()` for instant speak-interrupt barge-in across both phone mic (`SPEAKING`-only `WakeWordDetector`) and BLE pendant (`0x10` cooldown reset).
-  - Coordinates microphone ownership, audio focus (`AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK` during listening, `EXCLUSIVE` during TTS).
+  - Coordinates microphone ownership, audio focus (`AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK` during listening and TTS confirmation).
   - Wearable activation routing: Does not activate phone microphone on wearable trigger; instead holds for BLE audio stream from the chip, pre-warming `WhisperEngine` on BLE connection.
-  - Strict Wake-Word Gating: The overlay UI is strictly gated behind confirmed on-chip wake-word events (`isPendantWakeActive`); unauthenticated or rogue BLE audio streams are dropped immediately with zero UI interruption.
-  - Live Streaming Speech-to-Text: Runs throttled, abortable (`ggml_abort_callback`) background partial Whisper transcription during authenticated BLE voice streaming, displaying words on the overlay in real time without blocking final transcription.
-  - Command Audio Energy Gating & Normalization: Enforces RMS and peak energy thresholds (`rms >= 0.012f`, `maxPeak >= 0.040f`), trims silence, normalizes gain (`preprocessPendantAudio`), and runs `ContactHelper.correctTranscript` on BLE transcripts.
+  - Strict Wake-Word Gating: The overlay UI is strictly gated behind confirmed on-chip wake-word events (`isPendantWakeActive` set synchronously on wake trigger, extended dynamically while chunks stream); unauthenticated or rogue BLE audio streams are dropped immediately with zero UI interruption.
+  - Live Streaming Speech-to-Text: Runs throttled, abortable (`ggml_abort_callback`) background partial Whisper transcription during authenticated BLE voice streaming (`chunkIdx >= 50`), displaying words on the overlay in real time without blocking final transcription and preserving `lastPartialTranscript` as fallback.
+  - Command Audio Energy Gating & Normalization: Strips DC offset prior to AC energy checks (`acRms >= 0.0014f`, `acMaxPeak >= 0.009f`, never dropping if `lastPartialTranscript` already captured valid speech), trims silence (`0.008f` AC threshold), normalizes gain up to `12.0f` (`preprocessPendantAudio`), and runs `ContactHelper.correctTranscript` on BLE transcripts.
   - Transcript Sanitizer (`cleanAndValidateTranscript`): Strips Whisper hallucination tokens (`[BLANK_AUDIO]`, `(music)`, `Thank you.`), rejects replacement characters (`\uFFFD`, `ï¿½`, `%08`), and requires >= 70% alphanumeric content before routing queries to NLU or web search.
 - **`InstalledAppsCache.kt`**:
   - In-memory 5-minute TTL cache of installed application labels and launch intents, shared between `PostClassificationValidator` and `AppLauncherTool` to eliminate synchronous PackageManager IPC scans.

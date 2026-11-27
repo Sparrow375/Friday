@@ -434,14 +434,14 @@ class FridayBleWearableManager private constructor(private val context: Context)
 
     private val streamTimeoutRunnable = Runnable {
         if (_isAudioStreaming.value || synchronized(audioStreamLock) { decodedTotalSamples > 0 }) {
-            FridayLogger.w(TAG, "Wearable audio stream silence timeout reached (no chunks for 900ms) - finalizing buffer")
+            FridayLogger.w(TAG, "Wearable audio stream silence timeout reached (no chunks for 1800ms) - finalizing buffer")
             finalizeAudioStream()
         }
     }
 
     private fun resetStreamTimeout() {
         mainHandler.removeCallbacks(streamTimeoutRunnable)
-        mainHandler.postDelayed(streamTimeoutRunnable, 900L)
+        mainHandler.postDelayed(streamTimeoutRunnable, 1800L)
     }
 
     private fun resetStreamBuffers() {
@@ -504,12 +504,16 @@ class FridayBleWearableManager private constructor(private val context: Context)
                     }
                     0x02 -> {
                         FridayLogger.d(TAG, "★ Wearable reported VOICE RECORDING started!")
-                        _isAudioStreaming.value = true
-                        _streamChunksReceived.value = 0
-                        resetStreamBuffers()
-                        resetStreamTimeout()
-                        mainHandler.post {
-                            onAudioStreamStarted?.invoke()
+                        if (!_isAudioStreaming.value) {
+                            _isAudioStreaming.value = true
+                            _streamChunksReceived.value = 0
+                            resetStreamBuffers()
+                            resetStreamTimeout()
+                            mainHandler.post {
+                                onAudioStreamStarted?.invoke()
+                            }
+                        } else {
+                            resetStreamTimeout()
                         }
                     }
                     0x00 -> {

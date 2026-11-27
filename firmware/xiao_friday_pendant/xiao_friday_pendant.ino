@@ -595,6 +595,14 @@ void loop() {
         resetAdpcm();
 
         if (streamAudioOverBle && Bluefruit.connected()) {
+          currentState = STATE_RECORDING_VOICE;
+          globalChunkIndex = 0;
+          streamingReadIdx = rollingWriteIdx;
+
+          // Notify state transition BEFORE header so phone never treats initial chunks as stale/idle
+          stateCharacteristic.write8((uint8_t)STATE_RECORDING_VOICE);
+          stateCharacteristic.notify8((uint8_t)STATE_RECORDING_VOICE);
+
           uint16_t totalChunks = 0; // Dynamic streaming until speech ends
           uint32_t totalBytes = 0;
           uint16_t rate = SAMPLE_RATE;
@@ -614,13 +622,6 @@ void loop() {
             if (commandCharacteristic.notify(header, sizeof(header))) break;
             delay(5);
           }
-
-          currentState = STATE_RECORDING_VOICE;
-          globalChunkIndex = 0;
-          stateCharacteristic.write8((uint8_t)STATE_RECORDING_VOICE);
-          stateCharacteristic.notify8((uint8_t)STATE_RECORDING_VOICE);
-
-          streamingReadIdx = rollingWriteIdx;
         } else {
           delay(800);
           currentState = STATE_IDLE;
@@ -642,8 +643,10 @@ void loop() {
         speechFrames = 0;
       }
 
-      float speechThreshold = backgroundRms * VAD_MULTIPLIER + 15.0f;
-      if (speechThreshold < MIN_SPEECH_RMS) speechThreshold = MIN_SPEECH_RMS;
+      // During active command capture, use a slightly softer chest-mic threshold than wake-word gating
+      // so conversational commands (typically 90-180 AC RMS on the chest pendant) are never missed.
+      float speechThreshold = backgroundRms * 1.18f + 12.0f;
+      if (speechThreshold < 85.0f) speechThreshold = 85.0f;
 
       if (lastCalculatedRms >= speechThreshold) {
         speechFrames++;
@@ -692,14 +695,14 @@ void loop() {
       // Check for completion of spoken phrase
       bool finishStreaming = false;
       // Hands-Free Wake-Word triggered command mode:
-      // Automatically stop when the user finishes speaking (silence >= 26 frames = ~416ms after speech),
-      // or if silence continues for ~1.4s (88 frames) with no speech,
-      // or max duration 5 seconds (312 chunks)
-      if (speechFrames >= 4 && silenceFrames >= 26) {
+      // Wait up to ~2.56s (160 frames) for user to start speaking after "Friday",
+      // allow ~640ms (40 frames) hangover after speech to bridge natural word pauses,
+      // and cap recording at ~6.4 seconds (400 chunks).
+      if (speechFrames >= 3 && silenceFrames >= 40) {
         finishStreaming = true;
-      } else if (speechFrames == 0 && silenceFrames >= 88) {
+      } else if (speechFrames == 0 && silenceFrames >= 160) {
         finishStreaming = true;
-      } else if (globalChunkIndex >= 312 || (millis() - recordingStartTime > 5000)) {
+      } else if (globalChunkIndex >= 400 || (millis() - recordingStartTime > 6400)) {
         finishStreaming = true;
       }
 

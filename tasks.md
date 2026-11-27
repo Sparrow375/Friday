@@ -132,3 +132,11 @@
 - [x] 112. Train 12-layer Joint NLU v2 (`BAAI/bge-small-en-v1.5`, 56 intents, INT8 ONNX) on RTX 5060 Ti (`scripts/train_joint_nlu_v2.py`, `scripts/eval_nlu_benchmark.py`) and export assets
 - [x] 113. Upgrade NLU runtime, Routines & AgentCore (`WordpieceTokenizer.kt`, `NluIntentClassifier.kt`, `PostClassificationValidator.kt`, `RoutineManager.kt`, `AgentCore.kt`, `FridayService.kt`)
 - [x] 114. Add unit tests, run `testDebugUnitTest assembleDebug`, verify net APK size & all features, update `context.md`, `architechture.md`, `walkthrough.md`, and push to `origin/main`
+
+## Pendant Post-Wake Command Capture & RMS Gate Fix
+
+- [x] 115. Diagnose post-wake premature idle & unexecuted partial commands (`"open whatsapp"` shown on overlay then dropped): chest-mic audio (`RMS ~100` ADC = `0.003f`) failed `FridayService` pre-DC raw gate (`rms < 0.012f || maxPeak < 0.040f`), while XIAO `STATE_RECORDING_VOICE` closed stream after `1.4s` initial silence / `416ms` pause
+- [x] 116. Relax XIAO command capture VAD & timing in `firmware/xiao_friday_pendant/xiao_friday_pendant.ino` (2.56s initial grace window, 640ms speech hangover, 6.4s max command window, gentler command VAD multiplier, and clean `0x02`/`0x01` BLE packet ordering)
+- [x] 117. Fix `FridayService.kt` & `FridayBleWearableManager.kt` pendant audio gating & race conditions (synchronous `isPendantWakeActive`, DC-removed AC RMS gate calibrated for chest mic, `preprocessPendantAudio` boost up to 12x, partial-transcript fallback protection, wake timeout extension on chunks, and non-destructive `0x02` stream state handling)
+- [x] 118. Verify firmware compilation (`python scripts/compile_pendant.py`) and Android unit tests + debug APK (`.\gradlew.bat testDebugUnitTest assembleDebug --no-daemon`)
+- [x] 119. Update `context.md` (and `architechture.md` if protocol timings changed), commit, and push to `origin main`
