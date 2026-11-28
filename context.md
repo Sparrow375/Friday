@@ -925,3 +925,17 @@ The project uses a clean package namespace `com.friday.assistant`:
               - Pendant Arduino sketch compiled cleanly with 0 errors (`python scripts/compile_pendant.py`).
               - Android unit tests and APK compiled with 0 errors (`.\gradlew.bat testDebugUnitTest assembleDebug --no-daemon` -> `BUILD SUCCESSFUL in 32s`).
 
+          * **Dictation Abort Race Fix, Two-Stage Hybrid Wake Verification & Digest News Dedup (November 2026 - Part 34)**:
+            - **Dictation `"No speech was captured"` Root Cause & Fix (`FridayBleWearableManager.kt`, `FridayService.kt`)**:
+              - Diagnosed why continuous dictation returned `"No speech was captured to save"` right after speaking a sentence: `finalizeContinuousDictation()` called `setContinuousDictationMode(false)` before `finalizeAudioStream()`, causing `finalizeAudioStream()` to post `onCommandAudioReceived(merged)` on `mainHandler`, which triggered `onWearableAudioCommandReceived` -> `FridayApplication.whisperEngine.abortTranscription()` right while `processFullDictationAudio` was running Whisper!
+              - Also fixed `cleanAndValidateTranscript` (`startsWith("you")` was rejecting any sentence starting with `"You..."`) and added gain boost in `preprocessPendantAudio` for quiet chest-mic audio (`maxPeak >= 0.0015f`).
+              - Added `dispatchCallback: Boolean = true` to `finalizeAudioStream` and passed `dispatchCallback = false` from `finalizeContinuousDictation()`.
+            - **Two-Stage Hybrid Wake-Word Verification for Noisy Environments (`xiao_friday_pendant.ino`, `FridayService.kt`)**:
+              - Addressed college-environment false positives where arbitrary crowd chatter scored `0.90+` on the 25k-parameter MCU CNN.
+              - Pendant (`xiao_friday_pendant.ino`): on wake detection in `STATE_RECORDING_VOICE`, rewinds `streamingReadIdx` by `16384` samples (`~1.024s` pre-roll, leaving `476ms` ring buffer headroom) and widens command cap to `460` chunks (`7.36s`), streaming the `"Friday"` wake-word audio itself ahead of the command.
+              - Phone (`FridayService.kt`): when `IDLE`, `onWearableWakeWordTriggered()` enters silent Stage-2 verification (`isPendingWakeVerification = true`) without waking the overlay or ducking music. Whisper transcribes the stream and `extractPostWakeCommand()` checks for `"Friday"` (or close phonetic variants); non-`"Friday"` chatter is silently dropped with zero UI/audio disturbance, while confirmed `"Friday <cmd>"` wakes and executes immediately (or opens phone STT if only `"Friday"` was spoken).
+            - **Day's Rewind Repeating News Fix (`ProactiveDigestWorker.kt`)**:
+              - `ProactiveDigestWorker` previously queried `getNewBriefItems(limit = 3)` without marking items as notified or tracking previously sent URLs, repeating the same OpenAI article every day.
+              - Added 48-hour `pubDate` freshness filtering, persistent `notified_news_urls` history (last 50 URLs) in SharedPreferences, and `dao.updateBriefItemStatus(id, "notified")`.
+            - **Verification**: `python scripts/compile_pendant.py` (`0` errors) and `.\gradlew.bat testDebugUnitTest assembleDebug --no-daemon` (`BUILD SUCCESSFUL in 1m 5s`).
+

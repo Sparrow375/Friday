@@ -183,3 +183,10 @@
   - Add visual "Stop & Save Note" button in `FridayOverlayContent.kt` during continuous dictation
 - [x] 136. Verify firmware compilation (`python scripts/compile_pendant.py`) and Android unit tests + APK (`.\gradlew.bat testDebugUnitTest assembleDebug --no-daemon`)
 - [x] 137. Update `context.md`, `architechture.md`, commit, and push to `origin main`
+
+## Dictation Race Fix, Two-Stage Hybrid Wake Verification & Digest Dedup
+
+- [x] 138. Fix dictation `"No speech was captured"` race in `FridayBleWearableManager.kt` & `FridayService.kt` (`finalizeAudioStream(dispatchCallback = false)` so `onWearableAudioCommandReceived` no longer fires `abortTranscription()` on running dictation; fixed `cleanAndValidateTranscript` rejecting `"You..."` sentences; lowered quiet chest-mic peak floor)
+- [x] 139. Implement Two-Stage Hybrid Wake-Word Verification (`xiao_friday_pendant.ino`, `FridayService.kt`): pendant rewinds `streamingReadIdx` by `16384` samples (`~1.024s` pre-roll) to include `"Friday"` in the BLE audio stream; phone silently verifies `"Friday"` via Whisper before waking the overlay or executing commands, rejecting college chatter false positives with zero UI/audio disturbance
+- [x] 140. Fix repeating OpenAI news in `ProactiveDigestWorker.kt`: track notified article URLs (`notified_news_urls`), enforce 48h freshness window, and mark surfaced articles `"notified"` in Room DB
+- [x] 141. Verify firmware (`compile_pendant.py`) & Android (`testDebugUnitTest assembleDebug`), update docs, commit & push

@@ -70,8 +70,13 @@ class ProactiveDigestWorker(
         } catch (_: Exception) {
             emptyList()
         }
+        val now = System.currentTimeMillis()
+        val freshnessCutoff = now - 48L * 60L * 60L * 1000L // Only surface news from the last 48 hours
+        val notifiedUrls = prefs.getStringSet(KEY_NOTIFIED_URLS, emptySet())?.toMutableSet() ?: mutableSetOf()
+
         val topNews = try {
-            dao.getNewBriefItems(limit = 3)
+            dao.getNewBriefItems(limit = 15)
+                .filter { it.pubDate >= freshnessCutoff && !notifiedUrls.contains(it.url) }
         } catch (_: Exception) {
             emptyList()
         }
@@ -83,8 +88,9 @@ class ProactiveDigestWorker(
         if (todayEvents.isNotEmpty()) {
             parts.add("${todayEvents.size} calendar event${if (todayEvents.size > 1) "s" else ""}")
         }
-        if (topNews.isNotEmpty()) {
-            parts.add(topNews.first().title.take(60))
+        val selectedNews = topNews.firstOrNull()
+        if (selectedNews != null) {
+            parts.add(selectedNews.title.take(60))
         }
         if (parts.isEmpty()) {
             return@withContext Result.success()
@@ -95,7 +101,20 @@ class ProactiveDigestWorker(
         val body = parts.joinToString(" • ")
 
         postDigestNotification(applicationContext, title, body)
-        prefs.edit().putString(KEY_LAST_SLOT, slot).apply()
+        if (selectedNews != null) {
+            notifiedUrls.add(selectedNews.url)
+            // Keep bounded history of last 50 notified URLs
+            val trimmedUrls = if (notifiedUrls.size > 50) notifiedUrls.toList().takeLast(50).toSet() else notifiedUrls
+            prefs.edit()
+                .putString(KEY_LAST_SLOT, slot)
+                .putStringSet(KEY_NOTIFIED_URLS, trimmedUrls)
+                .apply()
+            try {
+                dao.updateBriefItemStatus(selectedNews.id, "notified")
+            } catch (_: Exception) {}
+        } else {
+            prefs.edit().putString(KEY_LAST_SLOT, slot).apply()
+        }
         FridayLogger.i(TAG, "Posted proactive digest: $body")
         Result.success()
     }
@@ -140,6 +159,7 @@ class ProactiveDigestWorker(
         private const val PREFS_NAME = "friday_digest_prefs"
         private const val KEY_DIGEST_ENABLED = "digest_enabled"
         private const val KEY_LAST_SLOT = "last_digest_slot"
+        private const val KEY_NOTIFIED_URLS = "notified_news_urls"
         private const val CHANNEL_ID = "friday_digest_channel"
         private const val WORK_NAME = "FridayProactiveDigestWork"
 

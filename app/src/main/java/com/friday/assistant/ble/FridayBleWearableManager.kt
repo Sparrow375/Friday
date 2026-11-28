@@ -466,7 +466,7 @@ class FridayBleWearableManager private constructor(private val context: Context)
         }
     }
 
-    fun finalizeAudioStream(): FloatArray {
+    fun finalizeAudioStream(dispatchCallback: Boolean = true): FloatArray {
         mainHandler.removeCallbacks(streamTimeoutRunnable)
 
         val chunksSnapshot: List<FloatArray>
@@ -493,12 +493,14 @@ class FridayBleWearableManager private constructor(private val context: Context)
                 System.arraycopy(chunk, 0, merged, offset, chunk.size)
                 offset += chunk.size
             }
-            mainHandler.post {
-                if (continuousDictationMode) {
-                    onDictationFinished?.invoke(merged)
-                    onDictationSegmentReady?.invoke(merged)
-                } else {
-                    onCommandAudioReceived?.invoke(merged)
+            if (dispatchCallback) {
+                mainHandler.post {
+                    if (continuousDictationMode) {
+                        onDictationFinished?.invoke(merged)
+                        onDictationSegmentReady?.invoke(merged)
+                    } else {
+                        onCommandAudioReceived?.invoke(merged)
+                    }
                 }
             }
             return merged
