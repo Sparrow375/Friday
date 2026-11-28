@@ -362,8 +362,8 @@ void setupGatt() {
   stateCharacteristic.begin();
   stateCharacteristic.write8((uint8_t)STATE_IDLE);
 
-  // Command Characteristic: Read | Notify | Write
-  commandCharacteristic.setProperties(CHR_PROPS_READ | CHR_PROPS_NOTIFY | CHR_PROPS_WRITE);
+  // Command Characteristic: Read | Notify | Write | Write Without Response
+  commandCharacteristic.setProperties(CHR_PROPS_READ | CHR_PROPS_NOTIFY | CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP);
   commandCharacteristic.setPermission(SECMODE_OPEN, SECMODE_OPEN);
   commandCharacteristic.setMaxLen(244);
   commandCharacteristic.setWriteCallback(command_write_callback);
@@ -686,9 +686,7 @@ void loop() {
         if (streamAudioOverBle && Bluefruit.connected()) {
           currentState = STATE_RECORDING_VOICE;
           globalChunkIndex = 0;
-          // Rewind ~1.024s (16384 samples) so the BLE stream includes the "Friday" wake-word audio itself
-          // for Stage-2 Whisper confirmation on the phone, leaving ~476ms ring-buffer headroom.
-          streamingReadIdx = (rollingWriteIdx - 16384 + ROLLING_BUFFER_SIZE) % ROLLING_BUFFER_SIZE;
+          streamingReadIdx = rollingWriteIdx;
 
           // Notify state transition BEFORE header so phone never treats initial chunks as stale/idle
           stateCharacteristic.write8((uint8_t)STATE_RECORDING_VOICE);
@@ -785,15 +783,15 @@ void loop() {
 
       // Check for completion of spoken phrase
       bool finishStreaming = false;
-      // Hands-Free Wake-Word triggered command mode (includes ~1.024s wake pre-roll):
+      // Hands-Free Wake-Word triggered command mode:
       // Wait up to ~2.4s (150 frames) for user to start speaking after "Friday",
       // trigger snappy end-of-speech at ~416ms (26 frames) hangover after speech ends,
-      // and cap recording at ~7.36 seconds (460 chunks).
+      // and cap recording at ~6.4 seconds (400 chunks).
       if (speechFrames >= 3 && silenceFrames >= 26) {
         finishStreaming = true;
       } else if (speechFrames == 0 && silenceFrames >= 150) {
         finishStreaming = true;
-      } else if (globalChunkIndex >= 460 || (millis() - recordingStartTime > 7400)) {
+      } else if (globalChunkIndex >= 400 || (millis() - recordingStartTime > 6400)) {
         finishStreaming = true;
       }
 

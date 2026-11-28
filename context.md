@@ -937,5 +937,8 @@ The project uses a clean package namespace `com.friday.assistant`:
             - **Day's Rewind Repeating News Fix (`ProactiveDigestWorker.kt`)**:
               - `ProactiveDigestWorker` previously queried `getNewBriefItems(limit = 3)` without marking items as notified or tracking previously sent URLs, repeating the same OpenAI article every day.
               - Added 48-hour `pubDate` freshness filtering, persistent `notified_news_urls` history (last 50 URLs) in SharedPreferences, and `dao.updateBriefItemStatus(id, "notified")`.
-            - **Verification**: `python scripts/compile_pendant.py` (`0` errors) and `.\gradlew.bat testDebugUnitTest assembleDebug --no-daemon` (`BUILD SUCCESSFUL in 1m 5s`).
+            - **Two-Stage Wake Verification Reverted & BLE Control Byte Write Fix (November 2026 - Part 35)**:
+              - **Reverted Two-Stage Wake Verification**: Restored immediate wake-word behavior in `xiao_friday_pendant.ino` (`streamingReadIdx = rollingWriteIdx`, `400` chunks / `6400ms`), `FridayService.kt` (removed `isPendingWakeVerification`), and `architechture.md` per user request.
+              - **Root Cause of `"No speech was captured"` in Continuous Dictation (`FridayBleWearableManager.kt`, `xiao_friday_pendant.ino`)**: `sendControlByte(0x11)` used `WRITE_TYPE_NO_RESPONSE`, but `commandCharacteristic` only declared `CHR_PROPS_WRITE` (without `CHR_PROPS_WRITE_WO_RESP`), causing Android's BLE GATT stack to silently drop `0x11` so the pendant never entered `STATE_CONTINUOUS_LISTEN`. Switched `sendControlByte()` to `WRITE_TYPE_DEFAULT`, added `CHR_PROPS_WRITE_WO_RESP` to `commandCharacteristic`, and added phone-mic restart in `resumeContinuousDictationOnPendant()` when BLE is disconnected.
+              - **Verification**: `python scripts/compile_pendant.py` (`0` errors) and `.\gradlew.bat testDebugUnitTest assembleDebug --no-daemon` (`BUILD SUCCESSFUL in 25s`).
 

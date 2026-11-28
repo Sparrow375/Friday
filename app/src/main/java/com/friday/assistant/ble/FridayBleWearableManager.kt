@@ -140,15 +140,16 @@ class FridayBleWearableManager private constructor(private val context: Context)
         val bytes = byteArrayOf(opcode)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeCharacteristic(char, bytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+                gatt.writeCharacteristic(char, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
             } else {
                 @Suppress("DEPRECATION")
-                char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
                 @Suppress("DEPRECATION")
                 char.value = bytes
                 @Suppress("DEPRECATION")
                 gatt.writeCharacteristic(char)
             }
+            FridayLogger.i(TAG, "Sent control byte 0x%02X to wearable".format(opcode))
         } catch (e: Exception) {
             FridayLogger.w(TAG, "Error sending control byte 0x%02X to wearable: ${e.message}".format(opcode))
         }

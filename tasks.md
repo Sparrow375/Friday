@@ -187,6 +187,7 @@
 ## Dictation Race Fix, Two-Stage Hybrid Wake Verification & Digest Dedup
 
 - [x] 138. Fix dictation `"No speech was captured"` race in `FridayBleWearableManager.kt` & `FridayService.kt` (`finalizeAudioStream(dispatchCallback = false)` so `onWearableAudioCommandReceived` no longer fires `abortTranscription()` on running dictation; fixed `cleanAndValidateTranscript` rejecting `"You..."` sentences; lowered quiet chest-mic peak floor)
-- [x] 139. Implement Two-Stage Hybrid Wake-Word Verification (`xiao_friday_pendant.ino`, `FridayService.kt`): pendant rewinds `streamingReadIdx` by `16384` samples (`~1.024s` pre-roll) to include `"Friday"` in the BLE audio stream; phone silently verifies `"Friday"` via Whisper before waking the overlay or executing commands, rejecting college chatter false positives with zero UI/audio disturbance
+- [x] 139. Reverted Two-Stage Hybrid Wake-Word Verification (`xiao_friday_pendant.ino`, `FridayService.kt`, `architechture.md`) per user feedback to restore immediate wake-word recognition
 - [x] 140. Fix repeating OpenAI news in `ProactiveDigestWorker.kt`: track notified article URLs (`notified_news_urls`), enforce 48h freshness window, and mark surfaced articles `"notified"` in Room DB
-- [x] 141. Verify firmware (`compile_pendant.py`) & Android (`testDebugUnitTest assembleDebug`), update docs, commit & push
+- [x] 141. Fix silent BLE `0x11` control byte drop causing `"No speech was captured"` in `FridayBleWearableManager.kt` (`WRITE_TYPE_NO_RESPONSE` -> `WRITE_TYPE_DEFAULT` matching `CHR_PROPS_WRITE`), added `CHR_PROPS_WRITE_WO_RESP` in `xiao_friday_pendant.ino`, and restored phone-mic restart fallback in `resumeContinuousDictationOnPendant()`
+- [x] 142. Verify firmware (`compile_pendant.py`) & Android (`testDebugUnitTest assembleDebug`), update docs, commit & push
